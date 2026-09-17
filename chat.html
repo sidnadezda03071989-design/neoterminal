@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>NeoTerminal — чат оркестратора</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, "Segoe UI", sans-serif;
+    background: #12141a; color: #e6e8ee;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header { padding: 10px 16px; border-bottom: 1px solid #262a35; font-weight: 600; }
+  #history { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+  .user { align-self: flex-end; background: #2b4a7a; }
+  .assistant { align-self: flex-start; background: #1e222d; border: 1px solid #2c3140; }
+  .assistant.error { border-color: #8a3a3a; background: #2a1c1c; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: #8fa3c8; font-size: 12px; user-select: none; }
+  .log-item { font-size: 12px; color: #8fa3c8; font-family: Consolas, monospace; }
+  #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262a35; }
+  #input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #2c3140;
+           background: #1a1e27; color: #e6e8ee; font-size: 14px; resize: none; }
+  #input:focus { outline: none; border-color: #3d6cc4; }
+  #send { padding: 10px 20px; border: 0; border-radius: 8px; background: #2f6fd0;
+          color: #fff; font-size: 14px; cursor: pointer; }
+  #send:disabled { background: #2a2f3c; color: #6b7280; cursor: wait; }
+  .typing { align-self: flex-start; color: #8fa3c8; font-style: italic; }
+</style>
+</head>
+<body>
+<header>Оркестратор Qwen + Cline</header>
+<div id="history"></div>
+<div id="composer">
+  <textarea id="input" rows="1" placeholder="Опишите задачу… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+  <button id="send">Отправить</button>
+</div>
+
+<script>
+const history = document.getElementById("history");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+
+function addMsg(className, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + className;
+  div.textContent = text;
+  history.appendChild(div);
+  return div;
+}
+
+function addReply(text, log, isError) {
+  const div = addMsg("assistant" + (isError ? " error" : ""), text || "(пустой ответ)");
+  if (log && log.length) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Вызовы инструментов (" + log.length + ")";
+    details.appendChild(summary);
+    log.forEach(name => {
+      const item = document.createElement("div");
+      item.className = "log-item";
+      item.textContent = "→ " + name;
+      details.appendChild(item);
+    });
+    div.appendChild(details);
+  }
+}
+
+async function submit() {
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  input.style.height = "auto";
+  send.disabled = true;
+  addMsg("user", text);
+  const typing = addMsg("typing", "Оркестратор думает…");
+
+  try {
+    const response = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const payload = await response.json();
+    typing.remove();
+    if (!response.ok) {
+      addReply(payload.detail || ("HTTP " + response.status), null, true);
+    } else {
+      addReply(payload.reply, payload.log, false);
+    }
+  } catch (err) {
+    typing.remove();
+    addReply("Ошибка сети: " + err.message, null, true);
+  } finally {
+    send.disabled = false;
+    input.focus();
+    history.scrollTop = history.scrollHeight;
+  }
+}
+
+send.addEventListener("click", submit);
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+});
+
+history.appendChild(Object.assign(document.createElement("div"), {
+  className: "typing",
+  textContent: "История пуста. Начните диалог — сервер держит одну сессию в памяти."
+}));
+</script>
+</body>
+</html>

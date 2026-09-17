@@ -1,0 +1,11 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.log
+data/
+node_modules/
+.pytest_cache/
+.edge_tmp*/
+*.tmp
+*.bak

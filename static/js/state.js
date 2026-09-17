@@ -1,0 +1,23 @@
+export const state = {
+  symbol: 'BTCUSDT',
+  timeframe: '1H',
+  mode: 'live',
+  candles: [],
+  ind: null,
+  activeCandles: [],
+  livePollTimer: null,
+  candlesPrevLength: 0,
+  first: true,
+  progressiveLoaded: false,  // фоновая прогрессивная догрузка завершилась (live/replay)
+  replay: { index:0, total:0, playing:false, timer:null, speed:2 },
+  indicators: {
+    sma:true, ema:true, bb:true, volume:true, rsi:false,
+    macd:false, vwap:false, supertrend:false, stoch:false,
+    adx:false, cci:false, obv:false,
+  },
+  dm: null,
+};
+
+let _currentLayout = '1';
+export function setCurrentLayout(l) { _currentLayout = l; }
+export function getCurrentLayout() { return _currentLayout; }

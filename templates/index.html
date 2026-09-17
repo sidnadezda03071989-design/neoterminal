@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neo Trading Terminal</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">NeoTerminal</span>
+      <span class="brand-sub">crypto &amp; forex · AI</span>
+    </div>
+    <div class="controls">
+      <label class="lbl">Символ</label>
+      <select id="symbol-select">
+        <option>BTCUSDT</option><option>ETHUSDT</option>
+        <option>SOLUSDT</option><option>EURUSD</option>
+        <option>GBPUSD</option><option>USDCHF</option>
+        <option>USDJPY</option><option>USDCAD</option>
+        <option>EURJPY</option><option>XAUUSD</option>
+      </select>
+      <label class="lbl">Таймфрейм</label>
+      <select id="timeframe-select">
+        <option>1m</option><option>5m</option><option>15m</option>
+        <option selected>1H</option><option>4H</option><option>1D</option>
+      </select>
+      <div class="segmented" id="mode-toggle">
+        <button data-mode="live" class="active">Live</button>
+        <button data-mode="replay">Replay</button>
+      </div>
+      <span class="status" id="connection-status">
+        <span class="pulse-dot" id="pulse-dot"></span>
+        <span id="status-text">подключение…</span>
+      </span>
+      <button id="ai-analysis-btn" class="btn ai-btn">🧠 AI Analysis</button>
+      <button id="chat-toggle-btn" class="btn">💬 Чат</button>
+      <button id="alerts-toggle-btn" class="btn">🔔 Алерты</button>
+      <button id="cmd-palette-btn" class="btn ghost-btn">⌘ K</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+  <button class="tool-btn active" data-tool="cursor" title="Курсор">✛</button>
+  <span class="sep"></span>
+  <button class="tool-btn" data-tool="trendline" title="Трендовая">╱</button>
+  <button class="tool-btn" data-tool="ray" title="Луч">➚</button>
+  <button class="tool-btn" data-tool="h_line" title="Горизонтальная">─</button>
+  <button class="tool-btn" data-tool="rectangle" title="Прямоугольник">▭</button>
+  <button class="tool-btn" data-tool="fib" title="Фибоначчи">F</button>
+  <button class="tool-btn" data-tool="pen" title="Кисть">✎</button>
+  <button class="tool-btn" data-tool="text" title="Текст">T</button>
+  <span class="sep"></span>
+  <button class="tool-btn" id="measure-btn" title="Измерить">📏</button>
+  <button class="tool-btn" id="magnet-btn" title="Магнит">🧲</button>
+  <span class="sep"></span>
+  <button class="btn" id="erase-ai-btn">Стереть AI</button>
+  <button class="btn" id="clear-btn">Очистить всё</button>
+  <button class="btn" id="export-btn">Экспорт</button>
+  <button class="btn" id="import-btn">Импорт</button>
+  <input type="file" id="import-file" hidden accept=".json">
+  <span class="sep"></span>
+  <div class="indicators-dropdown" id="indicators-dropdown">
+    <button class="btn" id="indicators-btn">📊 Индикаторы ▾</button>
+    <div class="indicators-menu" id="indicators-menu">
+      <label class="ind-item"><input type="checkbox" id="ind-sma" checked> SMA 20</label>
+      <label class="ind-item"><input type="checkbox" id="ind-ema" checked> EMA 50</label>
+      <label class="ind-item"><input type="checkbox" id="ind-bb" checked> BB</label>
+      <label class="ind-item"><input type="checkbox" id="ind-volume" checked> Volume</label>
+      <label class="ind-item"><input type="checkbox" id="ind-rsi"> RSI</label>
+      <label class="ind-item"><input type="checkbox" id="ind-macd"> MACD</label>
+      <label class="ind-item"><input type="checkbox" id="ind-vwap"> VWAP</label>
+      <label class="ind-item"><input type="checkbox" id="ind-supertrend"> Supertrend</label>
+    </div>
+  </div>
+  <button class="btn" id="backtest-btn">📊 Бэктест</button>
+  <span class="hint" id="tool-hint">Курсор</span>
+</div>
+
+  <div class="main-area">
+    <aside class="watchlist-panel" id="watchlist-panel">
+      <div class="watchlist-header">Watchlist</div>
+      <div class="watchlist-items" id="watchlist-items"></div>
+    </aside>
+    <div class="chart-wrap">
+      <div class="chart-legend" id="chart-legend"></div>
+      <div id="chart-container"></div>
+      <div class="chart-loading" id="chart-loading">
+        <div class="chart-spinner"></div>
+      </div>
+    </div>
+    <aside class="ai-panel" id="ai-panel">
+      <div class="ai-panel-header">
+        <span>🧠 AI</span>
+        <button id="ai-refresh-btn" class="mini-btn">⟳</button>
+      </div>
+      <div class="ai-body">
+        <div class="ai-signal-box">
+          <div class="ai-signal-label">Сигнал</div>
+          <div class="ai-signal" id="ai-signal">—</div>
+          <div class="conf-track"><div class="conf-fill" id="conf-fill"></div></div>
+          <span id="conf-text">уверенность 0%</span>
+        </div>
+        <div class="ai-indicators-mini" id="ai-indicators-mini" style="display:none"></div>
+        <div class="ai-reason" id="ai-reason">Анализ не запущен.</div>
+        <div class="ai-meta" id="ai-meta"></div>
+        <div class="ai-drawings">
+          AI рисунков: <span id="ai-draw-count">0</span>
+          <ul id="ai-draw-list"></ul>
+        </div>
+      </div>
+    </aside>
+    <aside class="chat-panel" id="chat-panel" style="display:none">
+      <div class="chat-panel-header">
+        <span>💬 Чат</span>
+        <button id="chat-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="chat-body" id="chat-body"></div>
+      <div class="chat-input-row">
+        <textarea id="chat-input" class="chat-input" rows="2"></textarea>
+        <button id="chat-send-btn" class="btn ai-btn">➤</button>
+      </div>
+    </aside>
+    <aside class="alerts-panel" id="alerts-panel" style="display:none">
+      <div class="alerts-panel-header">
+        <span>🔔 Алерты</span>
+        <button id="alerts-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="alert-form">
+        <label for="alert-symbol">Символ</label>
+        <select id="alert-symbol">
+          <option>BTCUSDT</option><option>ETHUSDT</option>
+          <option>SOLUSDT</option><option>EURUSD</option>
+          <option>GBPUSD</option><option>USDCHF</option>
+          <option>USDJPY</option><option>USDCAD</option>
+          <option>EURJPY</option><option>XAUUSD</option>
+        </select>
+        <label for="alert-condition">Условие</label>
+        <select id="alert-condition">
+          <option value="above">Выше (above)</option>
+          <option value="below">Ниже (below)</option>
+          <option value="cross">Пересечение (cross)</option>
+        </select>
+        <label for="alert-value">Значение</label>
+        <input type="number" id="alert-value" step="any" placeholder="100000">
+        <label for="alert-channel">Канал</label>
+        <select id="alert-channel">
+          <option value="browser">Браузер</option>
+          <option value="webhook">Webhook</option>
+          <option value="telegram">Telegram</option>
+        </select>
+        <input type="text" id="alert-destination" placeholder="URL вебхука / token:chat_id" style="display:none">
+        <button id="alert-create-btn" class="btn ai-btn">Создать</button>
+      </div>
+      <div class="alerts-list" id="alerts-list"></div>
+      <div class="alerts-panel-footer">
+        <span id="alerts-count">активных: 0</span>
+      </div>
+    </aside>
+    <aside class="backtest-panel" id="backtest-panel" style="display:none">
+      <div class="backtest-panel-header">
+        <span>📊 Бэктест</span>
+        <button id="bt-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="bt-form">
+        <label for="bt-strategy">Стратегия</label>
+        <select id="bt-strategy">
+          <option value="sma_cross">SMA Cross (20×50)</option>
+          <option value="rsi_reversal">RSI Reversal (30/70)</option>
+          <option value="macd_cross">MACD Cross</option>
+        </select>
+        <label for="bt-symbol">Символ</label>
+        <select id="bt-symbol">
+          <option>BTCUSDT</option><option>ETHUSDT</option>
+          <option>SOLUSDT</option><option>EURUSD</option>
+          <option>GBPUSD</option><option>USDCHF</option>
+          <option>USDJPY</option><option>USDCAD</option>
+          <option>EURJPY</option><option>XAUUSD</option>
+        </select>
+        <label for="bt-timeframe">Таймфрейм</label>
+        <select id="bt-timeframe">
+          <option>1m</option><option>5m</option><option>15m</option>
+          <option selected>1H</option><option>4H</option><option>1D</option>
+        </select>
+        <label for="bt-from">С</label>
+        <input type="date" id="bt-from">
+        <label for="bt-to">По</label>
+        <input type="date" id="bt-to">
+        <label for="bt-cash">Капитал</label>
+        <input type="number" id="bt-cash" value="10000" min="100" step="100">
+        <label for="bt-limit">Свечей</label>
+        <select id="bt-limit">
+          <option value="1000">1000 свечей</option>
+          <option value="5000" selected>5000 свечей</option>
+          <option value="10000">10000 свечей</option>
+          <option value="20000">20000 свечей (медленно)</option>
+        </select>
+        <div class="bt-run-row">
+          <button id="bt-run-btn" class="btn ai-btn">Запустить</button>
+        </div>
+      </div>
+      <div class="bt-error" id="bt-error" style="display:none"></div>
+      <div class="bt-status" id="bt-status" style="display:none">Выполняется…</div>
+      <div class="bt-results" id="bt-results" style="display:none">
+        <div class="bt-metrics" id="bt-metrics"></div>
+        <canvas id="bt-equity-canvas" class="bt-equity-canvas"></canvas>
+        <div class="bt-trades-title">Последние сделки</div>
+        <div class="bt-trades" id="bt-trades"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="replay-bar" id="replay-bar" style="display:none">
+    <label>От</label><input type="date" id="from-date">
+    <label>До</label><input type="date" id="to-date">
+    <button class="btn" id="load-replay-btn">Загрузить</button>
+    <span class="sep"></span>
+    <button class="btn preset-btn" data-preset="30d">30д</button>
+    <button class="btn preset-btn" data-preset="3m">3м</button>
+    <button class="btn preset-btn" data-preset="1y">1г</button>
+    <button class="btn preset-btn" data-preset="all">Всё</button>
+    <span class="sep"></span>
+    <button class="btn" id="play-btn">▶</button>
+    <button class="btn" id="pause-btn">⏸</button>
+    <button class="btn" id="reset-btn">Reset</button>
+    <button class="btn" id="step-back-btn">⏪</button>
+    <button class="btn" id="step-forward-btn">⏩</button>
+    <input type="range" id="speed-control" min="0.5" max="20" step="0.5" value="2">
+    <input type="range" id="progress-slider" min="0" max="100" value="0">
+    <span id="replay-pos-text">0 / 0</span>
+  </div>
+</div>
+
+<div id="alert-toasts"></div>
+
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
+
