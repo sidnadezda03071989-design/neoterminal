@@ -1,0 +1,19 @@
+42:       <button id="cmd-palette-btn" class="btn ghost-btn">⌘ K</button>
+95:     <aside class="ai-panel" id="ai-panel">
+96:       <div class="ai-panel-header">
+101:         <div class="ai-signal-box">
+102:           <div class="ai-signal-label">Сигнал</div>
+103:           <div class="ai-signal" id="ai-signal">—</div>
+107:         <div class="ai-indicators-mini" id="ai-indicators-mini" style="display:none"></div>
+116:     <aside class="chat-panel" id="chat-panel" style="display:none">
+117:       <div class="chat-panel-header">
+127:     <aside class="alerts-panel" id="alerts-panel" style="display:none">
+128:       <div class="alerts-panel-header">
+155:         <input type="text" id="alert-destination" placeholder="URL вебхука / token:chat_id" style="display:none">
+159:       <div class="alerts-panel-footer">
+163:     <aside class="backtest-panel" id="backtest-panel" style="display:none">
+164:       <div class="backtest-panel-header">
+205:       <div class="bt-error" id="bt-error" style="display:none"></div>
+206:       <div class="bt-status" id="bt-status" style="display:none">Выполняется…</div>
+207:       <div class="bt-results" id="bt-results" style="display:none">
+216:   <div class="replay-bar" id="replay-bar" style="display:none">
