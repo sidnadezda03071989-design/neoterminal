@@ -7,3 +7,7 @@ data/
 .pytest_cache/
 .edge_tmp*/
 node_modules/
+_tmp_*
+_scan*.txt
+pytest_out.txt
+test_orchestrator.txt
