@@ -145,12 +145,28 @@ def _analysis_flow(message, symbol, timeframe, upto_sec=None, mode="live"):
     return reply, drawings[:config.MAX_AI_DRAWABLES], all_drawings, model, fallback
 
 
+def _truncate_chat_message(text):
+    """Обрезка старого сообщения чата (токен-диета): head + "..." + tail."""
+    text = str(text or "")
+    limit = config.CHAT_MESSAGE_MAX_CHARS
+    if len(text) <= limit:
+        return text
+    return text[:150] + "..." + text[-40:]
+
+
+def _truncate_chat_message_dict(m):
+    """Обрезка content у сообщения-словаря истории (роль сохраняется)."""
+    return {"role": m.get("role"),
+            "content": _truncate_chat_message(m.get("content"))}
+
+
 def _chat_flow(message, symbol, timeframe):
     """Обычное общение через chat-промпт (или заглушку без API).
 
     Помнит контекст беседы: последние CHAT_MEMORY_MESSAGES сообщений
     (старые → новые) уходят в messages между system-промптом и текущим
-    вопросом пользователя.
+    вопросом пользователя. Каждое старое сообщение обрезается до
+    CHAT_MESSAGE_MAX_CHARS (токен-диета), текущее — целиком.
     """
     history = db_get_chat_history(limit=config.CHAT_MEMORY_MESSAGES)
     # Текущее сообщение уже записано в БД (chat_with_model делает append
@@ -172,11 +188,16 @@ def _chat_flow(message, symbol, timeframe):
         msgs[-1] = current
     else:
         msgs.append(current)
+    # Токен-диета: старые сообщения обрезаем, последнее (текущий вопрос)
+    # оставляем целиком.
+    msgs = [_truncate_chat_message_dict(m) if i < len(msgs) - 1 else m
+            for i, m in enumerate(msgs)]
     # Дебаг: видно дубли ролей/двойной system, если регрессия вернётся.
     log.debug("chat_flow msgs: roles=%s count=%d",
               [m["role"] for m in msgs], len(msgs))
     try:
-        resp = _llm_request(CHAT_SYSTEM_PROMPT_SMALLTALK, msgs)
+        resp = _llm_request(CHAT_SYSTEM_PROMPT_SMALLTALK, msgs,
+                            purpose="chat")
     except Exception as exc:  # noqa: BLE001
         log.warning("chat reply error: %s", exc)
         resp = None

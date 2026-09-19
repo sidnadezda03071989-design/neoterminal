@@ -156,7 +156,8 @@ def _merge_drawings(a, b):
 def _normalize_ai_result(parsed, candles):
     """Приводит сырой ответ модели к единому dict.
 
-    NEUTRAL -> HOLD; confidence обрезается 0..1; reason до 500 символов.
+    NEUTRAL -> HOLD; confidence обрезается 0..1; reason до
+    config.LLM_REASON_MAX_CHARS (токен-диета, было 500).
     Возвращает None, если parsed отсутствует.
     """
     if not parsed:
@@ -174,7 +175,7 @@ def _normalize_ai_result(parsed, candles):
     return {
         "signal": signal,
         "confidence": round(confidence, 2),
-        "reason": str(parsed.get("reason", ""))[:500],
+        "reason": str(parsed.get("reason", ""))[:config.LLM_REASON_MAX_CHARS],
         "indicator_signals": parsed.get("indicator_signals") or {},
         "price_levels": parsed.get("price_levels") or {},
         "suggested_drawings": _normalize_model_drawings(

@@ -35,7 +35,11 @@ def _compact_price(x, symbol):
 
 
 def _compact_candle(c, symbol):
-    """Свеча -> компактная строка С ЗАПЯТЫМИ: [t,o,h,l,c,v]."""
+    """Свеча -> компактная строка БЕЗ запятых: [t o h l c v].
+
+    Пробел вместо запятых — экономия ~15% символов (запятая+пробел
+    часто дают отдельный токен у BPE-токенизаторов).
+    """
     def _fmt(v):
         p = _compact_price(v, symbol)
         return "" if p is None else f"{p}"
@@ -44,16 +48,38 @@ def _compact_candle(c, symbol):
         vol = float(c.get("volume"))
     except (TypeError, ValueError):
         vol = 0.0
-    return (f"[{int(c['time'])},{_fmt(c['open'])},{_fmt(c['high'])},"
-            f"{_fmt(c['low'])},{_fmt(c['close'])},{vol:.1f}]")
+    return (f"[{int(c['time'])} {_fmt(c['open'])} {_fmt(c['high'])} "
+            f"{_fmt(c['low'])} {_fmt(c['close'])} {vol:g}]")
+
+
+def _older_summary(df_older, symbol):
+    """Строка-сводка по старым барам: high/low/trend вместо полного ряда."""
+    if df_older is None or df_older.empty:
+        return ""
+    high = _compact_price(df_older["high"].max(), symbol)
+    low = _compact_price(df_older["low"].min(), symbol)
+    first = utils._clean(df_older["close"].iloc[0])
+    last = utils._clean(df_older["close"].iloc[-1])
+    trend = "flat"
+    if first is not None and last is not None and last != first:
+        trend = "up" if last > first else "down"
+    return (f"older {len(df_older)} bars: high={high} low={low} "
+            f"trend={trend}")
 
 
 def format_tf_section(symbol, tf, main_tf, limit=None, upto_sec=None):
     """Секция одного таймфрейма (свечи + индикаторы).
 
+    Главный ТФ: последние config.CONTEXT_CANDLES_MAIN свечей полностью,
+    старшие бары — одна строка-сводка (_older_summary). Остальные ТФ:
+    только последние config.CONTEXT_CANDLES_OTHER свечей. Индикаторы:
+    последние config.CONTEXT_INDICATOR_TAIL значений каждого ряда.
     ВСЕГДА возвращает (str, upto_sec). Если данных нет — ("", upto_sec).
     """
-    max_candles = config.CONTEXT_TF_LIMITS.get(tf, 60)
+    if tf == main_tf:
+        max_candles = config.CONTEXT_CANDLES_MAIN
+    else:
+        max_candles = config.CONTEXT_CANDLES_OTHER
     if limit is None:
         limit = max_candles * 2
     df = get_series_df(symbol, tf, limit=limit,
@@ -65,7 +91,13 @@ def format_tf_section(symbol, tf, main_tf, limit=None, upto_sec=None):
         df = df[mask]
         if df.empty:
             return "", upto_sec
+
+    summary = ""
     if len(df) > max_candles:
+        # Старые бары (вне последних max_candles) — в одну строку-сводку
+        # для главного ТФ; для остальных ТФ сводка не нужна.
+        if tf == main_tf:
+            summary = _older_summary(df.iloc[:-max_candles], symbol)
         df = df.iloc[-max_candles:]
 
     candles = []
@@ -86,15 +118,21 @@ def format_tf_section(symbol, tf, main_tf, limit=None, upto_sec=None):
     else:
         header = f"=== Candles {tf} ==="
     lines = [header]
+    if summary:
+        lines.append(summary)
     lines.extend(_compact_candle(c, symbol) for c in candles)
 
     ind = compute_indicators(df)
-    last = ind.iloc[-1]
+    tail = config.CONTEXT_INDICATOR_TAIL
     vals = []
     for col in _IND_COLS:
-        v = last.get(col)
-        if v is not None and not (isinstance(v, float) and pd.isna(v)):
-            vals.append(f"{col}={v:.4g}")
+        if col not in ind.columns:
+            continue
+        series = ind[col].dropna()
+        if series.empty:
+            continue
+        pieces = " ".join(f"{v:.4g}" for v in series.iloc[-tail:])
+        vals.append(f"{col}={pieces}")
     if vals:
         lines.append(f"=== Indicators {tf} ===")
         lines.extend(vals)
@@ -158,6 +196,10 @@ def build_multi_tf_context(symbol, main_tf, upto_sec=None) -> str:
     """
     sections = []
     for tf in config.TIMEFRAMES:
+        # Токен-диета: младшие ТФ не тащим, если main_tf их «перекрывает»
+        # (при main=15m свечи 1m/5m — шум). В Trends они остаются.
+        if tf != main_tf and tf in config.CONTEXT_SKIP_TF:
+            continue
         section, _ = format_tf_section(
             symbol, tf, main_tf, limit=None, upto_sec=upto_sec)
         if section:

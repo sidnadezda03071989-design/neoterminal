@@ -27,6 +27,11 @@ export function sseConnect() {
       if (window.__alertToast) window.__alertToast(data || e.data || 'alert');
       loadAlerts(); // перерисовать список (алерт помечен triggered)
     });
+    _sse.addEventListener('scan_progress', (e) => {
+      let data = null;
+      try { data = JSON.parse(e.data); } catch { data = null; }
+      if (window.__scanProgress) window.__scanProgress(data);
+    });
     _sse.addEventListener('candle_update', () => { /* placeholder */ });
     _sse.addEventListener('ai_analysis_done', () => { /* placeholder */ });
     _sse.onerror = () => {

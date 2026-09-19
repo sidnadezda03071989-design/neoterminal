@@ -1,0 +1,861 @@
+1	/* Сканер стратегий (grid-search): панель, запуск /api/scan, SSE-прогресс
+2	   (window.__scanProgress вешается в app_init.js), таблица результатов
+3	   с фильтром min_sharpe, детали по клику и экспорт CSV. */
+4	
+5	const $ = (id) => document.getElementById(id);
+6	
+7	/* Список символов зеркален config.SYMBOLS (app_pkg/config.py) и
+8	   select#symbol-select в templates/index.html. */
+9	const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'EURUSD', 'GBPUSD',
+10	  'USDCHF', 'USDJPY', 'USDCAD', 'EURJPY', 'XAUUSD'];
+11	const STRATEGIES = [
+12	  { id: 'sma_cross', label: 'SMA Cross' },
+13	  { id: 'rsi_reversal', label: 'RSI Reversal' },
+14	  { id: 'macd_cross', label: 'MACD Cross' },
+15	  { id: 'ema_cross', label: 'EMA Cross' },
+16	  { id: 'bb_reversal', label: 'BB Reversal' },
+17	  { id: 'bb_breakout', label: 'BB Breakout' },
+18	  { id: 'supertrend', label: 'Supertrend' },
+19	  { id: 'stoch_reversal', label: 'Stoch Reversal' },
+20	  { id: 'stoch_cross', label: 'Stoch Cross' },
+21	  { id: 'cci_reversal', label: 'CCI Reversal' },
+22	  { id: 'vwap_reversal', label: 'VWAP Reversal' },
+23	  { id: 'adx_trend', label: 'ADX Trend' },
+24	];
+25	/* Фолбэк-константы оценки прогона: те же цифры приходят из /api/scan/grids
+26	   (seconds_per_combination / fetch_seconds_per_symbol / workers /
+27	   warn_seconds / hard_limit_seconds) — см. routes/scanner.py::_estimate_seconds.
+28	   hard_limit_seconds — потолок длительности прогона (4 часа): больше —
+29	   сервер вернёт 400, кнопка «Запустить» должна быть disabled. */
+30	const ESTIMATE_DEFAULTS = {
+31	  seconds_per_combination: 0.3, fetch_seconds_per_symbol: 15,
+32	  workers: 8, max_combinations: 50000, warn_seconds: 1800,
+33	  hard_limit_seconds: 14400,
+34	};
+35	/* Запасной поллинг: если SSE-событие scan_progress потерялось, дожидаемся
+36	   конца прогона по stats.finished из GET /api/scan/<run_id>. */
+37	const POLL_MS = 10000;
+38	
+39	/* Вердикты backend: порядок сортировки таблицы и человекочитаемый вид. */
+40	const VERDICT_ORDER = { stable: 0, weak: 1, overfit: 2, noise: 3, losing: 4 };
+41	const VERDICT_TEXT = {
+42	  stable: '✅ Стабильна',
+43	  overfit: '⚠️ Переоптимизация',
+44	  noise: '🎲 Шум',
+45	  weak: '🟡 Слабо',
+46	  losing: '❌ Убыточна',
+47	};
+48	
+49	const local = { runId: null, running: false, pollTimer: null,
+50	  grids: null, summary: null, etaSeconds: null, wired: false,
+51	  timeframes: [] };
+52	/* Запасной фолбэк для дефолтных ТФ в UI, если /api/scan/grids не отдал
+53	   default_timeframes (например, при офлайн-стейте). */
+54	const TF_FALLBACK = ['15m', '1H'];
+55	
+56	/* ------------------------------------------------------- панель open/close */
+57	export function openScanner() {
+58	  const panel = $('scanner-panel');
+59	  if (!panel) return;
+60	  panel.style.display = 'block';
+61	  _initFormDefaults();
+62	  _ensureGrids();
+63	}
+64	
+65	export function closeScanner() {
+66	  const panel = $('scanner-panel');
+67	  if (panel) panel.style.display = 'none';
+68	}
+69	
+70	/* Чекбоксы символов и стратегий строим один раз из JS-списков. */
+71	function _initFormDefaults() {
+72	  const mkChecks = (boxId, items, defaults) => {
+73	    const box = $(boxId);
+74	    if (!box || box.children.length) return;
+75	    for (const item of items) {
+76	      const id = typeof item === 'string' ? item : item.id;
+77	      const label = typeof item === 'string' ? item : item.label;
+78	      const el = document.createElement('label');
+79	      const cb = document.createElement('input');
+80	      cb.type = 'checkbox';
+81	      cb.value = id;
+82	      cb.checked = defaults.includes(id);
+83	      el.append(cb, document.createTextNode(label));
+84	      box.appendChild(el);
+85	    }
+86	  };
+87	  mkChecks('scan-symbols', SYMBOLS, ['BTCUSDT']);
+88	  mkChecks('scan-strategies', STRATEGIES, ['rsi_reversal', 'macd_cross']);
+89	  mkChecks('scan-timeframes', config_timeframes(), local.timeframes.length
+90	    ? local.timeframes : TF_FALLBACK);
+91	  // Любое изменение выбора символов/стратегий/ТФ пересчитывает counter,
+92	  // оценку комбинаций/времени и состояние чекбоксов «Все».
+93	  // wired: слушатели навешиваются один раз; _onSelectionChange продублирует
+94	  // первый вызов (безопасный для инициализации).
+95	  if (!local.wired) {
+96	    for (const boxId of ['scan-symbols', 'scan-strategies', 'scan-timeframes']) {
+97	      const box = $(boxId);
+98	      if (box) box.addEventListener('change', _onSelectionChange);
+99	    }
+100	    const allStr = $('scan-all-strategies');
+101	    const allTf = $('scan-all-timeframes');
+102	    if (allStr) allStr.addEventListener('change', toggleAllStrategies);
+103	    if (allTf) allTf.addEventListener('change', toggleAllTimeframes);
+104	    local.wired = true;
+105	  }
+106	  _onSelectionChange();
+107	}
+108	
+109	  _syncAllStrategies();
+110	  _syncAllTimeframes();
+111	  _updateComboCount();
+112	}
+113	
+114	/* Чекбокс «Все стратегии»: checked, если отмечены все 12; indeterminate,
+115	   если отмечена только часть (см. templates/index.html). */
+116	function _syncAllStrategies() {
+117	  const all = $('scan-all-strategies');
+118	  const chosen = _checkedValues('scan-strategies').length;
+119	  if (all) {
+120	    all.checked = chosen > 0 && chosen === STRATEGIES.length;
+121	    all.indeterminate = chosen > 0 && chosen < STRATEGIES.length;
+122	  }
+123	  const cnt = $('scan-strategies-count');
+124	  if (cnt) cnt.textContent = `Выбрано: ${chosen} ${_pluralStrategies(chosen)}`;
+125	}
+126	
+127	/* Русская форма слова «стратегия» для counter. */
+128	function _pluralStrategies(n) {
+129	  const mod10 = n % 10;
+130	  const mod100 = n % 100;
+131	  if (mod10 === 1 && mod100 !== 11) return 'стратегия';
+132	  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+133	    return 'стратегии';
+134	  }
+135	  return 'стратегий';
+136	}
+137	
+138	/* Таймфреймы, доступные в чекбоксах: берём из /api/scan/grids.timeframes,
+139	   если гриды ещё не загрузились — фолбэк из TF_FALLBACK. */
+140	function config_timeframes() {
+141	  if (local.grids && Array.isArray(local.grids.timeframes)) {
+142	    return local.grids.timeframes;
+143	  }
+144	  return TF_FALLBACK.slice();
+145	}
+146	
+147	/* ---------- Таймфреймы: toggle-all + counter ---------- */
+148	
+149	function _syncAllTimeframes() {
+150	  const all = $('scan-all-timeframes');
+151	  const box = $('scan-timeframes');
+152	  const cnt = $('scan-timeframes-count');
+153	  if (!box) return;
+154	  const allTfs = config_timeframes();
+155	  const checked = _checkedValues('scan-timeframes');
+156	  const chosen = checked.length;
+157	  if (all) {
+158	    all.checked = chosen > 0 && chosen === allTfs.length;
+159	    all.indeterminate = chosen > 0 && chosen < allTfs.length;
+160	  }
+161	  if (cnt) {
+162	    cnt.textContent = `Выбрано: ${chosen} ${_pluralTimeframes(chosen)}`;
+163	  }
+164	}
+165	
+166	function _pluralTimeframes(n) {
+167	  if (n === 1) return 'ТФ';
+168	  if (n >= 2 && n <= 4) return 'ТФ';
+169	  return 'ТФ';
+170	}
+171	
+172	export function toggleAllTimeframes() {
+173	  const all = $('scan-all-timeframes');
+174	  const box = $('scan-timeframes');
+175	  if (!all || !box) return;
+176	  for (const cb of box.querySelectorAll('input[type="checkbox"]')) {
+177	    cb.checked = all.checked;
+178	  }
+179	  _syncAllTimeframes();
+180	}
+181	
+182	/* Чекбокс «Все стратегии»: checked, если отмечены все 12; indeterminate,
+183	   если отмечена только часть (см. templates/index.html). */
+184	export function toggleAllStrategies() {
+185	  const all = $('scan-all-strategies');
+186	  const box = $('scan-strategies');
+187	  if (!all || !box) return;
+188	  for (const cb of box.querySelectorAll('input[type="checkbox"]')) {
+189	    cb.checked = all.checked;
+190	  }
+191	  all.indeterminate = false;
+192	  _onSelectionChange();
+193	}
+194	
+195	function _checkedValues(boxId) {
+196	  const box = $(boxId);
+197	  if (!box) return [];
+198	  return Array.from(box.querySelectorAll('input:checked')).map((cb) => cb.value);
+199	}
+200	
+201	function _showError(msg) {
+202	  const el = $('scan-error');
+203	  if (!el) return;
+204	  if (msg) {
+205	    el.textContent = '⚠ ' + msg;
+206	    el.style.display = 'block';
+207	  } else {
+208	    el.textContent = '';
+209	    el.style.display = 'none';
+210	  }
+211	}
+212	
+213	/* ------------------------------------------- конструктор вариаций (гриды) */
+214	async function _ensureGrids() {
+215	  if (local.grids) return;
+216	  try {
+217	    const resp = await fetch('/api/scan/grids');
+218	    if (!resp.ok) return;
+219	    local.grids = await resp.json();
+220	    _buildConfigBlocks();
+221	    _updateComboCount();
+222	  } catch { /* конструктор просто останется пустым до следующего открытия */ }
+223	}
+224	
+225	function _buildConfigBlocks() {
+226	  const box = $('scan-config-blocks');
+227	  if (!box || !local.grids) return;
+228	  box.innerHTML = '';
+229	  for (const [sid, meta] of Object.entries(local.grids.strategies)) {
+230	    const block = document.createElement('div');
+231	    block.className = 'scan-config-block';
+232	    const title = document.createElement('div');
+233	    title.className = 'scan-config-title';
+234	    title.textContent = meta.label || sid;
+235	    block.appendChild(title);
+236	    for (const pname of meta.params) {
+237	      const row = document.createElement('label');
+238	      row.className = 'scan-config-row';
+239	      const name = document.createElement('span');
+240	      name.textContent = pname + ':';
+241	      const inp = document.createElement('input');
+242	      inp.type = 'text';
+243	      inp.dataset.strategy = sid;
+244	      inp.dataset.param = pname;
+245	      const defaults = (meta.default_grid && meta.default_grid[pname]) || [];
+246	      inp.value = defaults.join(', ');
+247	      inp.placeholder = 'напр. 5, 10, 15';
+248	      inp.addEventListener('input', _updateComboCount);
+249	      row.append(name, inp);
+250	      block.appendChild(row);
+251	    }
+252	    box.appendChild(block);
+253	  }
+254	}
+255	
+256	/* '5, 10, x' -> [5, 10] — split -> trim -> number -> filter invalid.
+257	   limits из /api/scan/grids.param_limits: у std/multiplier/vwap_threshold
+258	   границы дробные (разрешаем float), у CCI oversold — отрицательные.
+259	   Без границ поведение прежнее: целое > 0. */
+260	function _parseValues(str, limits) {
+261	  return String(str || '').split(',')
+262	    .map((s) => s.trim())
+263	    .filter(Boolean)
+264	    .map(Number)
+265	    .filter((n) => _valueOk(n, limits));
+266	}
+267	
+268	function _valueOk(n, limits) {
+269	  if (!Number.isFinite(n)) return false;
+270	  if (!Array.isArray(limits) || limits.length !== 2) {
+271	    return Number.isInteger(n) && n > 0;
+272	  }
+273	  const [lo, hi] = limits;
+274	  const allowFloat = !Number.isInteger(lo) || !Number.isInteger(hi);
+275	  if (!allowFloat && !Number.isInteger(n)) return false;
+276	  return n >= lo && n <= hi;
+277	}
+278	
+279	function _limitsFor(pname) {
+280	  const lims = local.grids && local.grids.param_limits;
+281	  return lims && lims[pname] ? lims[pname] : null;
+282	}
+283	
+284	/* Число комбинаций выбранного набора: Σ длин гридов стратегий (на
+285	   один символ-ТФ). Учитывает свои параметры из конструктора, если он
+286	   включён. Результат не умножает на символы/ТФ — это делают
+287	   _updateComboCount/_currentEstimate, потому что для counter и estimate
+288	   нужны понятные «стратегий × символов × ТФ». */
+289	function _computedCombos(strategies) {
+290	  const useCustom = $('scan-use-custom') && $('scan-use-custom').checked;
+291	  let total = 0;
+292	  let badInput = false;
+293	  for (const sid of strategies) {
+294	    const meta = local.grids && local.grids.strategies[sid];
+295	    const params = meta ? meta.params : [];
+296	    let combos = 1;
+297	    for (const pname of params) {
+298	      let vals = null;
+299	      if (useCustom) {
+300	        const inp = document.querySelector(
+301	          `#scan-config-blocks input[data-strategy="${sid}"][data-param="${pname}"]`);
+302	        if (inp) {
+303	          vals = _parseValues(inp.value, _limitsFor(pname));
+304	          if (!vals.length && inp.value.trim() !== '') badInput = true;
+305	        }
+306	      }
+307	      if (!vals || !vals.length) {
+308	        vals = (meta && meta.default_grid && meta.default_grid[pname]) || [];
+309	      }
+310	      combos *= vals.length;
+311	    }
+312	    total += combos;
+313	  }
+314	  return { total: total * Math.max(symbolsCount, 1), badInput };
+315	}
+316	
+317	/* Оценка длительности прогона (сек) — формула та же, что в бэкенде
+318	   (routes/scanner.py::_estimate_seconds): комбинации × сек/воркер + фетч
+319	   на каждый символ И таймфрейм (symbols × timeframes × сек). */
+320	function _estimateSeconds(combos, symbolsCount, timeframesCount = 1) {
+321	  const cfg = Object.assign({}, ESTIMATE_DEFAULTS, local.grids || {});
+322	  const workers = Math.max(1, Number(cfg.workers) || 8);
+323	  const timeframes = Math.max(1, Number(timeframesCount) || 1);
+324	  return (combos * Number(cfg.seconds_per_combination)) / workers +
+325	    symbolsCount * timeframes * Number(cfg.fetch_seconds_per_symbol);
+326	}
+327	
+328	/* Секунды -> '45 сек' / '12 мин' / '4 ч 15 мин' / '1 ч'. */
+329	function _formatDuration(seconds) {
+330	  const sec = Math.max(0, Math.round(Number(seconds) || 0));
+331	  if (sec < 60) return `${sec} сек`;
+332	  const min = Math.round(sec / 60);
+333	  if (min < 60) return `${min} мин`;
+334	  const hours = Math.floor(min / 60);
+335	  const mins = min % 60;
+336	  return mins ? `${hours} ч ${mins} мин` : `${hours} ч`;
+337	}
+338	
+339	/* 24120 -> '24 120' (разделитель тысяч пробелом — как в подписи прогресса). */
+340	function _fmtCount(n) {
+341	  return String(Math.max(0, Math.round(Number(n) || 0)))
+342	    .replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+343	}
+344	
+345	/* Текущий масштаб выбора: комбинации, оценка времени и лимиты сервера. */
+346	function _currentEstimate() {
+347	  const strategies = _checkedValues('scan-strategies');
+348	  const symbols = _checkedValues('scan-symbols');
+349	  const cfg = Object.assign({}, ESTIMATE_DEFAULTS, local.grids || {});
+350	  const combos = _computedCombos(strategies, symbols.length).total;
+351	  return {
+352	    combos,
+353	    seconds: _estimateSeconds(combos, symbols.length || 1),
+354	    warnSeconds: Number(cfg.warn_seconds) || ESTIMATE_DEFAULTS.warn_seconds,
+355	    hardSeconds: Number(cfg.hard_limit_seconds) ||
+356	      ESTIMATE_DEFAULTS.hard_limit_seconds,
+357	    maxCombos: Number(cfg.max_combinations) ||
+358	      ESTIMATE_DEFAULTS.max_combinations,
+359	  };
+360	}
+361	
+362	function _updateComboCount() {
+363	  const { total, badInput } = _computedCombos(strategies);
+364	  const symbols = _checkedValues('scan-symbols');
+365	  const timeframes = _checkedValues('scan-timeframes');
+366	  const tfCount = Math.max(1, timeframes.length);
+367	  const symCount = Math.max(1, symbols.length);
+368	  const maxCombos = (local.grids && local.grids.max_combinations) ||
+369	    ESTIMATE_DEFAULTS.max_combinations;
+370	  const el = $('scan-combo-count');
+371	  if (el) {
+372	    el.textContent = `Сгенерируется ${_fmtCount(total * symCount * tfCount)} комбинаций` +
+373	      ` (${strategies.length} стр. × ${symCount} симв. × ${tfCount} ТФ)` +
+374	      (badInput ? ' — есть некорректные значения' : '');
+375	    el.classList.toggle('scan-combo-over', total * symCount * tfCount > maxCombos);
+376	    el.classList.toggle('scan-combo-bad', badInput);
+377	  }
+378	  _updateEstimate(total, symCount, tfCount, badInput, maxCombos);
+379	}
+380	
+381	/* Подсказка рядом с кнопкой «Запустить»:
+382	   «Сгенерируется ~24 120 комбинаций (оценка ~30 мин)». Плюс предупреждения:
+383	   жёлтое (> 30 мин — спросим confirm перед запуском) и красное (> 4 ч —
+384	   объём слишком большой, кнопка «Запустить» disabled). */
+385	function _updateEstimate(total, symbolsCount, badInput, maxCombos) {
+386	  const el = $('scan-estimate');
+387	  const cfg = Object.assign({}, ESTIMATE_DEFAULTS, local.grids || {});
+388	  const seconds = _estimateSeconds(total, symbolsCount);
+389	  const warnSeconds = Number(cfg.warn_seconds) || ESTIMATE_DEFAULTS.warn_seconds;
+390	  const hardSeconds = Number(cfg.hard_limit_seconds) ||
+391	    ESTIMATE_DEFAULTS.hard_limit_seconds;
+392	  const over = total > maxCombos;
+393	  const tooLong = !over && seconds > hardSeconds;
+394	  const warn = !over && !tooLong && seconds > warnSeconds;
+395	  if (el) {
+396	    let msg = `Сгенерируется ~${_fmtCount(total)} комбинаций` +
+397	      ` (оценка ~${_formatDuration(seconds)})`;
+398	    if (over) {
+399	      msg += ` — больше лимита ${_fmtCount(maxCombos)}, сервер отклонит запуск`;
+400	    }
+401	    if (tooLong) {
+402	      msg += ' ❌ Слишком большой объём (>4ч). ' +
+403	        'Уменьшите символы/ТФ/стратегии.';
+404	    }
+405	    if (warn) {
+406	      msg += ` ⚠️ Прогон займёт ~${_formatDuration(seconds)}. ` +
+407	        'Убедитесь, что сервер не будет перезапущен.';
+408	    }
+409	    if (badInput) msg += ' — есть некорректные значения';
+410	    el.textContent = msg;
+411	    el.classList.toggle('scan-estimate-over', over || tooLong);
+412	    el.classList.toggle('scan-estimate-warn', warn);
+413	  }
+414	  // Кнопка активна для warn-прогона (подтверждение спрашивается в confirm)
+415	  // и disabled, если сервер всё равно отклонит запуск (лимит/4 часа).
+416	  const runBtn = $('scan-run-btn');
+417	  if (runBtn && !local.running) runBtn.disabled = over || tooLong;
+418	}
+419	
+420	export function toggleScanConfig() {
+421	  const panel = $('scan-config-panel');
+422	  if (!panel) return;
+423	  const open = panel.style.display !== 'none';
+424	  panel.style.display = open ? 'none' : 'block';
+425	  const arrow = $('scan-config-arrow');
+426	  if (arrow) arrow.textContent = open ? '▸' : '▾';
+427	  if (!open) { _ensureGrids(); _updateComboCount(); }
+428	}
+429	
+430	export function resetScanConfig() {
+431	  if (!local.grids) return;
+432	  for (const inp of document.querySelectorAll('#scan-config-blocks input')) {
+433	    const meta = local.grids.strategies[inp.dataset.strategy];
+434	    const defaults = meta && meta.default_grid && meta.default_grid[inp.dataset.param];
+435	    inp.value = (defaults || []).join(', ');
+436	  }
+437	  _updateComboCount();
+438	}
+439	
+440	/* Свои гриды только для выбранных стратегий; пустые параметры
+441	   не передаются — сервер подставит дефолтные значения. */
+442	function _collectCustomGrids(strategies) {
+443	  const useCustom = $('scan-use-custom') && $('scan-use-custom').checked;
+444	  if (!useCustom) return null;
+445	  const grids = {};
+446	  for (const sid of strategies) {
+447	    const grid = {};
+448	    document.querySelectorAll(
+449	      `#scan-config-blocks input[data-strategy="${sid}"]`).forEach((inp) => {
+450	      const vals = _parseValues(inp.value, _limitsFor(inp.dataset.param));
+451	      if (vals.length) grid[inp.dataset.param] = vals;
+452	    });
+453	    if (Object.keys(grid).length) grids[sid] = grid;
+454	  }
+455	  return Object.keys(grids).length ? grids : null;
+456	}
+457	
+458	/* ---------------------------------------------------------------- прогресс */
+459	/* Прогресс: «Прогон 24 120 комбинаций • Обработано 300 • Осталось ~2 ч 15 мин»
+460	   (ETA приходит из SSE раз в SCAN_ETA_PUSH_EVERY комбинаций,
+461	   см. ai/scanner.py). */
+462	function _setProgress(done, total, etaSeconds) {
+463	  const wrap = $('scan-progress');
+464	  if (wrap) wrap.style.display = 'block';
+465	  const bar = $('scan-progress-bar');
+466	  if (bar) {
+467	    bar.style.width = total ? Math.min(100, (done / total) * 100) + '%' : '0%';
+468	  }
+469	  const text = $('scan-progress-text');
+470	  if (!text) return;
+471	  if (!total) { text.textContent = '0/…'; return; }
+472	  const eta = Number(etaSeconds);
+473	  const parts = [`Прогон ${_fmtCount(total)} комбинаций`];
+474	  if (done) parts.push(`Обработано ${_fmtCount(done)}`);
+475	  if (Number.isFinite(eta) && eta > 0) {
+476	    parts.push(`Осталось ~${_formatDuration(eta)}`);
+477	  }
+478	  text.textContent = parts.join(' • ');
+479	}
+480	
+481	/* SSE 'scan_progress': app_init.js делает window.__scanProgress =
+482	   updateScanProgress. Формат data: {run_id, done, total, current,
+483	   eta_seconds?}. */
+484	export function updateScanProgress(data) {
+485	  if (!data) return;
+486	  if (local.runId && data.run_id !== local.runId) return; // чужой прогон
+487	  if (!local.runId && data.run_id) local.runId = data.run_id; // SSE обогнал POST
+488	  const total = Number(data.total) || 0;
+489	  const done = Number(data.done) || 0;
+490	  // ETA приходит не в каждом событии — запоминаем последнюю, чтобы текст
+491	  // не «мигал» между событиями без eta_seconds.
+492	  const eta = Number(data.eta_seconds);
+493	  if (Number.isFinite(eta) && eta > 0) local.etaSeconds = eta;
+494	  _setProgress(done, total, done >= total ? null : local.etaSeconds);
+495	  if (total && done >= total) _finishScan();
+496	}
+497	
+498	function _stopPoll() {
+499	  if (local.pollTimer) { clearInterval(local.pollTimer); local.pollTimer = null; }
+500	}
+501	
+502	function _startPoll() {
+503	  _stopPoll();
+504	  local.pollTimer = setInterval(async () => {
+505	    if (!local.running || !local.runId) { _stopPoll(); return; }
+506	    try {
+507	      const resp = await fetch(`/api/scan/${local.runId}?min_sharpe=-999`);
+508	      if (!resp.ok) return;
+509	      const data = await resp.json();
+510	      if (data.stats && data.stats.finished) {
+511	        _finishScan();
+512	      } else if (data.stats && data.stats.eta_seconds) {
+513	        // Фолбэк ETA: SSE-событие потерялось — берём оценку из stats.
+514	        local.etaSeconds = data.stats.eta_seconds;
+515	        _setProgress(Number(data.stats.done) || 0,
+516	          Number(data.stats.total) || 0, local.etaSeconds);
+517	      }
+518	    } catch { /* сеть могла моргнуть — повторим на следующем тике */ }
+519	  }, POLL_MS);
+520	}
+521	
+522	function _finishScan() {
+523	  _stopPoll();
+524	  local.running = false;
+525	  const runBtn = $('scan-run-btn');
+526	  if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Запустить'; }
+527	  loadResults();
+528	}
+529	
+530	/* ----------------------------------------------------------------- запуск */
+531	export async function runScan() {
+532	  if (local.running) return;
+533	  const symbols = _checkedValues('scan-symbols');
+534	  const strategies = _checkedValues('scan-strategies');
+535	  const timeframes = _checkedValues('scan-timeframes');
+536	  _showError('');
+537	  if (!symbols.length) { _showError('Выберите хотя бы один символ'); return; }
+538	  if (!strategies.length) { _showError('Выберите хотя бы одну стратегию'); return; }
+539	  if (!timeframes.length) { _showError('Выберите хотя бы один таймфрейм'); return; }
+540	
+541	  // Защита от перегрузки до старта: больше лимита — не отправляем вовсе,
+542	  // оценка > 4 часов — тоже отказ (сервер вернёт 400), оценка > 30 минут —
+543	  // спрашиваем подтверждение. Те же проверки есть на сервере
+544	  // (POST /api/scan: 400 / 400 / 200 + warning).
+545	  const est = _currentEstimate();
+546	  if (est.combos > est.maxCombos) {
+547	    _showError(`Слишком много комбинаций: ${_fmtCount(est.combos)} > ` +
+548	      `${_fmtCount(est.maxCombos)}. Сократите символы, ТФ или стратегии.`);
+549	    return;
+550	  }
+551	  if (est.seconds > est.hardSeconds) {
+552	    _showError(`❌ Слишком большой объём: оценка ~` +
+553	      `${_formatDuration(est.seconds)} (>4ч). ` +
+554	      'Уменьшите символы/ТФ/стратегии или запустите по частям.');
+555	    return;
+556	  }
+557	  if (est.seconds > est.warnSeconds && !window.confirm(
+558	    `⚠️ Прогон займёт ~${_formatDuration(est.seconds)} ` +
+559	    `(${_fmtCount(est.combos)} комбинаций) — больше 30 минут. ` +
+560	    'Убедитесь, что сервер не будет перезапущен. Продолжить?')) {
+561	    return;
+562	  }
+563	
+564	  const runBtn = $('scan-run-btn');
+565	  if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Выполняется…'; }
+566	  local.running = true;
+567	  local.runId = null;
+568	  local.etaSeconds = null;
+569	  _stopPoll();
+570	  _setProgress(0, 0);
+571	  _hideResults();
+572	
+573	  try {
+574	    const body = { symbols, timeframes, strategies };
+575	    const customGrids = _collectCustomGrids(strategies);
+576	    if (customGrids) body.custom_grids = customGrids;
+577	    const resp = await fetch('/api/scan', {
+578	      method: 'POST',
+579	      headers: { 'Content-Type': 'application/json' },
+580	      body: JSON.stringify(body),
+581	    });
+582	    const data = await resp.json();
+583	    if (!resp.ok) throw new Error(data.error || 'HTTP ' + resp.status);
+584	    local.runId = data.run_id;
+585	    _setProgress(0, Number(data.total_combinations) || 0);
+586	    _startPoll();
+587	    if (data.warning) {
+588	      // Сервер подтвердил долгий прогон (estimated_seconds > warn_seconds):
+589	      // показываем жёлтое предупреждение рядом с кнопкой запуска.
+590	      const estEl = $('scan-estimate');
+591	      if (estEl) {
+592	        const human = data.estimated_human ||
+593	          _formatDuration(data.estimated_seconds);
+594	        estEl.textContent = `⚠️ Прогон займёт ~${human}. ` +
+595	          'Убедитесь, что сервер не будет перезапущен.';
+596	        estEl.classList.remove('scan-estimate-over');
+597	        estEl.classList.add('scan-estimate-warn');
+598	      }
+599	    }
+600	  } catch (e) {
+601	    _showError(e.message);
+602	    local.running = false;
+603	    _stopPoll();
+604	    if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Запустить'; }
+605	  }
+606	}
+607	
+608	function _hideResults() {
+609	  const block = $('scan-results-block');
+610	  if (block) block.style.display = 'none';
+611	  const warning = $('scan-warning');
+612	  if (warning) warning.style.display = 'none';
+613	  const empty = $('scan-empty');
+614	  if (empty) empty.style.display = 'none';
+615	  const box = $('scan-results');
+616	  if (box) box.innerHTML = '';
+617	  const hint = $('scan-hint');
+618	  if (hint) hint.style.display = 'none';
+619	}
+620	
+621	/* -------------------------------------------------------------- результаты */
+622	export async function loadResults() {
+623	  if (!local.runId) return;
+624	  const inp = $('scan-min-sharpe');
+625	  const parsed = inp ? parseFloat(inp.value) : NaN;
+626	  const minSharpe = Number.isFinite(parsed) ? parsed : 0;
+627	  let data;
+628	  try {
+629	    const resp = await fetch(`/api/scan/${local.runId}` +
+630	      `?min_sharpe=${encodeURIComponent(minSharpe)}`);
+631	    data = await resp.json();
+632	    if (!resp.ok) throw new Error(data.error || 'HTTP ' + resp.status);
+633	  } catch (e) {
+634	    _showError(e.message);
+635	    return;
+636	  }
+637	  const results = data.results || [];
+638	  const warning = $('scan-warning');
+639	  if (warning) {
+640	    warning.textContent = data.warning || '';
+641	    warning.style.display = data.warning ? 'block' : 'none';
+642	  }
+643	  const empty = $('scan-empty');
+644	  if (empty) {
+645	    empty.style.display = (!data.warning && !results.length) ? 'block' : 'none';
+646	  }
+647	  const hint = $('scan-hint');
+648	  if (hint) hint.style.display = 'none';
+649	  const block = $('scan-results-block');
+650	  if (block) block.style.display = 'block';
+651	  /* Сортировка по умолчанию: stable -> weak -> overfit -> noise -> losing,
+652	     внутри группы — по combined_sharpe DESC. */
+653	  results.sort((a, b) =>
+654	    ((VERDICT_ORDER[a.verdict] ?? 9) - (VERDICT_ORDER[b.verdict] ?? 9)) ||
+655	    ((Number(b.combined_sharpe) || 0) - (Number(a.combined_sharpe) || 0)));
+656	  _renderResults(results);
+657	  _loadSummary();
+658	}
+659	
+660	/* ------------------------------------------------------------- форматтеры */
+661	function _fmtNum(v) {
+662	  const n = Number(v);
+663	  return v == null || !isFinite(n) ? '—' : n.toFixed(2);
+664	}
+665	
+666	function _fmtPct(v) {
+667	  const n = Number(v);
+668	  return v == null || !isFinite(n) ? '—' : (n * 100).toFixed(1) + '%';
+669	}
+670	
+671	function _fmtParams(params) {
+672	  const p = params || {};
+673	  const parts = Object.keys(p).map((k) => k + '=' + p[k]);
+674	  return parts.length ? parts.join(' ') : '—';
+675	}
+676	
+677	function _rowClass(cs) {
+678	  return cs >= 1.0 ? 'win' : cs >= 0 ? 'neutral' : 'lose';
+679	}
+680	
+681	function _detailLine(label, value) {
+682	  const line = document.createElement('div');
+683	  line.className = 'scan-detail-line';
+684	  const l = document.createElement('span');
+685	  l.textContent = label;
+686	  const v = document.createElement('span');
+687	  v.textContent = value;
+688	  line.append(l, v);
+689	  return line;
+690	}
+691	
+692	function _detailCol(title, m) {
+693	  const col = document.createElement('div');
+694	  col.className = 'scan-detail-col';
+695	  const t = document.createElement('div');
+696	  t.className = 'scan-detail-title';
+697	  t.textContent = title;
+698	  col.appendChild(t);
+699	  const metrics = m || {};
+700	  col.appendChild(_detailLine('Sharpe', _fmtNum(metrics.sharpe)));
+701	  col.appendChild(_detailLine('Winrate', _fmtPct(metrics.winrate)));
+702	  col.appendChild(_detailLine('Max DD', _fmtPct(metrics.max_dd)));
+703	  col.appendChild(_detailLine('Trades',
+704	    metrics.trades == null ? '—' : String(metrics.trades)));
+705	  col.appendChild(_detailLine('Profit factor',
+706	    metrics.profit_factor == null ? '—' : String(metrics.profit_factor)));
+707	  col.appendChild(_detailLine('Return', _fmtPct(metrics.total_return)));
+708	  return col;
+709	}
+710	
+711	function _renderResults(results) {
+712	  const box = $('scan-results');
+713	  if (!box) return;
+714	  box.innerHTML = '';
+715	  for (const r of results) {
+716	    const train = r.train || {};
+717	    const test = r.test || {};
+718	    const cs = Number(r.combined_sharpe) || 0;
+719	    const row = document.createElement('div');
+720	    row.className = 'scan-result-row ' + _rowClass(cs);
+721	    const trades = test.trades != null ? test.trades : r.total_trades;
+722	    const cells = [
+723	      r.symbol || '—',
+724	      r.strategy_label || r.strategy || '—',
+725	      _fmtParams(r.params),
+726	      _fmtNum(cs),
+727	      _fmtNum(train.sharpe),
+728	      _fmtNum(test.sharpe),
+729	      trades == null ? '—' : String(trades),
+730	      VERDICT_TEXT[r.verdict] || (r.verdict || '—'),
+731	    ];
+732	    cells.forEach((txt, idx) => {
+733	      const s = document.createElement('span');
+734	      s.textContent = txt;
+735	      if (idx === 7 && r.verdict) {
+736	        s.className = 'scan-verdict-cell scan-verdict-' + r.verdict;
+737	        s.title = r.verdict_text || '';
+738	      }
+739	      row.appendChild(s);
+740	    });
+741	    /* Клик по строке — детали: train/test метрики прогона. */
+742	    const details = document.createElement('div');
+743	    details.className = 'scan-result-details';
+744	    details.style.display = 'none';
+745	    const grid = document.createElement('div');
+746	    grid.className = 'scan-detail-grid';
+747	    grid.append(_detailCol('Train (70%)', train), _detailCol('Test (30%)', test));
+748	    details.appendChild(grid);
+749	    row.addEventListener('click', () => {
+750	      const open = details.style.display !== 'none';
+751	      details.style.display = open ? 'none' : 'block';
+752	      row.classList.toggle('expanded', !open);
+753	    });
+754	    box.append(row, details);
+755	  }
+756	}
+757	
+758	/* ---------------------------------------------------------------- экспорт */
+759	export function exportCsv() {
+760	  if (!local.runId) { _showError('Сначала запустите скан'); return; }
+761	  const a = document.createElement('a');
+762	  a.href = `/api/scan/${local.runId}/export.csv`;
+763	  a.download = `scan_${local.runId}.csv`;
+764	  document.body.appendChild(a);
+765	  a.click();
+766	  a.remove();
+767	}
+768	
+769	/* ------------------------------------------------- сводка и отчёт (ЧАСТЬ C) */
+770	async function _loadSummary() {
+771	  if (!local.runId) return;
+772	  try {
+773	    const resp = await fetch(`/api/scan/${local.runId}/summary`);
+774	    if (!resp.ok) return;
+775	    local.summary = await resp.json();
+776	    renderSummary(local.summary);
+777	  } catch { /* сводка не критична — таблица уже отрисована */ }
+778	}
+779	
+780	export function renderSummary(summary) {
+781	  const wrap = $('scan-summary-wrap');
+782	  const box = $('scan-summary');
+783	  if (!wrap || !box || !summary) return;
+784	  box.innerHTML = '';
+785	  const bv = summary.by_verdict || {};
+786	  const rows = [
+787	    ['📊 Обработано', `${summary.kept} из ${summary.total_combinations}`, null],
+788	    ['✅ Стабильных', String(bv.stable || 0), 'scan-verdict-stable'],
+789	    ['⚠️ Переоптимизация', String(bv.overfit || 0), 'scan-verdict-overfit'],
+790	    ['🎲 Мало сделок', String(bv.noise || 0), 'scan-verdict-noise'],
+791	    ['❌ Убыточных', String(bv.losing || 0), 'scan-verdict-losing'],
+792	  ];
+793	  if (bv.weak) rows.push(['🟡 Слабых', String(bv.weak), 'scan-verdict-weak']);
+794	  for (const [label, value, cls] of rows) {
+795	    const row = document.createElement('div');
+796	    row.className = 'scan-summary-row';
+797	    const l = document.createElement('span');
+798	    l.textContent = label;
+799	    const v = document.createElement('span');
+800	    v.textContent = value;
+801	    if (cls) v.className = cls;
+802	    row.append(l, v);
+803	    box.appendChild(row);
+804	  }
+805	  const recs = summary.recommendations || [];
+806	  if (recs.length) {
+807	    const ul = document.createElement('ul');
+808	    ul.className = 'scan-summary-recs';
+809	    for (const rec of recs) {
+810	      const li = document.createElement('li');
+811	      li.textContent = rec;
+812	      ul.appendChild(li);
+813	    }
+814	    box.appendChild(ul);
+815	  }
+816	  wrap.style.display = 'block';
+817	}
+818	
+819	/* Сводка -> буфер обмена как человекочитаемый markdown. */
+820	export function copySummaryReport() {
+821	  const s = local.summary;
+822	  if (!s) { _showError('Нет отчёта — сначала запустите скан'); return; }
+823	  const bv = s.by_verdict || {};
+824	  const lines = ['## Сканер стратегий — отчёт', '',
+825	    `Обработано: ${s.kept} из ${s.total_combinations}`];
+826	  if (bv.stable) lines.push(`- ✅ Стабильных: ${bv.stable}`);
+827	  if (bv.overfit) lines.push(`- ⚠️ Переоптимизация: ${bv.overfit}`);
+828	  if (bv.noise) lines.push(`- 🎲 Мало сделок: ${bv.noise}`);
+829	  if (bv.losing) lines.push(`- ❌ Убыточных: ${bv.losing}`);
+830	  if (bv.weak) lines.push(`- 🟡 Слабых: ${bv.weak}`);
+831	  const recs = s.recommendations || [];
+832	  if (recs.length) {
+833	    lines.push('', '### Рекомендации');
+834	    for (const rec of recs) lines.push(`- ${rec}`);
+835	  }
+836	  const md = lines.join('\n');
+837	  const btn = $('scan-copy-btn');
+838	  const finish = (ok) => {
+839	    if (btn) btn.textContent = ok ? '✅ Скопировано' : '📋 Отчёт для копирования';
+840	    setTimeout(() => {
+841	      if (btn) btn.textContent = '📋 Отчёт для копирования';
+842	    }, 1500);
+843	  };
+844	  const fallback = () => {
+845	    const ta = document.createElement('textarea');
+846	    ta.value = md;
+847	    ta.style.position = 'fixed';
+848	    ta.style.opacity = '0';
+849	    document.body.appendChild(ta);
+850	    ta.select();
+851	    let ok = false;
+852	    try { ok = document.execCommand('copy'); } catch { ok = false; }
+853	    ta.remove();
+854	    finish(ok);
+855	  };
+856	  if (navigator.clipboard && navigator.clipboard.writeText) {
+857	    navigator.clipboard.writeText(md).then(() => finish(true)).catch(fallback);
+858	  } else {
+859	    fallback();
+860	  }
+861	}

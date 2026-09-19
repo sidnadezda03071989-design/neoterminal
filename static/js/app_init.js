@@ -12,12 +12,87 @@ import { loadWatchlist, highlightActiveWatchlist, setSwitchSymbolHandler } from 
 import { toggleCommandPalette } from './ui/command_palette.js';
 import { bindHotkeys } from './ui/hotkeys.js';
 import { indMap, toggleIndicator } from './ui/indicators.js';
-import { openAlerts, closeAlerts, toggleAlerts, showAlertToast, createAlert } from './ui/alerts.js';
-import { toggleBacktest, closeBacktest, runBacktest } from './backtest.js';
+import { openAlerts, closeAlerts, showAlertToast, createAlert } from './ui/alerts.js';
+import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
+import { openScanner, closeScanner, runScan, loadResults, exportCsv,
+  updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
+  copySummaryReport } from './scanner.js';
 import { chart, candleSeries, container } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
 
 const $ = (id) => document.getElementById(id);
+
+/* ---------- Floating-панели (ЧАСТЬ C/D): открыта одна правая панель ---------- */
+function _isOpen(id) {
+  const p = $(id);
+  return !!p && p.style.display !== 'none';
+}
+
+/* Синхронизация active-состояния toggle-кнопок с состоянием панелей. */
+function _syncPanelButtons() {
+  const map = [
+    ['watchlist-toggle-btn', 'watchlist-panel'],
+    ['ai-toggle-btn', 'ai-panel'],
+    ['chat-toggle-btn', 'chat-panel'],
+    ['alerts-toggle-btn', 'alerts-panel'],
+    ['backtest-btn', 'backtest-panel'],
+    ['scanner-btn', 'scanner-panel'],
+  ];
+  for (const [btnId, panelId] of map) {
+    const btn = $(btnId);
+    if (btn) btn.classList.toggle('panel-active', _isOpen(panelId));
+  }
+}
+
+/* Закрыть AI, Chat, Alerts, Backtest — открыта только одна правая панель. */
+function _closeAllRightPanels() {
+  const ai = $('ai-panel');
+  if (ai) ai.style.display = 'none';
+  closeChat();
+  closeAlerts();
+  closeBacktest();
+  closeScanner();
+}
+
+function toggleWatchlistPanel() {
+  const panel = $('watchlist-panel');
+  if (!panel) return;
+  panel.style.display = _isOpen('watchlist-panel') ? 'none' : 'block';
+}
+
+function toggleAIPanel() {
+  if (_isOpen('ai-panel')) {
+    $('ai-panel').style.display = 'none';
+    return;
+  }
+  _closeAllRightPanels();
+  const panel = $('ai-panel');
+  if (panel) panel.style.display = 'flex';
+}
+
+function toggleChatPanel() {
+  if (_isOpen('chat-panel')) { closeChat(); return; }
+  _closeAllRightPanels();
+  openChat();
+}
+
+function toggleAlertsPanel() {
+  if (_isOpen('alerts-panel')) { closeAlerts(); return; }
+  _closeAllRightPanels();
+  openAlerts();
+}
+
+function toggleBacktestPanel() {
+  if (_isOpen('backtest-panel')) { closeBacktest(); return; }
+  _closeAllRightPanels();
+  openBacktest();
+}
+
+function toggleScannerPanel() {
+  if (_isOpen('scanner-panel')) { closeScanner(); return; }
+  _closeAllRightPanels();
+  openScanner();
+}
 
 export function initDrawingsManager() {
   const dm = new DrawingsManager({
@@ -48,6 +123,9 @@ export function onSymbolOrTfChange() {
 }
 
 export function initUI() {
+  /* SSE-прогресс сканера: integration/sse.js дергает window.__scanProgress
+     (формат события scan_progress: {run_id, done, total, current}). */
+  window.__scanProgress = updateScanProgress;
   document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
     btn.addEventListener('click', () => setTool(btn.dataset.tool));
   });
@@ -110,11 +188,7 @@ export function initUI() {
   const aiBtn = $('ai-analysis-btn'); if (aiBtn) aiBtn.addEventListener('click', runAIAnalysis);
   const aiRef = $('ai-refresh-btn'); if (aiRef) aiRef.addEventListener('click', runAIAnalysis);
   const chatBtn = $('chat-toggle-btn');
-  if (chatBtn) chatBtn.addEventListener('click', () => {
-    const panel = $('chat-panel');
-    if (panel && panel.style.display === 'flex') closeChat();
-    else openChat();
-  });
+  if (chatBtn) chatBtn.addEventListener('click', toggleChatPanel);
   const chatClose = $('chat-close-btn'); if (chatClose) chatClose.addEventListener('click', closeChat);
   const chatSend = $('chat-send-btn'); if (chatSend) chatSend.addEventListener('click', sendChatMessage);
   const chatInp = $('chat-input');
@@ -122,7 +196,7 @@ export function initUI() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
   });
   const alBtn = $('alerts-toggle-btn');
-  if (alBtn) alBtn.addEventListener('click', toggleAlerts);
+  if (alBtn) alBtn.addEventListener('click', toggleAlertsPanel);
   const alClose = $('alerts-close-btn');
   if (alClose) alClose.addEventListener('click', closeAlerts);
   const alChan = $('alert-channel');
@@ -133,11 +207,31 @@ export function initUI() {
   const alCreate = $('alert-create-btn');
   if (alCreate) alCreate.addEventListener('click', createAlert);
   const btBtn = $('backtest-btn');
-  if (btBtn) btBtn.addEventListener('click', toggleBacktest);
+  if (btBtn) btBtn.addEventListener('click', toggleBacktestPanel);
   const btClose = $('bt-close-btn');
   if (btClose) btClose.addEventListener('click', closeBacktest);
   const btRun = $('bt-run-btn');
   if (btRun) btRun.addEventListener('click', runBacktest);
+  const scBtn = $('scanner-btn');
+  if (scBtn) scBtn.addEventListener('click', toggleScannerPanel);
+  const scClose = $('scanner-close-btn');
+  if (scClose) scClose.addEventListener('click', closeScanner);
+  const scRun = $('scan-run-btn');
+  if (scRun) scRun.addEventListener('click', runScan);
+  const scExport = $('scan-export-btn');
+  if (scExport) scExport.addEventListener('click', exportCsv);
+  const scMin = $('scan-min-sharpe');
+  if (scMin) scMin.addEventListener('change', loadResults);
+  const scCfg = $('scan-config-toggle');
+  if (scCfg) scCfg.addEventListener('click', toggleScanConfig);
+  const scCfgReset = $('scan-config-reset');
+  if (scCfgReset) scCfgReset.addEventListener('click', resetScanConfig);
+  // Чекбокс «Все стратегии»: отметить/снять все 12 (counter и оценка
+  // пересчитываются в scanner.js::_onSelectionChange).
+  const scAll = $('scan-all-strategies');
+  if (scAll) scAll.addEventListener('change', toggleAllStrategies);
+  const scCopy = $('scan-copy-btn');
+  if (scCopy) scCopy.addEventListener('click', copySummaryReport);
   const clr = $('clear-btn');
   if (clr) clr.addEventListener('click', () => {
     if (state.dm && confirmedDanger('Удалить все рисунки?')) state.dm.clearAll();
@@ -160,6 +254,19 @@ export function initUI() {
   }
   const cmdBtn = $('cmd-palette-btn');
   if (cmdBtn) cmdBtn.addEventListener('click', toggleCommandPalette);
+  const wlBtn = $('watchlist-toggle-btn');
+  if (wlBtn) wlBtn.addEventListener('click', toggleWatchlistPanel);
+  const aiPnlBtn = $('ai-toggle-btn');
+  if (aiPnlBtn) aiPnlBtn.addEventListener('click', toggleAIPanel);
+  /* Кнопки panel-active синхронизируются с любым изменением style панелей
+     (покрывает и command palette, и ✕-кнопки внутри панелей). */
+  const panelObserver = new MutationObserver(_syncPanelButtons);
+  for (const id of ['watchlist-panel', 'ai-panel', 'chat-panel',
+                    'alerts-panel', 'backtest-panel', 'scanner-panel']) {
+    const p = $(id);
+    if (p) panelObserver.observe(p, { attributes: true, attributeFilter: ['style'] });
+  }
+  _syncPanelButtons();
   setSymbolChangeHandler(onSymbolOrTfChange);
   setSwitchSymbolHandler(switchSymbol);
   bindHotkeys();

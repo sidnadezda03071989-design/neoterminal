@@ -21,9 +21,10 @@ def register_routes(app):
     from app_pkg.routes.alerts import bp as alerts_bp
     from app_pkg.routes.backtest import bp as backtest_bp
     from app_pkg.routes.metrics import bp as infra_bp
+    from app_pkg.routes.scanner import bp as scanner_bp
 
     for bp in (main_bp, data_bp, chart_ctx_bp, drawings_bp, ai_bp,
-               chat_bp, alerts_bp, backtest_bp, infra_bp):
+               chat_bp, alerts_bp, backtest_bp, infra_bp, scanner_bp):
         app.register_blueprint(bp)
 
     @app.before_request

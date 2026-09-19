@@ -37,6 +37,8 @@
         <span id="status-text">подключение…</span>
       </span>
       <button id="ai-analysis-btn" class="btn ai-btn">🧠 AI Analysis</button>
+      <button id="watchlist-toggle-btn" class="btn">📋 Watchlist</button>
+      <button id="ai-toggle-btn" class="btn">🧠 AI</button>
       <button id="chat-toggle-btn" class="btn">💬 Чат</button>
       <button id="alerts-toggle-btn" class="btn">🔔 Алерты</button>
       <button id="cmd-palette-btn" class="btn ghost-btn">⌘ K</button>
@@ -77,11 +79,12 @@
     </div>
   </div>
   <button class="btn" id="backtest-btn">📊 Бэктест</button>
+  <button class="btn" id="scanner-btn">🔍 Сканер</button>
   <span class="hint" id="tool-hint">Курсор</span>
 </div>
 
   <div class="main-area">
-    <aside class="watchlist-panel" id="watchlist-panel">
+    <aside class="watchlist-panel" id="watchlist-panel" style="display:none">
       <div class="watchlist-header">Watchlist</div>
       <div class="watchlist-items" id="watchlist-items"></div>
     </aside>
@@ -92,7 +95,7 @@
         <div class="chart-spinner"></div>
       </div>
     </div>
-    <aside class="ai-panel" id="ai-panel">
+    <aside class="ai-panel" id="ai-panel" style="display:none">
       <div class="ai-panel-header">
         <span>🧠 AI</span>
         <button id="ai-refresh-btn" class="mini-btn">⟳</button>
@@ -209,6 +212,88 @@
         <canvas id="bt-equity-canvas" class="bt-equity-canvas"></canvas>
         <div class="bt-trades-title">Последние сделки</div>
         <div class="bt-trades" id="bt-trades"></div>
+      </div>
+    </aside>
+    <aside class="scanner-panel" id="scanner-panel" style="display:none">
+      <div class="scanner-panel-header">
+        <span>🔍 Сканер стратегий</span>
+        <button id="scanner-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="scan-form">
+        <span class="scan-form-label">Символы</span>
+        <div class="scan-checks" id="scan-symbols"></div>
+        <label for="scan-timeframes">Таймфреймы</label>
+        <div class="scan-timeframes-head">
+          <label class="scan-all-label" for="scan-all-timeframes">
+            <input type="checkbox" id="scan-all-timeframes">
+            <span class="scan-all-icon">✓</span>Все ТФ
+          </label>
+          <span class="scan-timeframes-count" id="scan-timeframes-count">
+            Выбрано: 0 ТФ
+          </span>
+        </div>
+        <div class="scan-checks scan-checks-timeframes" id="scan-timeframes"></div>
+        <div class="scan-strategies-head">
+          <span class="scan-form-label">Стратегии</span>
+          <label class="scan-all-label" for="scan-all-strategies">
+            <input type="checkbox" id="scan-all-strategies">
+            <span class="scan-all-icon">✓</span>Все стратегии
+          </label>
+          <span class="scan-strategies-count" id="scan-strategies-count">
+            Выбрано: 0 стратегий
+          </span>
+        </div>
+        <div class="scan-checks scan-checks-strategies"
+             id="scan-strategies"></div>
+        <div class="scan-run-row">
+          <span class="scan-estimate" id="scan-estimate"></span>
+          <button id="scan-run-btn" class="btn ai-btn">Запустить</button>
+        </div>
+      </div>
+      <div class="scan-config">
+        <button id="scan-config-toggle" class="scan-config-header" type="button">
+          <span>⚙️ Настроить параметры</span><span id="scan-config-arrow">▸</span>
+        </button>
+        <div class="scan-config-panel" id="scan-config-panel" style="display:none">
+          <label class="scan-config-use">
+            <input type="checkbox" id="scan-use-custom"> Использовать свои параметры
+          </label>
+          <div id="scan-config-blocks"></div>
+          <div class="scan-config-footer">
+            <button id="scan-config-reset" class="btn" type="button">Сбросить к дефолту</button>
+            <span id="scan-combo-count"></span>
+          </div>
+        </div>
+      </div>
+      <div class="scan-progress" id="scan-progress" style="display:none">
+        <div class="conf-track"><div id="scan-progress-bar"></div></div>
+        <span id="scan-progress-text">0/…</span>
+      </div>
+      <div class="scan-error" id="scan-error" style="display:none"></div>
+      <div class="scan-hint" id="scan-hint">
+        Запустите скан, чтобы увидеть результаты.
+      </div>
+      <div class="scan-results-block" id="scan-results-block" style="display:none">
+        <div class="scan-summary" id="scan-summary-wrap" style="display:none">
+          <div id="scan-summary"></div>
+          <button id="scan-copy-btn" class="btn" type="button">📋 Отчёт для копирования</button>
+        </div>
+        <div class="scan-filter-row">
+          <label for="scan-min-sharpe">min_sharpe</label>
+          <input type="number" id="scan-min-sharpe" value="0" step="0.1">
+          <button id="scan-export-btn" class="btn">📥 Экспорт CSV</button>
+        </div>
+        <div class="scan-warning" id="scan-warning" style="display:none"></div>
+        <div class="scan-empty" id="scan-empty" style="display:none">
+          Нет результатов по фильтру. Попробуйте снизить min_sharpe
+          или сменить стратегию.
+        </div>
+        <div class="scan-results-head scan-result-row">
+          <span>Symbol</span><span>ТФ</span><span>Стратегия</span><span>Params</span>
+          <span>Comb</span><span>Train</span><span>Test</span>
+          <span>Trades</span><span>Вердикт</span>
+        </div>
+        <div class="scan-results" id="scan-results"></div>
       </div>
     </aside>
   </div>

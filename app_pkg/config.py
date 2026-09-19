@@ -53,6 +53,192 @@ REPLAY_LIMIT = 20000
 # быстрее и без обрывов; больше можно запросить селектом #bt-limit в панели.
 BACKTEST_LIMIT = 5000
 
+# --------------------------------------------- grid-search сканер стратегий
+# Лимит комбинаций параметров на один запуск сканера. Если декартово
+# произведение грида больше — берётся случайная подвыборка (seed=42,
+# воспроизводимый набор при одинаковом гриде), см. app_pkg/ai/scanner.py.
+# 5000 -> 50000: масштабный прогон на несколько часов — 10 символов × 6 ТФ ×
+# 12 стратегий (402 комбинации на символ/ТФ) = 24 120, плюс запас на
+# кастомные гриды (10 символов × 402 × запас).
+SCAN_MAX_COMBINATIONS = 50000
+# Число потоков ThreadPoolExecutor для параллельного прогона бэктестов.
+SCAN_WORKERS = 8
+# --- оценка длительности прогона (ответ POST /api/scan, подсказка в UI) ---
+# Средняя длительность одного бэктеста комбинации (сек) и фетча данных на
+# один символ (сек). Оценка: combos × sec_combo / SCAN_WORKERS + symbols × 15.
+SCAN_SECONDS_PER_COMBINATION = 0.3
+SCAN_FETCH_SECONDS_PER_SYMBOL = 15.0
+# Прогон дольше 30 минут -> warning в ответе POST /api/scan (UI: жёлтый
+# блок + confirm перед запуском). 3600 -> 1800: длинные прогоны стали
+# реальной ситуацией, предупреждать нужно раньше.
+SCAN_WARN_SECONDS = 1800
+# Жёсткий потолок длительности прогона: оценка больше 4 часов -> 400
+# (скан не стартует, объём надо сократить или запускать по частям).
+SCAN_HARD_LIMIT_SECONDS = 14400
+# Каждые N обработанных комбинаций SSE-событие scan_progress шлёт eta_seconds.
+SCAN_ETA_PUSH_EVERY = 10
+# Доля истории на train; остаток (30%) — out-of-sample test.
+SCAN_TRAIN_SPLIT = 0.7
+# Глубина истории скана в днях от текущего момента (1 год вместо 2):
+# 730 дней давали 20k+ свечей и ~40 сек фетча на символ.
+SCAN_PERIOD_DAYS = 365
+# Потолок свечей на символ в сканере: 5000 вместо 20000 (REPLAY_LIMIT) —
+# ×4 меньше данных на фетч и на каждый бэктест комбинации.
+SCAN_REPLAY_LIMIT = 5000
+# Минимум сделок хотя бы на одном из окон (train/test): комбинации с
+# меньшим числом отбрасываются («повезло на 3 сделках» не проходит).
+SCAN_MIN_TRADES = 30
+# Сколько лучших комбинаций возвращает GET /api/scan/<run_id>.
+SCAN_TOP_N = 20
+# Общий грид Bollinger-стратегий (bb_reversal / bb_breakout): 4 × 3 = 12.
+_BB_GRID = {"period": [15, 20, 25, 30], "std": [1.5, 2.0, 2.5]}
+
+# Сетки параметров по стратегиям (ключи = ключи STRATEGY_MAP в
+# app_pkg/ai/backtest.py). Число комбинаций стратегии — в комментарии,
+# сумма по всем 12 стратегиям = 402 на символ и один ТФ.
+SCAN_GRIDS = {
+    "sma_cross": {
+        "fast": [5, 8, 10, 12, 15, 20, 25, 30, 40, 50],
+        "slow": [20, 30, 40, 50, 60, 80, 100, 150, 200]
+    },
+    "rsi_reversal": {
+        "period": [7, 10, 14, 18, 21],
+        "oversold": [20, 25, 30, 35],
+        "overbought": [65, 70, 75, 80]
+    },
+    "macd_cross": {
+        "fast": [8, 10, 12, 15],
+        "slow": [20, 24, 26, 30],
+        "signal": [5, 7, 9, 12]
+    },
+    "ema_cross": {                          # 5 × 5 = 25
+        "fast": [8, 10, 12, 15, 20],
+        "slow": [20, 26, 30, 40, 50]
+    },
+    "bb_reversal": dict(_BB_GRID),          # 4 × 3 = 12
+    "bb_breakout": dict(_BB_GRID),          # 4 × 3 = 12 (тот же грид)
+    "supertrend": {                         # 4 × 4 = 16
+        "period": [7, 10, 14, 20],
+        "multiplier": [2.0, 2.5, 3.0, 3.5]
+    },
+    "stoch_reversal": {                     # 3 × 2 × 3 × 3 = 54
+        "k_period": [10, 14, 21],
+        "d_period": [3, 5],
+        "oversold": [15, 20, 25],
+        "overbought": [75, 80, 85]
+    },
+    "stoch_cross": {                        # 3 × 2 = 6
+        "k_period": [10, 14, 21],
+        "d_period": [3, 5]
+    },
+    "cci_reversal": {                       # 3 × 3 × 3 = 27
+        "period": [14, 20, 30],
+        "oversold": [-150, -100, -80],      # свои зоны CCI (не 0..100)
+        "overbought": [80, 100, 150]
+    },
+    "vwap_reversal": {                      # 4
+        "vwap_threshold": [0.003, 0.005, 0.008, 0.012]  # доля отклонения
+    },
+    "adx_trend": {                          # 3 × 4 = 12
+        "period": [10, 14, 21],
+        "adx_threshold": [20, 25, 30, 35]   # порог силы тренда
+    }
+}
+# Доступные стратегии сканера: человекочитаемая метка, список параметров и
+# дефолтный грид (custom_grids из POST /api/scan мержатся поверх дефолта).
+SCAN_ALLOWED_STRATEGIES = {
+    "sma_cross": {
+        "label": "SMA Cross",
+        "params": ["fast", "slow"],
+        "default_grid": SCAN_GRIDS["sma_cross"],
+    },
+    "rsi_reversal": {
+        "label": "RSI Reversal",
+        "params": ["period", "oversold", "overbought"],
+        "default_grid": SCAN_GRIDS["rsi_reversal"],
+    },
+    "macd_cross": {
+        "label": "MACD",
+        "params": ["fast", "slow", "signal"],
+        "default_grid": SCAN_GRIDS["macd_cross"],
+    },
+    "ema_cross": {
+        "label": "EMA Cross",
+        "params": ["fast", "slow"],
+        "default_grid": SCAN_GRIDS["ema_cross"],
+    },
+    "bb_reversal": {
+        "label": "BB Reversal",
+        "params": ["period", "std"],
+        "default_grid": SCAN_GRIDS["bb_reversal"],
+    },
+    "bb_breakout": {
+        "label": "BB Breakout",
+        "params": ["period", "std"],
+        "default_grid": SCAN_GRIDS["bb_breakout"],
+    },
+    "supertrend": {
+        "label": "Supertrend Follow",
+        "params": ["period", "multiplier"],
+        "default_grid": SCAN_GRIDS["supertrend"],
+    },
+    "stoch_reversal": {
+        "label": "Stoch Reversal",
+        "params": ["k_period", "d_period", "oversold", "overbought"],
+        "default_grid": SCAN_GRIDS["stoch_reversal"],
+    },
+    "stoch_cross": {
+        "label": "Stoch Cross",
+        "params": ["k_period", "d_period"],
+        "default_grid": SCAN_GRIDS["stoch_cross"],
+    },
+    "cci_reversal": {
+        "label": "CCI Reversal",
+        "params": ["period", "oversold", "overbought"],
+        "default_grid": SCAN_GRIDS["cci_reversal"],
+    },
+    "vwap_reversal": {
+        "label": "VWAP Reversal",
+        "params": ["vwap_threshold"],
+        "default_grid": SCAN_GRIDS["vwap_reversal"],
+    },
+    "adx_trend": {
+        "label": "ADX Trend",
+        "params": ["period", "adx_threshold"],
+        "default_grid": SCAN_GRIDS["adx_trend"],
+    },
+}
+# Разумные пределы значений параметров (валидация custom_grids). Границы
+# с плавающей точкой (std / multiplier / vwap_threshold) разрешают дробные
+# значения — см. app_pkg/routes/scanner.py::_validate_custom_grids.
+SCAN_PARAM_LIMITS = {
+    "fast": (2, 200),
+    "slow": (2, 300),
+    "signal": (2, 50),
+    "period": (2, 50),
+    # oversold/overbought общие для RSI/Stoch (5..50 / 50..95) и CCI
+    # (-150..-80 / 80..150) — границы расширены под оба случая.
+    "oversold": (-200, 50),
+    "overbought": (50, 200),
+    "std": (0.5, 4.0),              # Bollinger: ширина канала в σ
+    "multiplier": (1.0, 5.0),       # Supertrend: множитель ATR
+    "k_period": (5, 30),            # Stoch: период %K
+    "d_period": (2, 10),            # Stoch: период %D
+    "adx_threshold": (10, 50),      # ADX Trend: порог силы тренда
+    "vwap_threshold": (0.001, 0.05),  # VWAP: доля отклонения от VWAP
+}
+# Максимум значений в одном параметре custom grid (20 -> 30: расширенные
+# гриды новых стратегий, напр. stoch_reversal 3×3×3).
+SCAN_MAX_CUSTOM_VALUES = 30
+# Таймфреймы сканера (5m добавлен первым). Один прогон может идти по
+# НЕСКОЛЬКИМ ТФ сразу (body.timeframes в POST /api/scan): объём считается
+# как symbols × timeframes × Σ combos, поэтому лимит SCAN_MAX_COMBINATIONS
+# расходуется быстрее — см. app_pkg/ai/scanner.py::plan_totals.
+SCAN_TIMEFRAMES = ["5m", "15m", "1H", "4H", "1D"]
+# ТФ по умолчанию в UI сканера (чекбоксы #scan-timeframes):
+# отдаётся фронту в GET /api/scan/grids как default_timeframes.
+SCAN_DEFAULT_TIMEFRAMES = ["15m", "1H"]
+
 # ------------------------------------------------------------- каталоги
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -82,6 +268,18 @@ CONTEXT_CACHE_TTL = 45.0
 VERDICT_CACHE_TTL = 10.0
 CONTEXT_TF_LIMITS = {"1m": 60, "5m": 60, "15m": 60, "1H": 80, "4H": 100, "1D": 150}
 CONTEXT_WORKERS = 6
+# --- Токен-диета контекста (см. app_pkg/ai/context.py) ---
+# Главный ТФ: последние N свечей полностью, старше — строка-сводка.
+CONTEXT_CANDLES_MAIN = 100
+# Второстепенные ТФ: только последние N свечей.
+CONTEXT_CANDLES_OTHER = 20
+# Хвост значений каждого индикатора (вместо единственного последнего).
+CONTEXT_INDICATOR_TAIL = 10
+# Максимум рисунков в одном AI-ответе.
+CONTEXT_DRAWINGS_MAX = 3
+# ТФ, которые не тащим в секции Candles, если main_tf их «перекрывает»
+# (при main=15m минутки/пятиминутки — шум). В Trends остаются все ТФ.
+CONTEXT_SKIP_TF = ("1m", "5m")
 
 # ------------------------------------------------------------- алерты
 ALERT_CHECK_INTERVAL_SECONDS = 10.0
@@ -231,8 +429,21 @@ ALERTS_HISTORY = 2
 LAST_BAR_HISTORY = 200
 CHAT_HISTORY_LIMIT = 20
 # Сколько последних сообщений помнить как контекст беседы (уходит в промпт).
-CHAT_MEMORY_MESSAGES = 10
-MAX_AI_DRAWABLES = 5
+CHAT_MEMORY_MESSAGES = 5
+# Обрезка старых сообщений чата в промпте: первые 150 + "..." + последние 40.
+CHAT_MESSAGE_MAX_CHARS = 200
+# Максимум рисунков в одном AI-ответе (токен-диета: было 5).
+MAX_AI_DRAWABLES = 3
+
+# --------------------------------------------- лимиты токенов LLM (токен-диета)
+# max_tokens ответа модели: analysis-запросы и chat отдельно.
+LLM_MAX_TOKENS_ANALYSIS = 800   # было 2000
+LLM_MAX_TOKENS_CHAT = 400       # было 2000
+# Обрезка reason в нормализации ответа (было 500).
+LLM_REASON_MAX_CHARS = 250
+# TTL кеша ответов LLM (сек): повторный analysis-запрос с тем же контекстом
+# (та же последняя свеча) в течение TTL идёт из кеша, без похода в сеть.
+LLM_RESPONSE_CACHE_TTL = 300
 AI_MAX_CANDLES_BY_TF = {"1m": 50, "5m": 100, "15m": 150, "1H": 200, "4H": 120, "1D": 80}
 
 # ------------------------------------------------------------- метрики

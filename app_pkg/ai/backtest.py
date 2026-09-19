@@ -5,19 +5,32 @@ import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
+import pandas as pd
 
 from app_pkg import config, utils
 from app_pkg.data.fetch import get_replay_df
-from app_pkg.indicators import compute_indicators
+from app_pkg.indicators import _supertrend, compute_indicators, rsi_wilder
 
 log = logging.getLogger(__name__)
 
 
 class BacktestStrategy(ABC):
-    """База стратегии: next() возвращает {"action": "BUY"|"SELL", "price"}."""
+    """База стратегии: next() возвращает {"action": "BUY"|"SELL", "price"}.
 
-    def __init__(self, params=None):
+    params приходят из grid-search сканера (SCAN_GRIDS) или /api/backtest.
+    df — опциональный DataFrame: если передан, все производные серии
+    (rolling/ewm/RSI) предрасчитываются в _precompute() ОДИН раз ДО цикла
+    по барам, и next() только читает готовые numpy-массивы (O(1) на бар).
+    """
+
+    def __init__(self, params=None, df=None):
         self.params = params or {}
+        if df is not None:
+            self._precompute(df)
+
+    def _precompute(self, df):
+        """Предрасчёт производных серий под свои params; переопределяется."""
+        pass
 
     @abstractmethod
     def next(self, candles, ind, i, position, cash, equity_log):
@@ -25,62 +38,475 @@ class BacktestStrategy(ABC):
 
 
 class SMACross(BacktestStrategy):
-    """SMA20 x SMA50 cross."""
+    """Пересечение SMA fast x SMA slow (дефолт 20/50)."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.fast = self.params.get("fast", 20)
+        self.slow = self.params.get("slow", 50)
+        self.sma_fast = None
+        self.sma_slow = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        """SMA fast/slow — по одному rolling на весь df.
+
+        Раньше rolling считался при первом next() и читался через
+        pandas .iloc на каждый бар — O(n) обращений к Series; теперь
+        серия один раз конвертируется в numpy-массив.
+        """
+        closes = df["close"]
+        self.sma_fast = closes.rolling(self.fast).mean().to_numpy()
+        self.sma_slow = closes.rolling(self.slow).mean().to_numpy()
 
     def next(self, candles, ind, i, position, cash, equity_log):
-        if i < 50:
+        if i < max(self.fast, self.slow):
             return None
-        sma20 = ind["sma20"].iloc[i]
-        sma50 = ind["sma50"].iloc[i]
-        sma20_1 = ind["sma20"].iloc[i - 1]
-        sma50_1 = ind["sma50"].iloc[i - 1]
-        if _isna(sma20) or _isna(sma50):
+        sma_fast_i = self.sma_fast[i]
+        sma_slow_i = self.sma_slow[i]
+        sma_fast_1 = self.sma_fast[i - 1]
+        sma_slow_1 = self.sma_slow[i - 1]
+        if _isna(sma_fast_i) or _isna(sma_slow_i) \
+                or _isna(sma_fast_1) or _isna(sma_slow_1):
             return None
         price = utils._clean(candles["close"].iloc[i])
         if price is None:
             return None
-        if not position and sma20 > sma50 and sma20_1 <= sma50_1:
+        if not position and sma_fast_i > sma_slow_i and sma_fast_1 <= sma_slow_1:
             return {"action": "BUY", "price": price}
-        if position and sma20 < sma50 and sma20_1 >= sma50_1:
+        if position and sma_fast_i < sma_slow_i and sma_fast_1 >= sma_slow_1:
             return {"action": "SELL", "price": price}
         return None
 
 
 class RSIReversal(BacktestStrategy):
-    """RSI < 30 — BUY, RSI > 70 — SELL."""
+    """RSI < oversold — BUY, RSI > overbought — SELL (дефолт 14/30/70)."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = self.params.get("period", 14)
+        self.oversold = self.params.get("oversold", 30)
+        self.overbought = self.params.get("overbought", 70)
+        self.rsi = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        """RSI Wilder с периодом из params — один раз на весь df."""
+        self.rsi = rsi_wilder(df["close"], self.period).to_numpy()
 
     def next(self, candles, ind, i, position, cash, equity_log):
-        if i < 14:
+        if i < max(self.period, 2):
             return None
-        rsi = utils._clean(ind["rsi"].iloc[i])
+        rsi_i = utils._clean(self.rsi[i])
         price = utils._clean(candles["close"].iloc[i])
-        if price is None or rsi is None:
+        if price is None or rsi_i is None:
             return None
-        if not position and rsi < 30:
+        if not position and rsi_i < self.oversold:
             return {"action": "BUY", "price": price}
-        if position and rsi > 70:
+        if position and rsi_i > self.overbought:
             return {"action": "SELL", "price": price}
         return None
 
 
 class MACDCross(BacktestStrategy):
-    """Пересечение MACD и signal-линии."""
+    """Пересечение MACD и signal-линии (дефолт 12/26/9)."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.fast = self.params.get("fast", 12)
+        self.slow = self.params.get("slow", 26)
+        self.signal = self.params.get("signal", 9)
+        self.macd = None
+        self.sig = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        """MACD-линия и signal — по одному ewm-расчёту на весь df."""
+        closes = df["close"]
+        ema_fast = closes.ewm(span=self.fast, adjust=False).mean()
+        ema_slow = closes.ewm(span=self.slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        self.macd = macd.to_numpy()
+        self.sig = macd.ewm(span=self.signal, adjust=False).mean().to_numpy()
 
     def next(self, candles, ind, i, position, cash, equity_log):
-        if i < 26:
+        if i < self.slow:
             return None
-        macd = utils._clean(ind["macd"].iloc[i])
-        sig = utils._clean(ind["macd_signal"].iloc[i])
-        macd_1 = utils._clean(ind["macd"].iloc[i - 1])
-        sig_1 = utils._clean(ind["macd_signal"].iloc[i - 1])
-        if macd is None or sig is None:
+        macd_i = utils._clean(self.macd[i])
+        sig_i = utils._clean(self.sig[i])
+        macd_1 = utils._clean(self.macd[i - 1])
+        sig_1 = utils._clean(self.sig[i - 1])
+        if macd_i is None or sig_i is None:
             return None
         price = utils._clean(candles["close"].iloc[i])
         if price is None:
             return None
-        if not position and macd > sig and macd_1 <= sig_1:
+        if not position and macd_i > sig_i and macd_1 <= sig_1:
             return {"action": "BUY", "price": price}
-        if position and macd < sig and macd_1 >= sig_1:
+        if position and macd_i < sig_i and macd_1 >= sig_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+# ------------------------------------------------- общие хелперы предрасчёта
+def _bb_arrays(df, period, std_mult):
+    """Bollinger Bands (up, low) + closes как numpy-массивы длины df."""
+    closes = pd.Series(df["close"], dtype="float64")
+    sma = closes.rolling(period).mean()
+    sd = closes.rolling(period).std()
+    up = (sma + std_mult * sd).to_numpy()
+    low = (sma - std_mult * sd).to_numpy()
+    return up, low, closes.to_numpy()
+
+
+def _stoch_arrays(df, k_period, d_period):
+    """Stochastic %K/%D как numpy-массивы (np.nan при нулевом диапазоне)."""
+    closes = pd.Series(df["close"], dtype="float64")
+    lows = pd.Series(df["low"], dtype="float64")
+    highs = pd.Series(df["high"], dtype="float64")
+    low_k = lows.rolling(k_period).min()
+    high_k = highs.rolling(k_period).max()
+    rng = (high_k - low_k).replace(0, np.nan)
+    k = 100.0 * (closes - low_k) / rng
+    d = k.rolling(d_period).mean()
+    return k.to_numpy(), d.to_numpy()
+
+
+class EMACross(BacktestStrategy):
+    """Пересечение EMA fast x EMA slow (дефолт 12/26)."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.fast = int(self.params.get("fast", 12))
+        self.slow = int(self.params.get("slow", 26))
+        self.ema_fast = None
+        self.ema_slow = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        closes = pd.Series(df["close"], dtype="float64")
+        self.ema_fast = closes.ewm(
+            span=self.fast, adjust=False).mean().to_numpy()
+        self.ema_slow = closes.ewm(
+            span=self.slow, adjust=False).mean().to_numpy()
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < max(self.fast, self.slow):
+            return None
+        f_i, s_i = self.ema_fast[i], self.ema_slow[i]
+        f_1, s_1 = self.ema_fast[i - 1], self.ema_slow[i - 1]
+        if _isna(f_i) or _isna(s_i) or _isna(f_1) or _isna(s_1):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and f_i > s_i and f_1 <= s_1:
+            return {"action": "BUY", "price": price}
+        if position and f_i < s_i and f_1 >= s_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class BollingerReversal(BacktestStrategy):
+    """Mean reversion: BUY у нижней границы BB, SELL у верхней."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = int(self.params.get("period", 20))
+        self.std_mult = float(self.params.get("std", 2.0))
+        self.bb_up = None
+        self.bb_low = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        self.bb_up, self.bb_low, _ = _bb_arrays(df, self.period, self.std_mult)
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < self.period:
+            return None
+        up_i, low_i = self.bb_up[i], self.bb_low[i]
+        if _isna(up_i) or _isna(low_i):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and price <= low_i:
+            return {"action": "BUY", "price": price}
+        if position and price >= up_i:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class BollingerBreakout(BacktestStrategy):
+    """Trend following: BUY на пробое верхней границы BB, SELL — нижней."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = int(self.params.get("period", 20))
+        self.std_mult = float(self.params.get("std", 2.0))
+        self.bb_up = None
+        self.bb_low = None
+        self.closes = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        self.bb_up, self.bb_low, self.closes = _bb_arrays(
+            df, self.period, self.std_mult)
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < self.period:
+            return None
+        up_i, up_1 = self.bb_up[i], self.bb_up[i - 1]
+        low_i, low_1 = self.bb_low[i], self.bb_low[i - 1]
+        close_i, close_1 = self.closes[i], self.closes[i - 1]
+        if (_isna(up_i) or _isna(up_1) or _isna(low_i) or _isna(low_1)
+                or _isna(close_i) or _isna(close_1)):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and close_i > up_i and close_1 <= up_1:
+            return {"action": "BUY", "price": price}
+        if position and close_i < low_i and close_1 >= low_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class SupertrendFollow(BacktestStrategy):
+    """Следование за Supertrend: BUY при пробое линии вверх, SELL — вниз."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = int(self.params.get("period", 10))
+        self.multiplier = float(self.params.get("multiplier", 3.0))
+        self.st = None
+        self.closes = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        # _supertrend приватная, но это единственный способ учесть кастомные
+        # period/multiplier: compute_indicators хардкодит 10/3.0.
+        self.st = _supertrend(
+            df["high"].astype(float), df["low"].astype(float),
+            df["close"].astype(float), self.period, self.multiplier).to_numpy()
+        self.closes = pd.Series(df["close"], dtype="float64").to_numpy()
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < max(self.period, 1):
+            return None
+        st_i, st_1 = self.st[i], self.st[i - 1]
+        close_i, close_1 = self.closes[i], self.closes[i - 1]
+        if _isna(st_i) or _isna(st_1) or _isna(close_i) or _isna(close_1):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        # Смена направления = цена пересекла линию st. При переходе тренда
+        # вверх линия ПАДАЕТ с upper на lower band (st_i < st_1), поэтому
+        # BUY — пересечение close снизу вверх при скачке линии вниз.
+        if not position and st_i < st_1 and close_1 < st_1 and close_i > st_i:
+            return {"action": "BUY", "price": price}
+        if position and st_i > st_1 and close_1 > st_1 and close_i < st_i:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class StochasticReversal(BacktestStrategy):
+    """Отбой от зон: BUY из перепроданности с разворотом %K вверх,
+    SELL из перекупленности с разворотом вниз."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.k_period = int(self.params.get("k_period", 14))
+        self.d_period = int(self.params.get("d_period", 3))
+        self.oversold = self.params.get("oversold", 20)
+        self.overbought = self.params.get("overbought", 80)
+        self.k = None
+        self.d = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        self.k, self.d = _stoch_arrays(df, self.k_period, self.d_period)
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < self.k_period + 1:
+            return None
+        k_i, k_1 = self.k[i], self.k[i - 1]
+        if _isna(k_i) or _isna(k_1):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and k_i < self.oversold and k_i > k_1:
+            return {"action": "BUY", "price": price}
+        if position and k_i > self.overbought and k_i < k_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class StochasticCross(BacktestStrategy):
+    """Пересечение %K и %D: BUY при пересечении вверх, SELL — вниз."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.k_period = int(self.params.get("k_period", 14))
+        self.d_period = int(self.params.get("d_period", 3))
+        self.k = None
+        self.d = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        self.k, self.d = _stoch_arrays(df, self.k_period, self.d_period)
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < self.k_period + self.d_period + 1:
+            return None
+        k_i, d_i = self.k[i], self.d[i]
+        k_1, d_1 = self.k[i - 1], self.d[i - 1]
+        if _isna(k_i) or _isna(d_i) or _isna(k_1) or _isna(d_1):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and k_i > d_i and k_1 <= d_1:
+            return {"action": "BUY", "price": price}
+        if position and k_i < d_i and k_1 >= d_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class CCIReversal(BacktestStrategy):
+    """Отбой от уровней CCI: BUY из зоны ниже oversold с разворотом вверх,
+    SELL из зоны выше overbought с разворотом вниз."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = int(self.params.get("period", 20))
+        self.oversold = self.params.get("oversold", -100)
+        self.overbought = self.params.get("overbought", 100)
+        self.cci = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        tp = (high + low + close) / 3.0
+        tp_sma = tp.rolling(self.period).mean()
+        md = tp.rolling(self.period).apply(
+            lambda x: float(np.mean(np.abs(x - np.mean(x)))), raw=True)
+        md = md.replace(0, np.nan)  # md == 0 -> NaN, как в compute_indicators
+        self.cci = ((tp - tp_sma) / (0.015 * md)).to_numpy()
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < self.period + 1:
+            return None
+        cci_i, cci_1 = self.cci[i], self.cci[i - 1]
+        if _isna(cci_i) or _isna(cci_1):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and cci_i < self.oversold and cci_i > cci_1:
+            return {"action": "BUY", "price": price}
+        if position and cci_i > self.overbought and cci_i < cci_1:
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class VWAPReversal(BacktestStrategy):
+    """Mean reversion от VWAP: BUY при отклонении ниже -threshold,
+    SELL при отклонении выше +threshold."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        # threshold — legacy-имя (панель бэктеста), vwap_threshold — ключ
+        # грида сканера (config.SCAN_GRIDS); поддержаны оба.
+        self.threshold = float(self.params.get(
+            "vwap_threshold", self.params.get("threshold", 0.005)))
+        self.vwap = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        tp = (df["high"].astype(float) + df["low"].astype(float)
+              + df["close"].astype(float)) / 3.0
+        vol = df["volume"].astype(float)
+        vwap = (tp * vol).cumsum() / vol.cumsum().replace(0, np.nan)
+        self.vwap = vwap.to_numpy()
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < 1:
+            return None
+        vwap_i = self.vwap[i]
+        if _isna(vwap_i):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and price < vwap_i * (1.0 - self.threshold):
+            return {"action": "BUY", "price": price}
+        if position and price > vwap_i * (1.0 + self.threshold):
+            return {"action": "SELL", "price": price}
+        return None
+
+
+class ADXTrend(BacktestStrategy):
+    """Трендовая по ADX + DI: BUY при сильном тренде вверх (+DI > -DI),
+    SELL при тренде вниз. ADX берётся из compute_indicators (период 14),
+    +DI/-DI считаются здесь по Wilder с кастомным периодом."""
+
+    def __init__(self, params=None, df=None):
+        self.params = params or {}
+        self.period = int(self.params.get("period", 14))
+        # threshold — legacy-имя (панель бэктеста), adx_threshold — ключ
+        # грида сканера (config.SCAN_GRIDS); поддержаны оба.
+        self.threshold = float(self.params.get(
+            "adx_threshold", self.params.get("threshold", 25)))
+        self.plus_di = None
+        self.minus_di = None
+        self.adx = None
+        super().__init__(params, df)
+
+    def _precompute(self, df):
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        up = high.diff()
+        down = -low.diff()
+        plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0),
+                            index=high.index)
+        minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0),
+                             index=high.index)
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / self.period, adjust=False).mean()
+
+        def _wilder(s):
+            return s.ewm(alpha=1.0 / self.period, adjust=False).mean()
+
+        self.plus_di = (100.0 * _wilder(plus_dm) / atr).to_numpy()
+        self.minus_di = (100.0 * _wilder(minus_dm) / atr).to_numpy()
+        self.adx = compute_indicators(df)["adx"].to_numpy()
+
+    def next(self, candles, ind, i, position, cash, equity_log):
+        if i < max(self.period * 2, 2):
+            return None
+        adx_i = self.adx[i]
+        p_i, m_i = self.plus_di[i], self.minus_di[i]
+        p_1, m_1 = self.plus_di[i - 1], self.minus_di[i - 1]
+        if (_isna(adx_i) or _isna(p_i) or _isna(m_i)
+                or _isna(p_1) or _isna(m_1)):
+            return None
+        price = utils._clean(candles["close"].iloc[i])
+        if price is None:
+            return None
+        if not position and adx_i > self.threshold and p_i > m_i and p_1 <= m_1:
+            return {"action": "BUY", "price": price}
+        if position and adx_i > self.threshold and m_i > p_i and m_1 <= p_1:
             return {"action": "SELL", "price": price}
         return None
 
@@ -89,6 +515,15 @@ STRATEGY_MAP = {
     "sma_cross": SMACross,
     "rsi_reversal": RSIReversal,
     "macd_cross": MACDCross,
+    "ema_cross": EMACross,
+    "bb_reversal": BollingerReversal,
+    "bb_breakout": BollingerBreakout,
+    "supertrend": SupertrendFollow,
+    "stoch_reversal": StochasticReversal,
+    "stoch_cross": StochasticCross,
+    "cci_reversal": CCIReversal,
+    "vwap_reversal": VWAPReversal,
+    "adx_trend": ADXTrend,
 }
 
 
@@ -97,18 +532,27 @@ def _isna(v):
 
 
 def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
-                 initial_cash=10000, replay_limit=None):
-    """Запуск бэктеста; возвращает dict со статистикой и кривой эквити."""
+                 initial_cash=10000, replay_limit=None, df=None):
+    """Запуск бэктеста; возвращает dict со статистикой и кривой эквити.
+
+    df — опциональный готовый DataFrame (свечи): если передан, get_replay_df
+    НЕ вызывается. Grid-search сканер так передаёт заранее нарезанные
+    train/test окна — 90 комбинаций × 10 символов дают 10 запросов данных
+    вместо 900.
+    """
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if not strategy_cls:
         return {"error": f"Unknown strategy: {strategy_name}"}
 
-    limit = replay_limit or config.BACKTEST_LIMIT
-    df = get_replay_df(symbol, tf, from_sec, to_sec, limit=limit)
+    if df is None:
+        limit = replay_limit or config.BACKTEST_LIMIT
+        df = get_replay_df(symbol, tf, from_sec, to_sec, limit=limit)
     if df is None or len(df) < 50:
         return {"error": "Недостаточно данных"}
     ind = compute_indicators(df)
-    strategy = strategy_cls(params)
+    # df передаётся в конструктор: все rolling/ewm/RSI серии предрасчитываются
+    # один раз ДО цикла по барам (см. BacktestStrategy._precompute).
+    strategy = strategy_cls(params, df=df)
 
     cash = float(initial_cash)
     position = None
@@ -116,9 +560,15 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     trades = []
     entry_bar = 0
 
+    ts = utils.epoch_secs(df["timestamp"])  # один раз, не в цикле (O(n^2) иначе)
     for i in range(len(df)):
         price = utils._clean(df["close"].iloc[i])
-        tstamp = int(utils.epoch_secs(df["timestamp"])[i])
+        if price is None:
+            # NaN-бар (дырка в данных): нет валидной цены. Пропускаем бар
+            # целиком — иначе position["shares"] * None валит цикл, а
+            # оценка эквити по мусорной цене искажает sharpe/max_dd.
+            continue
+        tstamp = int(ts[i])
         sig = strategy.next(df, ind, i, position, cash, equity_log)
         if sig and sig["action"] == "BUY" and not position:
             shares = cash / sig["price"] if sig["price"] else 0
@@ -129,7 +579,7 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             value = position["shares"] * sig["price"]
             pnl = value - (position["shares"] * position["entry"])
             trades.append({
-                "entry_time": int(utils.epoch_secs(df["timestamp"])[entry_bar]),
+                "entry_time": int(ts[entry_bar]),
                 "exit_time": tstamp,
                 "entry_price": position["entry"],
                 "exit_price": sig["price"],

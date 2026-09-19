@@ -34,6 +34,7 @@ config.LLM_PROVIDER_ORDER (env LLM_PROVIDER_ORDER, по умолчанию
       недоступен нигде — RuntimeError("vision unavailable").
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -42,6 +43,8 @@ import re
 import requests
 from requests.adapters import HTTPAdapter
 
+from app_pkg import config
+from app_pkg.cache import get_cached_llm_response, set_cached_llm_response
 from app_pkg.config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
     DEEPSEEK_VISION_MODEL, DEEPSEEK_TIMEOUT, DEEPSEEK_MAX_TOKENS,
@@ -286,13 +289,28 @@ def _completion_content(resp):
     return message.get("content") or message.get("reasoning_content")
 
 
+def _purpose_max_tokens(purpose):
+    """max_tokens по purpose (токен-диета): analysis -> 800, chat -> 400.
+
+    None/неизвестное значение -> None (используется max_tokens провайдера).
+    """
+    if purpose == "analysis":
+        return config.LLM_MAX_TOKENS_ANALYSIS
+    if purpose == "chat":
+        return config.LLM_MAX_TOKENS_CHAT
+    return None
+
+
 def _call_with_fallback(system, messages=None, vision=False, user_text=None,
                         image_base64=None, api_key=None, base_url=None,
-                        model=None, timeout=None):
+                        model=None, timeout=None, purpose=None):
     """Единая точка запроса к LLM: перебор провайдеров fallback-цепочки.
 
     vision=False -> текстовый POST {base}/chat/completions (_attempt_chat);
     vision=True  -> multimodal (_attempt_vision: system + text + image_url).
+
+    purpose ("analysis"|"chat") задаёт max_tokens ответа независимо от
+    провайдера (токен-диета); None -> max_tokens провайдера.
 
     Правила:
       * нет ключа / нет base_url или модели -> провайдер пропускается
@@ -343,7 +361,8 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
             else:
                 resp = _attempt_chat(cfg["base_url"], cfg["api_key"],
                                      prompt_model, system, messages,
-                                     cfg["max_tokens"], cfg["timeout"])
+                                     _purpose_max_tokens(purpose)
+                                     or cfg["max_tokens"], cfg["timeout"])
         except _NETWORK_ERRORS as exc:
             log.warning("provider %s failed (network: %s), fallback to %s",
                         name, exc, nxt)
@@ -370,19 +389,60 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
     return None
 
 
+def _llm_cache_parts(system, messages):
+    """(sha1-ключ, есть_ли_свеча) по system + messages + последняя свеча.
+
+    Время последней свечи вычисляется регэкспом по содержимому messages
+    (формат свечи: "[<unix_sec> ..." — компактный, или "[<unix_sec>,..."
+    — legacy). Ключ меняется только когда контекст обновился: новая
+    свеча -> новый ключ -> поход в сеть. Если свечей нет, кешировать
+    нельзя (chat/болтовня не должна залипать) — has_candle=False.
+    """
+    text = system + "".join(
+        str(m.get("content") or "") for m in messages if isinstance(m, dict))
+    last_candle = ""
+    for m in re.finditer(r"\[(\d{9,13})[ ,]", text):
+        last_candle = m.group(1)
+    key = hashlib.sha1((text + last_candle).encode("utf-8")).hexdigest()
+    return key, bool(last_candle)
+
+
 def _llm_request(system, messages, api_key=None, base_url=None,
-                 model=None, timeout=None):
+                 model=None, timeout=None, purpose="analysis"):
     """Текстовый запрос: цепочка qwen -> groq -> deepseek.
 
     Порядок — config.LLM_PROVIDER_ORDER. Явные креда (api_key/base_url/
     model/timeout) включают legacy-режим «один провайдер» (agents.py).
+    purpose ("analysis"|"chat") задаёт max_tokens (токен-диета: 800/400).
     Прочие ошибки: 429 -> RuntimeError("rate limit"); HTTP 400 после двух
     попыток (json-режим) -> HTTPError; иные >= 400 -> HTTPError.
     Возвращает content (или reasoning_content) модели, либо None.
+
+    Кеш (токен-диета): analysis-запросы без явных креда кешируются на
+    config.LLM_RESPONSE_CACHE_TTL сек — повторный запрос с тем же
+    контекстом (та же последняя свеча) идёт без сети. Chat не кешируется
+    (нужна свежесть беседы); legacy-режим (явные креда) тоже.
     """
-    return _call_with_fallback(system, messages, vision=False,
-                              api_key=api_key, base_url=base_url,
-                              model=model, timeout=timeout)
+    explicit = bool(api_key or base_url or model or timeout)
+    use_cache = (purpose == "analysis" and not explicit)
+    key = None
+    if use_cache:
+        key, has_candle = _llm_cache_parts(system, messages or [])
+        if not has_candle:
+            # Нет свечей в контексте — кешировать нечего (не analysis-контекст).
+            use_cache = False
+    if use_cache:
+        cached = get_cached_llm_response(key)
+        if cached is not None:
+            log.info("LLM response served from cache (key=%s...)",
+                     str(key)[:8])
+            return cached
+    result = _call_with_fallback(
+        system, messages, vision=False, api_key=api_key, base_url=base_url,
+        model=model, timeout=timeout, purpose=purpose)
+    if use_cache and key and result is not None:
+        set_cached_llm_response(key, result)
+    return result
 
 
 # Legacy-имя (старые импорты/тесты).

@@ -75,7 +75,8 @@ def test_replay_context_has_no_candles_after_upto(monkeypatch):
 
     ctx = build_multi_tf_context("BTCUSDT", "1H", upto)
 
-    rows = re.findall(r"\[(\d+),([\d.]*),([\d.]*),([\d.]*),([\d.]*),", ctx)
+    rows = re.findall(
+        r"\[(\d+) ([\d.]*) ([\d.]*) ([\d.]*) ([\d.]*) ", ctx)
     assert rows, "контекст не содержит ни одной свечи"
     assert max(int(r[0]) for r in rows) <= upto
     # Цены последних (будущих) свечей не утекли ни в свечи, ни в Trends.
@@ -92,7 +93,7 @@ def test_live_context_not_cut(monkeypatch):
 
     ctx = build_multi_tf_context("BTCUSDT", "1H")
 
-    times = [int(m.group(1)) for m in re.finditer(r"\[(\d+),", ctx)]
+    times = [int(m.group(1)) for m in re.finditer(r"\[(\d+) ", ctx)]
     assert times and max(times) == BASE_TS + (N - 1) * STEP
     assert "last_price=100.0" in ctx
 

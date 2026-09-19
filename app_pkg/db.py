@@ -99,6 +99,19 @@ def _init_db(conn) -> None:
             r_ratio REAL,
             created_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS scan_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT,              -- UUID запуска сканера
+            symbol TEXT, timeframe TEXT,
+            strategy TEXT,
+            params_json TEXT,         -- параметры комбинации
+            train_json TEXT,          -- метрики на train (70%)
+            test_json TEXT,           -- метрики на test (30%, out-of-sample)
+            combined_sharpe REAL,     -- min(train_sharpe, test_sharpe)
+            total_trades INTEGER,
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_run ON scan_results(run_id);
         """
     )
     conn.commit()
@@ -336,3 +349,59 @@ def db_commit() -> None:
     conn = _get_db()
     with _db_lock:
         conn.commit()
+
+
+# ------------------------------------------------------------------ scan
+def _row_to_scan_result(row) -> dict:
+    d = dict(row)
+    d["params"] = json.loads(d.pop("params_json") or "{}")
+    d["train"] = json.loads(d.pop("train_json") or "{}")
+    d["test"] = json.loads(d.pop("test_json") or "{}")
+    return d
+
+
+def db_save_scan_result(run_id, symbol, tf, strategy, params, train, test,
+                        combined_sharpe, total_trades) -> int:
+    """Сохраняет результат одной комбинации grid-search сканера."""
+    conn = _get_db()
+    with _db_lock:
+        cur = conn.execute(
+            "INSERT INTO scan_results (run_id, symbol, timeframe, strategy, "
+            "params_json, train_json, test_json, combined_sharpe, "
+            "total_trades, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id, symbol, tf, strategy,
+                json.dumps(params or {}, ensure_ascii=False),
+                json.dumps(train or {}, ensure_ascii=False),
+                json.dumps(test or {}, ensure_ascii=False),
+                combined_sharpe, total_trades, utils.now_iso(),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def db_get_scan_results(run_id, limit=None) -> list:
+    """Результаты прогона, топ по combined_sharpe (DESC).
+
+    limit по умолчанию — config.SCAN_TOP_N; для экспорта CSV передаётся
+    большой limit (все результаты).
+    """
+    limit = max(1, int(limit or config.SCAN_TOP_N))
+    conn = _get_db()
+    with _db_lock:
+        rows = conn.execute(
+            "SELECT * FROM scan_results WHERE run_id=? "
+            "ORDER BY combined_sharpe DESC, id ASC LIMIT ?",
+            (run_id, limit),
+        ).fetchall()
+    return [_row_to_scan_result(r) for r in rows]
+
+
+def db_clear_scan_run(run_id) -> int:
+    """Удаляет все результаты прогона (повторный запуск / чистка тестов)."""
+    conn = _get_db()
+    with _db_lock:
+        cur = conn.execute("DELETE FROM scan_results WHERE run_id=?", (run_id,))
+        conn.commit()
+        return cur.rowcount

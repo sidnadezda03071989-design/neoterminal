@@ -15,6 +15,11 @@ _CONTEXT_CACHE_LOCK = threading.Lock()
 _VERDICT_CACHE = {}
 _VERDICT_CACHE_LOCK = threading.Lock()
 
+# Кеш ответов LLM (токен-диета): повторный analysis-запрос с тем же
+# system/messages/последней свечой в пределах TTL идёт без похода в сеть.
+_LLM_RESPONSE_CACHE = {}
+_LLM_RESPONSE_CACHE_LOCK = threading.Lock()
+
 
 def _record(mtype, value, labels=None):
     """Записать метрику без хардкода констант (всё в config/metrics)."""
@@ -86,3 +91,14 @@ def invalidate_verdicts_for(symbol: str, timeframe: str) -> int:
         for k in stale:
             _VERDICT_CACHE.pop(k, None)
     return len(stale)
+
+
+# ---------------------------------------------------- ответы LLM (dieta)
+def get_cached_llm_response(key):
+    """Ответ LLM по ключу (sha1 system+messages+last_candle) или None."""
+    return _get(_LLM_RESPONSE_CACHE, _LLM_RESPONSE_CACHE_LOCK, key,
+                config.LLM_RESPONSE_CACHE_TTL, cache_name="llm_response")
+
+
+def set_cached_llm_response(key, value) -> None:
+    _set(_LLM_RESPONSE_CACHE, _LLM_RESPONSE_CACHE_LOCK, key, value)

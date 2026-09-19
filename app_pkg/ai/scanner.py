@@ -1,0 +1,339 @@
+# -*- coding: utf-8 -*-
+"""Grid-search сканер стратегий.
+
+Перебирает декартово произведение параметров SCAN_GRIDS по каждой стратегии,
+прогоняет бэктест на train (70%) и out-of-sample test (30%) окнах, считает
+консервативную оценку combined_sharpe = min(train_sharpe, test_sharpe) и
+пишет результаты в SQLite. Прогресс уходит клиентам по SSE (scan_progress).
+"""
+
+import itertools
+import logging
+import random
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from app_pkg import config, db
+from app_pkg.ai.backtest import run_backtest
+from app_pkg.data.fetch import get_replay_df
+from app_pkg.ws import _ws_push
+
+log = logging.getLogger(__name__)
+
+# Статистика последних прогонов: run_id -> {"total", "kept", "filtered",
+# "finished"}. Нужна API (/api/scan), чтобы UI знал масштаб скана: сколько
+# комбинаций сгенерировано и сколько отсеялось по SCAN_MIN_TRADES.
+RUN_STATS = {}
+RUN_STATS_MAX = 50  # сколько последних прогонов держим в памяти
+
+
+def get_run_stats(run_id):
+    """Статистика прогона для API; {} если прогон неизвестен."""
+    return dict(RUN_STATS.get(run_id) or {})
+
+
+def _prune_run_stats():
+    """Чистим старые прогоны, чтобы RUN_STATS не рос бесконечно."""
+    if len(RUN_STATS) <= RUN_STATS_MAX:
+        return
+    for run_id in list(RUN_STATS)[:len(RUN_STATS) - RUN_STATS_MAX]:
+        RUN_STATS.pop(run_id, None)
+
+
+def _generate_combinations(strategy, grid):
+    """Декартово произведение параметров грида -> list[dict].
+
+    Если комбинаций больше SCAN_MAX_COMBINATIONS — случайная подвыборка
+    с seed=42 (воспроизводимый набор при одинаковом гриде).
+    """
+    keys = sorted(grid.keys())  # детерминированный порядок ключей
+    combos = [
+        dict(zip(keys, values))
+        for values in itertools.product(*(grid[k] for k in keys))
+    ]
+    if len(combos) > config.SCAN_MAX_COMBINATIONS:
+        combos = random.Random(42).sample(combos, config.SCAN_MAX_COMBINATIONS)
+    log.info("scan grid %s: %d combinations", strategy, len(combos))
+    return combos
+
+
+def _normalize_timeframes(timeframes):
+    """ТФ скана -> список. str (обратная совместимость) -> [str]; None -> дефолт.
+
+    Пустой список остаётся пустым: роут POST /api/scan отдаёт на него 400
+    («At least one timeframe required»), а run_scan просто ничего не считает.
+    """
+    if timeframes is None:
+        return [config.DEFAULT_TIMEFRAME]
+    if isinstance(timeframes, str):
+        return [timeframes]
+    return [str(tf) for tf in timeframes]
+
+
+def build_plan(strategies, grids=None, symbols=None, timeframes=None):
+    """План скана.
+
+    Без symbols/timeframes — раскладка гридов [(strategy, combos)] (объём
+    скана, перебор стратегий). С ними — плоский список ЗАДАЧ
+    [(symbol, tf, strategy, params)] в порядке прогона:
+    symbol -> tf -> strategy -> params (тот же порядок обходит run_scan).
+
+    grids — опциональное переопределение дефолтных гридов (custom_grids
+    из POST /api/scan): {strategy: {param: [values]}}; для стратегий без
+    переопределения используется config.SCAN_GRIDS.
+    """
+    custom = grids or {}
+    plan = []
+    for strategy in strategies:
+        grid = custom.get(strategy) or config.SCAN_GRIDS.get(strategy)
+        if not grid:
+            log.warning("scan: unknown strategy %s — пропуск", strategy)
+            continue
+        plan.append((strategy, _generate_combinations(strategy, grid)))
+    if symbols is None or timeframes is None:
+        return plan
+    # params — те же dict-объекты, что и в plan: плоский список задач не
+    # дублирует комбинации, только ссылки на них.
+    return [
+        (symbol, tf, strategy, params)
+        for symbol in symbols
+        for tf in timeframes
+        for strategy, combos in plan
+        for params in combos
+    ]
+
+
+def plan_totals(symbols, strategies, grids=None, timeframes=None):
+    """Сколько всего комбинаций будет прогнано (объём скана до старта).
+
+    total = symbols × timeframes × Σ combos_per_strategy. Без timeframes
+    (старые вызовы) считаем один ТФ.
+    """
+    return len(build_plan(strategies, grids, symbols=symbols,
+                          timeframes=_normalize_timeframes(timeframes)))
+
+
+def _metrics(res):
+    """Метрики прогона run_backtest -> плоский dict для JSON."""
+    trades = res.get("trades") or []
+    gross = sum(t.get("pnl", 0) for t in trades if t.get("pnl", 0) > 0)
+    loss = abs(sum(t.get("pnl", 0) for t in trades if t.get("pnl", 0) < 0))
+    if loss > 0:
+        profit_factor = round(gross / loss, 2)
+    else:
+        # run_backtest отдаёт только последние 20 сделок — убытков может
+        # не быть; бесконечность в JSON/SQLite не кладём, каппим.
+        profit_factor = 999.0 if gross > 0 else 0.0
+    return {
+        "sharpe": res.get("sharpe_ratio", 0),
+        "winrate": res.get("win_rate", 0),
+        "max_dd": res.get("max_drawdown", 0),
+        "total_return": res.get("total_return", 0),
+        "profit_factor": profit_factor,
+        "trades": res.get("total_trades", 0),
+    }
+
+
+def _run_single(symbol, tf, strategy_name, params, df_train, df_test):
+    """Один прогон комбинации: бэктест на train и на test.
+
+    df_train/df_test — готовые окна (уже нарезаны в run_scan): передаются
+    прямо в run_backtest(df=...), который НЕ ходит за данными. Так 90
+    комбинаций × 10 символов дают 10 запросов get_replay_df (по одному
+    на символ), а не 900. combined_sharpe = min(train, test) —
+    консервативная оценка: стратегия должна быть хороша на обоих окнах.
+
+    Отсев: меньше SCAN_MIN_TRADES сделок хотя бы на одном окне.
+    Возвращает dict или None.
+    """
+    if df_train is None or df_test is None \
+            or len(df_train) < 2 or len(df_test) < 2:
+        return None
+
+    res_train = run_backtest(symbol, tf, None, None,
+                             strategy_name, params, df=df_train)
+    res_test = run_backtest(symbol, tf, None, None,
+                            strategy_name, params, df=df_test)
+    if "error" in res_train or "error" in res_test:
+        log.warning("scan %s %s %s: бэктест вернул ошибку",
+                    symbol, strategy_name, params)
+        return None
+
+    m_train, m_test = _metrics(res_train), _metrics(res_test)
+    if min(m_train["trades"], m_test["trades"]) < config.SCAN_MIN_TRADES:
+        return None
+
+    return {
+        "params": params,
+        "train": m_train,
+        "test": m_test,
+        "combined_sharpe": min(m_train["sharpe"], m_test["sharpe"]),
+        "total_trades": m_train["trades"] + m_test["trades"],
+    }
+
+
+def _eta_seconds(start, done, total):
+    """Оценка оставшегося времени (сек) по средней скорости прогона.
+
+    rate = done / elapsed (комбинаций в секунду), eta = (total - done) / rate.
+    None, если ещё ничего не обработано или прогон уже закончился.
+    """
+    if not done or done >= total:
+        return None
+    elapsed = time.time() - start
+    if elapsed <= 0:
+        return None
+    rate = done / elapsed
+    if rate <= 0:
+        return None
+    return int(round((total - done) / rate))
+
+
+def _task_key(task):
+    """Ключ группировки задач скана (symbol, tf, strategy) — см. build_plan."""
+    return task[:3]
+
+
+def _push_progress(run_id, done, total, current, eta_seconds=None,
+                   tf_index=None, tf_total=None, current_tf=None,
+                   current_symbol=None):
+    """SSE-событие прогресса скана (прогресс не должен ломать сам скан).
+
+    eta_seconds добавляется не в каждое событие, а раз в
+    SCAN_ETA_PUSH_EVERY комбинаций (см. run_scan): UI показывает
+    «Осталось ~M мин».
+
+    ТФ-поля (при прогоне по нескольким ТФ): tf_index/tf_total — номер и
+    всего ТФ, current_tf/current_symbol — где скан сейчас:
+    {..., "tf_index": 2, "tf_total": 5, "current_tf": "1H",
+     "current_symbol": "USDCHF", "eta_seconds": 1800}.
+    """
+    try:
+        data = {"run_id": run_id, "done": done, "total": total,
+                "current": current}
+        if eta_seconds is not None:
+            data["eta_seconds"] = eta_seconds
+        if tf_total is not None:
+            data.update(tf_index=tf_index, tf_total=tf_total,
+                        current_tf=current_tf, current_symbol=current_symbol)
+        _ws_push("scan_progress", data)
+    except Exception:  # noqa: BLE001
+        log.exception("scan_progress push failed")
+
+
+def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
+    """Запуск скана: символы × ТФ × стратегии, перебор комбинаций.
+
+    timeframes — список ТФ (["15m", "1H"]); str принимается для обратной
+    совместимости (оборачивается в [str]) — см. _normalize_timeframes.
+
+    grids — опциональное переопределение дефолтных гридов (custom_grids).
+
+    Для каждой пары (symbol, tf): get_replay_df за SCAN_PERIOD_DAYS — ОДИН
+    запрос на пару (df переиспользуется всеми комбинациями через df=), сплит
+    70/30 по времени, далее ThreadPoolExecutor(SCAN_WORKERS) -> _run_single
+    параллельно; прошедшие отсев результаты -> db_save_scan_result (пишется
+    tf). Прогресс в SSE: {event: "scan_progress", data: {run_id, done, total,
+    current, tf_index, tf_total, current_tf, current_symbol}}; раз в
+    SCAN_ETA_PUSH_EVERY комбинаций в событие добавляется eta_seconds
+    (остаток прогона, сек). Возвращает run_id.
+    """
+    run_id = run_id or uuid.uuid4().hex
+    start = time.time()  # отсчёт для ETA прогресса (см. _eta_seconds)
+    to_sec = int(time.time())
+    from_sec = to_sec - config.SCAN_PERIOD_DAYS * 86400
+
+    # Объём для прогресса считаем заранее (генерация комбинаций дешёвая).
+    # Задачи — плоский план: symbol -> tf -> strategy -> params.
+    tfs = _normalize_timeframes(timeframes)
+    tasks = build_plan(strategies, grids, symbols=symbols, timeframes=tfs)
+    total = len(tasks)
+    tf_index_by_name = {tf: i for i, tf in enumerate(tfs, start=1)}
+    done = 0
+    kept = 0  # комбинаций прошло отсев по SCAN_MIN_TRADES
+    RUN_STATS[run_id] = {"total": total, "kept": 0, "filtered": 0,
+                         "finished": False, "tf_index": 0,
+                         "tf_total": len(tfs), "current_tf": None,
+                         "current_symbol": None}
+
+    df = None
+    df_key = None  # (symbol, tf) текущего df
+    # Пачки задач по (symbol, tf, strategy): порядок build_plan гарантирует,
+    # что groupby отдаёт непрерывные группы комбинаций одной стратегии.
+    for (symbol, tf, strategy), group in itertools.groupby(tasks,
+                                                           key=_task_key):
+        params_list = [task[3] for task in group]
+        tf_index = tf_index_by_name.get(tf, 1)
+        # Один запрос данных на пару (symbol, tf): готовый df переиспользуется
+        # во всех комбинациях (см. _run_single -> run_backtest(df=...)).
+        if df_key != (symbol, tf):
+            df = get_replay_df(symbol, tf, from_sec, to_sec,
+                               limit=config.SCAN_REPLAY_LIMIT)
+            df_key = (symbol, tf)
+        if df is None or df.empty or len(df) < 2:
+            log.warning("scan %s %s: нет данных, пропуск %d комбинаций",
+                        symbol, tf, len(params_list))
+            done += len(params_list)
+            _push_progress(run_id, done, total, f"{symbol}:{tf}:no-data",
+                           tf_index=tf_index, tf_total=len(tfs),
+                           current_tf=tf, current_symbol=symbol)
+            continue
+
+        # Сплит 70/30 по времени (df отсортирован по timestamp).
+        split = int(len(df) * config.SCAN_TRAIN_SPLIT)
+        df_train = df.iloc[:split].reset_index(drop=True)
+        df_test = df.iloc[split:].reset_index(drop=True)
+
+        with ThreadPoolExecutor(
+                max_workers=config.SCAN_WORKERS) as ex:
+            futures = {
+                ex.submit(_run_single, symbol, tf, strategy,
+                          params, df_train, df_test): params
+                for params in params_list
+            }
+            for fut in as_completed(futures):
+                params = futures[fut]
+                done += 1
+                try:
+                    res = fut.result()
+                except Exception:  # noqa: BLE001 — не роняем весь скан
+                    log.exception("scan: комбинация %s упала", params)
+                    res = None
+                if res:
+                    kept += 1
+                    db.db_save_scan_result(
+                        run_id, symbol, tf, strategy,
+                        res["params"], res["train"], res["test"],
+                        res["combined_sharpe"], res["total_trades"])
+                eta = None
+                if config.SCAN_ETA_PUSH_EVERY \
+                        and done % config.SCAN_ETA_PUSH_EVERY == 0:
+                    eta = _eta_seconds(start, done, total)
+                if eta is not None:
+                    # Дублируем ETA в RUN_STATS: поллинг-фолбэк UI
+                    # (GET /api/scan/<run_id>) видит его без SSE.
+                    RUN_STATS[run_id]["done"] = done
+                    RUN_STATS[run_id]["eta_seconds"] = eta
+                # ТФ-поля тоже в RUN_STATS: без SSE поллинг рисует тот же
+                # «ТФ i/n: tf · symbol».
+                RUN_STATS[run_id].update(
+                    tf_index=tf_index, tf_total=len(tfs), current_tf=tf,
+                    current_symbol=symbol)
+                _push_progress(run_id, done, total,
+                               f"{symbol}:{tf}:{strategy}:{params}",
+                               eta_seconds=eta, tf_index=tf_index,
+                               tf_total=len(tfs), current_tf=tf,
+                               current_symbol=symbol)
+
+    _push_progress(run_id, total, total, None,  # финальное событие
+                   tf_index=len(tfs), tf_total=len(tfs),
+                   current_tf=tfs[-1] if tfs else None, current_symbol=None)
+    # update, а не новый dict: сохраняем done/eta_seconds, накопленные в
+    # прогрессе (их читает поллинг-фолбэк UI, GET /api/scan/<run_id> -> stats).
+    stats = RUN_STATS.get(run_id) or {}
+    stats.update({"total": total, "kept": kept, "filtered": total - kept,
+                  "finished": True})
+    RUN_STATS[run_id] = stats
+    _prune_run_stats()
+    return run_id
