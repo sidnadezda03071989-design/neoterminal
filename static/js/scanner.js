@@ -871,6 +871,15 @@ async function _showTradesForRow(row, btn) {
     const data = await resp.json();
 
     const trades = data.trades_full || [];
+    const metrics = data.metrics || {};
+    const totalTrades = metrics.total_trades != null ? metrics.total_trades : trades.length;
+    console.log('trades received:', trades.length,
+      'trades_used:', data.candles_used,
+      'range:', data.bars_from, '→', data.bars_to);
+    if (trades.length < totalTrades) {
+      console.warn(`WARN: total_trades=${totalTrades} but trades_full.length=${trades.length}`);
+    }
+
     if (trades.length === 0) {
       console.warn('Нет сделок для', symbol, timeframe, strategy);
       btn.textContent = '⚠ Нет сделок';

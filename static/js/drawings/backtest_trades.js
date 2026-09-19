@@ -8,11 +8,13 @@ export class BacktestTradesRenderer {
     this.candlesRef = candlesRef || (() => []);
     this.trades = [];
     this.primitive = null;
+    this._warnedSkipped = false;
   }
 
   render(trades) {
     this.clear();
     this.trades = Array.isArray(trades) ? trades : [];
+    this._warnedSkipped = false;
     if (this.trades.length === 0) return;
 
     this.primitive = new BacktestTradesPrimitive(this.trades, this);
@@ -90,25 +92,38 @@ class BacktestTradesRendererImpl {
       const ctx = scope.context, size = scope.mediaSize;
       ctx.save();
       ctx.beginPath(); ctx.rect(0, 0, size.width, size.height); ctx.clip();
+      // ОБХОДИМ ВСЕ сделки без среза/break: на графике должно быть столько же
+      // блоков, сколько сделок в статистике. Сделки вне загруженных свечей
+      // (toPx == null) не рисуются, но НЕ отбрасываются из счётчика — блоки
+      // появятся при zoom-out (они просто вне текущего viewport).
+      let skipped = 0;
       for (const t of this.trades) {
-        this._drawTrade(ctx, size, t);
+        const pEntry = this.manager.toPx(t.entry_time, t.entry_price);
+        if (pEntry) {
+          this._drawTrade(ctx, size, t, pEntry);
+        } else {
+          skipped++;
+        }
+      }
+      if (skipped > 0 && !this.manager._warnedSkipped) {
+        this.manager._warnedSkipped = true;
+        console.warn(`BacktestTradesRenderer: ${skipped}/${this.trades.length} ` +
+          'сделок вне загруженных свечей (не отрисованы, счётчик не меняется; ' +
+          'появятся при zoom-out)');
       }
       ctx.restore();
     });
   }
 
-  _drawTrade(ctx, mediaSize, t) {
+  _drawTrade(ctx, mediaSize, t, pEntry) {
     const mgr = this.manager;
 
     // Точки входа и выхода
-    const pEntry = mgr.toPx(t.entry_time, t.entry_price);
     const pExit = t.exit_time ? mgr.toPx(t.exit_time, t.exit_price) : null;
     const pTp = t.tp_time ? mgr.toPx(t.tp_time, t.tp_price) : null;
     const pSl = t.sl_time ? mgr.toPx(t.sl_time, t.sl_price) : null;
     const pTpLine = mgr.toPx(t.entry_time, t.tp_price);   // для линии TP на всю ширину сделки
     const pSlLine = mgr.toPx(t.entry_time, t.sl_price);
-
-    if (!pEntry) return;
 
     const xEntry = pEntry.x;
     const xExit = pExit ? pExit.x : xEntry + 40;

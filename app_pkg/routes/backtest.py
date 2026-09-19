@@ -45,7 +45,7 @@ def api_backtest():
 
     result = run_backtest(symbol, tf, from_sec, to_sec,
                           strategy, params, initial_cash,
-                          replay_limit=body.get("limit"),
+                          replay_limit=None,  # полная история (BACKTEST_MAX_CANDLES)
                           tp_atr=tp_atr, sl_atr=sl_atr)
     if "error" in result:
         return jsonify(result), 400
@@ -64,8 +64,8 @@ def api_backtest_trades():
     """Прогнать backtest для конкретной комбинации и вернуть все сделки
     с TP/SL для отрисовки.
 
-    body: {symbol, timeframe, strategy, params, limit=1000}
-    Возвращает: {trades_full: [...], metrics: {...}}
+    body: {symbol, timeframe, strategy, params, limit=20000}
+    Возвращает: {trades_full: [...], metrics: {...}, candles_used}
     """
     body = request.get_json(silent=True) or {}
     symbol = str(body.get("symbol", "BTCUSDT")).upper()
@@ -73,7 +73,7 @@ def api_backtest_trades():
     strategy = str(body.get("strategy", "sma_cross"))
     params = body.get("params") or {}
     try:
-        limit = int(body.get("limit", 1000))
+        limit = int(body.get("limit", config.BACKTEST_MAX_CANDLES))
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid limit"}), 400
     if limit <= 0:
@@ -106,6 +106,9 @@ def api_backtest_trades():
         "strategy": strategy,
         "params": params,
         "trades_full": result.get("trades_full", []),
+        "candles_used": result.get("candles_used"),
+        "bars_from": result.get("bars_from"),
+        "bars_to": result.get("bars_to"),
         "metrics": {
             "total_return": result.get("total_return"),
             "sharpe_ratio": result.get("sharpe_ratio"),

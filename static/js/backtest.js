@@ -79,6 +79,30 @@ function _fmtNum(v) {
   return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
+/* 'YYYY-MM-DD' из unix-секунд (UTC), '—' если не число. */
+function _fmtDateShort(sec) {
+  if (sec == null || !Number.isFinite(+sec)) return '—';
+  const d = new Date(+sec * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate());
+}
+
+/* Статус после прогона: сколько свечей реально прогнано, диапазон, сделок. */
+function _showStatusSummary(data) {
+  const status = $('bt-status');
+  if (!status) return;
+  const used = data.candles_used;
+  const from = _fmtDateShort(data.bars_from);
+  const to = _fmtDateShort(data.bars_to);
+  const n = data.total_trades != null ? data.total_trades : (data.trades || []).length;
+  if (used != null && from !== '—' && to !== '—') {
+    status.textContent = `Прогнано ${used} свечей (${from} → ${to}), сделок: ${n}`;
+  } else {
+    status.textContent = `Сделок: ${n}`;
+  }
+  status.style.display = 'block';
+}
+
 /* ------------------------------------------------------------------- метрики */
 function _addMetric(box, label, value, cls) {
   const cell = document.createElement('div');
@@ -249,6 +273,7 @@ export async function runBacktest() {
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 90000); // защита от вечного ожидания
+  let ok = false;
   try {
     const resp = await fetch('/api/backtest', {
       method: 'POST',
@@ -272,6 +297,8 @@ export async function runBacktest() {
     if (results) results.style.display = 'block';
     _drawEquity(data.equity_curve || [], initialCash);
     _renderTrades(data.trades || []);
+    _showStatusSummary(data);
+    ok = true;
   } catch (e) {
     if (e.name === 'AbortError') {
       _showError('Превышено время ожидания (90с). Уменьшите период ' +
@@ -282,7 +309,7 @@ export async function runBacktest() {
     if (results) results.style.display = 'none';
   } finally {
     clearTimeout(timer);
-    if (status) status.style.display = 'none';
+    if (!ok && status) status.style.display = 'none';
     if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Запустить'; }
   }
 }

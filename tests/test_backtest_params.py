@@ -180,13 +180,20 @@ def test_sl_only_never_uses_tp():
 
 
 def test_trades_full_returns_every_trade():
-    """trades_full — все сделки, trades — последние 20 (обратная совместимость)."""
+    """trades/trades_full — ВСЕ сделки (без среза [-20:]) и метаданные прогона.
+
+    BLOCK-30: число блоков на графике должно совпадать с total_trades,
+    поэтому backend не режет список сделок.
+    """
     r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
                      {"fast": 5, "slow": 10}, df=_DF)
     assert "error" not in r
     assert r["total_trades"] == len(r["trades_full"])
-    assert r["trades"] == r["trades_full"][-20:]
+    assert r["trades"] == r["trades_full"]  # старый ключ — тоже полный список
     assert len(r["trades_full"]) > 0
+    assert r["candles_used"] == len(_DF)
+    assert r["bars_from"] == T - (N - 1) * STEP
+    assert r["bars_to"] == T
 
 
 # --------------------------------------------------------------- scanner flow

@@ -561,15 +561,21 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         return {"error": f"Unknown strategy: {strategy_name}"}
 
     if df is None:
-        limit = replay_limit or config.BACKTEST_LIMIT
+        if config.BACKTEST_USE_FULL_HISTORY:
+            # Полная история: максимум доступных свечей (20k крипта / 13k форекс),
+            # если вызывающий не передал свой replay_limit.
+            limit = replay_limit or config.BACKTEST_MAX_CANDLES
+        else:
+            limit = replay_limit or config.BACKTEST_LIMIT
         df = get_replay_df(symbol, tf, from_sec, to_sec, limit=limit)
     if df is None or len(df) < 50:
         return {"error": "Недостаточно данных"}
     # Жёсткий потолок свечей: MT5 может отдать куда больше запрошенного
     # лимита (напр. 23115 баров XAUUSD при limit=5000) — обрезаем до
-    # SCAN_REPLAY_LIMIT, чтобы бэктест не работал на мусорном объёме.
-    if len(df) > config.SCAN_REPLAY_LIMIT:
-        df = df.iloc[-config.SCAN_REPLAY_LIMIT:].reset_index(drop=True)
+    # BACKTEST_MAX_CANDLES (= MAX_DATA_LIMIT), но НЕ до SCAN_REPLAY_LIMIT:
+    # полноисторийный бэктест работает на 20k свечей.
+    if len(df) > config.BACKTEST_MAX_CANDLES:
+        df = df.iloc[-config.BACKTEST_MAX_CANDLES:].reset_index(drop=True)
     if ind is None or len(ind) != len(df):
         ind = compute_indicators(df)
     # df передаётся в конструктор: все rolling/ewm/RSI серии предрасчитываются
@@ -701,13 +707,22 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     wins = sum(1 for t in trades if t["pnl"] > 0)
     win_rate = wins / total_trades if total_trades else 0
 
+    # trades/trades_full — ПОЛНЫЙ список (без среза [-20:]): счётчик сделок в
+    # статистике должен совпадать с числом блоков на графике (BLOCK-30).
+    trades_out = trades
+    if config.BACKTEST_MAX_TRADES_RETURNED:
+        trades_out = trades[-config.BACKTEST_MAX_TRADES_RETURNED:]
+
     return {
         "total_return": round(total_return, 4),
         "sharpe_ratio": round(sharpe, 2),
         "max_drawdown": round(max_dd, 4),
         "total_trades": total_trades,
         "win_rate": round(win_rate, 2),
-        "trades": trades[-20:],
-        "trades_full": trades,
+        "trades": trades_out,
+        "trades_full": trades_out,
         "equity_curve": equity_log,
+        "candles_used": len(df),
+        "bars_from": int(ts[0]),
+        "bars_to": int(ts[-1]),
     }
