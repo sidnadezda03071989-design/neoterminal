@@ -2,6 +2,7 @@
 """Blueprint: /api/backtest, /api/backtest/strategies."""
 
 import logging
+import time
 
 from flask import Blueprint, jsonify, request
 
@@ -55,4 +56,61 @@ def api_backtest():
 def api_backtest_strategies():
     return jsonify({
         "strategies": {k: v.__name__ for k, v in STRATEGY_MAP.items()}
+    })
+
+
+@bp.route("/api/backtest/trades", methods=["POST"])
+def api_backtest_trades():
+    """Прогнать backtest для конкретной комбинации и вернуть все сделки
+    с TP/SL для отрисовки.
+
+    body: {symbol, timeframe, strategy, params, limit=1000}
+    Возвращает: {trades_full: [...], metrics: {...}}
+    """
+    body = request.get_json(silent=True) or {}
+    symbol = str(body.get("symbol", "BTCUSDT")).upper()
+    timeframe = str(body.get("timeframe", "15m"))
+    strategy = str(body.get("strategy", "sma_cross"))
+    params = body.get("params") or {}
+    try:
+        limit = int(body.get("limit", 1000))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid limit"}), 400
+    if limit <= 0:
+        return jsonify({"error": "limit must be > 0"}), 400
+
+    # Валидация symbol/timeframe/strategy — как в api_backtest
+    if symbol not in config.SYMBOLS:
+        return jsonify({"error": "Invalid symbol"}), 400
+    if timeframe not in config.TF_SECONDS:
+        return jsonify({"error": "Invalid timeframe"}), 400
+    if strategy not in STRATEGY_MAP:
+        return jsonify({"error": f"Unknown strategy: {strategy}"}), 400
+
+    # Прогон на последних N свечах (limit)
+    from_sec = int(time.time()) - limit * config.TF_SECONDS.get(timeframe, 60)
+    result = run_backtest(
+        symbol, timeframe,
+        from_sec=from_sec, to_sec=int(time.time()),
+        strategy_name=strategy, params=params,
+        initial_cash=10000,
+        replay_limit=limit,
+        tp_atr=2.0, sl_atr=1.0,
+    )
+    if "error" in result:
+        return jsonify(result), 400
+
+    return jsonify({
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy": strategy,
+        "params": params,
+        "trades_full": result.get("trades_full", []),
+        "metrics": {
+            "total_return": result.get("total_return"),
+            "sharpe_ratio": result.get("sharpe_ratio"),
+            "winrate": result.get("win_rate"),
+            "max_drawdown": result.get("max_drawdown"),
+            "total_trades": result.get("total_trades"),
+        },
     })

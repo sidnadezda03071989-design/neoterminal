@@ -109,6 +109,15 @@ function _initFormDefaults() {
   _updateComboCount();
 }
 
+/* Любое изменение выбора (чекбоксы символов/стратегий/ТФ или «Все…»)
+   пересчитывает counter, оценку комбинаций/времени и состояние
+   чекбоксов «Все». */
+function _onSelectionChange() {
+  _syncAllStrategies();
+  _syncAllTimeframes();
+  _updateComboCount();
+}
+
 /* Чекбокс «Все стратегии»: checked, если отмечены все 12; indeterminate,
    если отмечена только часть (см. templates/index.html). */
 function _syncAllStrategies() {
@@ -284,7 +293,7 @@ function _limitsFor(pname) {
    включён. Результат не умножает на символы/ТФ — это делают
    _updateComboCount/_currentEstimate, потому что для counter и estimate
    нужны понятные «стратегий × символов × ТФ». */
-function _computedCombos(strategies) {
+function _computedCombos(strategies, symbolsCount) {
   const useCustom = $('scan-use-custom') && $('scan-use-custom').checked;
   let total = 0;
   let badInput = false;
@@ -309,7 +318,7 @@ function _computedCombos(strategies) {
     }
     total += combos;
   }
-  return { total: total * Math.max(symbolsCount, 1), badInput };
+  return { total: total * Math.max(Number(symbolsCount) || 0, 1), badInput };
 }
 
 /* Оценка длительности прогона (сек) — формула та же, что в бэкенде
@@ -358,6 +367,7 @@ function _currentEstimate() {
 }
 
 function _updateComboCount() {
+  const strategies = _checkedValues('scan-strategies');
   const { total, badInput } = _computedCombos(strategies);
   const symbols = _checkedValues('scan-symbols');
   const timeframes = _checkedValues('scan-timeframes');
@@ -373,7 +383,7 @@ function _updateComboCount() {
     el.classList.toggle('scan-combo-over', total * symCount * tfCount > maxCombos);
     el.classList.toggle('scan-combo-bad', badInput);
   }
-  _updateEstimate(total, symCount, tfCount, badInput, maxCombos);
+  _updateEstimate(total, symCount, badInput, maxCombos);
 }
 
 /* Подсказка рядом с кнопкой «Запустить»:

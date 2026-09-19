@@ -19,6 +19,7 @@ import { openScanner, closeScanner, runScan, loadResults, exportCsv,
   copySummaryReport } from './scanner.js';
 import { chart, candleSeries, container } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
+import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -102,6 +103,15 @@ export function initDrawingsManager() {
     symbol: state.symbol, timeframe: state.timeframe,
   });
   state.dm = dm;
+}
+
+export function initBacktestRenderer() {
+  if (!chart || !candleSeries) return null;
+  const renderer = new BacktestTradesRenderer(
+    chart, candleSeries, container, () => state.activeCandles,
+  );
+  state.backtestRenderer = renderer;
+  return renderer;
 }
 
 export function onSymbolOrTfChange() {

@@ -622,12 +622,21 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             if exit_price is not None:
                 value = position["shares"] * exit_price
                 pnl = value - (position["shares"] * position["entry"])
+                entry_shares = position["shares"]
+                entry_price = position["entry"]
                 trades.append({
                     "entry_time": int(ts[entry_bar]),
                     "exit_time": tstamp,
-                    "entry_price": position["entry"],
+                    "entry_price": entry_price,
                     "exit_price": exit_price,
+                    "direction": "BUY",
+                    "tp_price": round(tp_price, 8) if tp_price is not None else None,
+                    "sl_price": round(sl_price, 8) if sl_price is not None else None,
+                    "tp_time": tstamp if exit_reason == "tp" else None,
+                    "sl_time": tstamp if exit_reason == "sl" else None,
                     "pnl": round(pnl, 2),
+                    "pnl_pct": round((pnl / (entry_shares * entry_price)) * 100, 4)
+                               if entry_shares and entry_price else 0,
                     "r_ratio": 0,
                     "exit_reason": exit_reason,
                 })
@@ -649,7 +658,14 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 "exit_time": tstamp,
                 "entry_price": position["entry"],
                 "exit_price": sig["price"],
+                "direction": "BUY",
+                "tp_price": None,
+                "sl_price": None,
+                "tp_time": None,
+                "sl_time": None,
                 "pnl": round(pnl, 2),
+                "pnl_pct": round((pnl / (position["shares"] * position["entry"])) * 100, 4)
+                           if position["shares"] and position["entry"] else 0,
                 "r_ratio": 0,
                 "exit_reason": "signal",
             })

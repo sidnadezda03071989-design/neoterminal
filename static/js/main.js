@@ -5,7 +5,7 @@ import { loadWatchlist } from './ui/watchlist.js';
 import { toggleCommandPalette } from './ui/command_palette.js';
 import { setTool } from './ui/toolbar.js';
 import { chart } from './chart/setup.js';
-import { initDrawingsManager, initUI } from './app_init.js';
+import { initDrawingsManager, initBacktestRenderer, initUI } from './app_init.js';
 import { showAlertToast } from './ui/alerts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
        const ts = $('timeframe-select'); if (ts) ts.value = state.timeframe;
   }
   initDrawingsManager();
+  initBacktestRenderer();
   initUI();
   loadLive(true).then(() => startLivePolling());
   loadWatchlist();
