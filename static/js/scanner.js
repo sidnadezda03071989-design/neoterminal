@@ -104,8 +104,6 @@ function _initFormDefaults() {
     local.wired = true;
   }
   _onSelectionChange();
-}
-
   _syncAllStrategies();
   _syncAllTimeframes();
   _updateComboCount();
