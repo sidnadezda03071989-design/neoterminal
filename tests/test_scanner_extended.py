@@ -80,7 +80,7 @@ def _mk_df(n=1000, end_ts=1_700_000_000, step=900):
 def _fake_run_backtest(train_sharpe=1.5, test_sharpe=0.8, trades=50):
     """Мок run_backtest: train-окно (len(df) > 500 из 1000) -> train_sharpe."""
     def fake(symbol, tf, from_sec, to_sec, strategy_name, params,
-             initial_cash=10000, replay_limit=None, df=None):
+             initial_cash=10000, replay_limit=None, df=None, ind=None):
         sharpe = train_sharpe if (df is not None and len(df) > 500) \
             else test_sharpe
         return {

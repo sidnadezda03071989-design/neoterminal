@@ -155,8 +155,10 @@ def test_run_scan_fetches_data_once_per_symbol(monkeypatch):
         # Комбинации с разными fast дают РАЗНЫЙ combined_sharpe
         sharpes = {r["combined_sharpe"] for r in rows}
         assert len(sharpes) > 1
-        # Прогресс дошёл до конца
-        assert events[-1][1] == {"run_id": run_id, "done": 10, "total": 10,
-                                 "current": None}
+        # Прогресс дошёл до конца (в финальном событии — ещё и ТФ-поля)
+        last = events[-1][1]
+        assert last["done"] == 10 and last["total"] == 10
+        assert last["current"] is None
+        assert last["tf_total"] == 1 and last["current_tf"] == "15m"
     finally:
         db.db_clear_scan_run(run_id)

@@ -77,6 +77,10 @@ SCAN_WARN_SECONDS = 1800
 SCAN_HARD_LIMIT_SECONDS = 14400
 # Каждые N обработанных комбинаций SSE-событие scan_progress шлёт eta_seconds.
 SCAN_ETA_PUSH_EVERY = 10
+# Таймаут на одну пару (symbol, tf) в сканере: больше — пара пропускается,
+# скан переходит к следующей (защита от зависания на «тяжёлом» символе,
+# напр. XAUUSD с 20k+ свечей).
+SCAN_SYMBOL_TIMEOUT_SECONDS = 600
 # Доля истории на train; остаток (30%) — out-of-sample test.
 SCAN_TRAIN_SPLIT = 0.7
 # Глубина истории скана в днях от текущего момента (1 год вместо 2):

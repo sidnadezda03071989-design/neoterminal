@@ -9,7 +9,7 @@ import pandas as pd
 
 from app_pkg import config, utils
 from app_pkg.data.fetch import get_replay_df
-from app_pkg.indicators import _supertrend, compute_indicators, rsi_wilder
+from app_pkg.indicators import _adx, _supertrend, compute_indicators, rsi_wilder
 
 log = logging.getLogger(__name__)
 
@@ -490,7 +490,9 @@ class ADXTrend(BacktestStrategy):
 
         self.plus_di = (100.0 * _wilder(plus_dm) / atr).to_numpy()
         self.minus_di = (100.0 * _wilder(minus_dm) / atr).to_numpy()
-        self.adx = compute_indicators(df)["adx"].to_numpy()
+        # ADX с фиксированным периодом 14 — ровно как в compute_indicators,
+        # но без пересчёта всех 18 колонок ради одной (см. BLOCK3).
+        self.adx = _adx(high, low, close, 14).to_numpy()
 
     def next(self, candles, ind, i, position, cash, equity_log):
         if i < max(self.period * 2, 2):
@@ -532,13 +534,19 @@ def _isna(v):
 
 
 def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
-                 initial_cash=10000, replay_limit=None, df=None):
+                 initial_cash=10000, replay_limit=None, df=None, ind=None):
     """Запуск бэктеста; возвращает dict со статистикой и кривой эквити.
 
     df — опциональный готовый DataFrame (свечи): если передан, get_replay_df
     НЕ вызывается. Grid-search сканер так передаёт заранее нарезанные
     train/test окна — 90 комбинаций × 10 символов дают 10 запросов данных
     вместо 900.
+
+    ind — опциональные готовые индикаторы (compute_indicators), выровненные
+    по df. Сканер считает их ОДИН раз на пару (symbol, tf) и переиспользует
+    во всех комбинациях — иначе compute_indicators пересчитывался бы на
+    каждый бэктест. Если ind не передан или не совпадает по длине — считается
+    здесь.
     """
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if not strategy_cls:
@@ -549,7 +557,13 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         df = get_replay_df(symbol, tf, from_sec, to_sec, limit=limit)
     if df is None or len(df) < 50:
         return {"error": "Недостаточно данных"}
-    ind = compute_indicators(df)
+    # Жёсткий потолок свечей: MT5 может отдать куда больше запрошенного
+    # лимита (напр. 23115 баров XAUUSD при limit=5000) — обрезаем до
+    # SCAN_REPLAY_LIMIT, чтобы бэктест не работал на мусорном объёме.
+    if len(df) > config.SCAN_REPLAY_LIMIT:
+        df = df.iloc[-config.SCAN_REPLAY_LIMIT:].reset_index(drop=True)
+    if ind is None or len(ind) != len(df):
+        ind = compute_indicators(df)
     # df передаётся в конструктор: все rolling/ewm/RSI серии предрасчитываются
     # один раз ДО цикла по барам (см. BacktestStrategy._precompute).
     strategy = strategy_cls(params, df=df)

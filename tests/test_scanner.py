@@ -41,7 +41,7 @@ def _fake_run_backtest(train_sharpe=1.5, test_sharpe=0.8, trades=50,
     trades >= SCAN_MIN_TRADES по умолчанию, чтобы комбинации проходили отсев.
     """
     def fake(symbol, tf, from_sec, to_sec, strategy_name, params,
-             initial_cash=10000, replay_limit=None, df=None):
+             initial_cash=10000, replay_limit=None, df=None, ind=None):
         if calls is not None:
             calls.append(len(df) if df is not None else -1)
         sharpe = train_sharpe if (df is not None and len(df) > 500) \
@@ -168,9 +168,9 @@ def test_api_scan_start_returns_run_id(client, monkeypatch):
     called = {}
     done_ev = threading.Event()
 
-    def fake_run_scan(symbols, timeframe, strategies, run_id=None):
+    def fake_run_scan(symbols, timeframe, strategies, run_id=None, grids=None):
         called.update(symbols=symbols, timeframe=timeframe,
-                      strategies=strategies, run_id=run_id)
+                      strategies=strategies, run_id=run_id, grids=grids)
         done_ev.set()
 
     monkeypatch.setattr(scanner, "run_scan", fake_run_scan)
@@ -184,8 +184,9 @@ def test_api_scan_start_returns_run_id(client, monkeypatch):
     assert data["run_id"]
     assert done_ev.wait(timeout=5)  # фоновый поток отработал
     assert called["symbols"] == ["BTCUSDT"]
-    assert called["timeframe"] == "15m"
+    assert called["timeframe"] == ["15m"]  # нормализовано в список _normalize_timeframes
     assert called["strategies"] == ["sma_cross"]
+    assert called["grids"] is None
     assert called["run_id"] == data["run_id"]
 
 

@@ -485,6 +485,11 @@ export function updateScanProgress(data) {
   if (!local.runId && data.run_id) local.runId = data.run_id; // SSE обогнал POST
   const total = Number(data.total) || 0;
   const done = Number(data.done) || 0;
+  // Пара (symbol, tf) упала: показываем красный блок, но прогресс НЕ
+  // останавливаем — скан продолжается на следующих парах.
+  if (data.last_error) {
+    _showError(`Сбой на ${data.failed_at || '?'}: ${data.last_error}`);
+  }
   // ETA приходит не в каждом событии — запоминаем последнюю, чтобы текст
   // не «мигал» между событиями без eta_seconds.
   const eta = Number(data.eta_seconds);
