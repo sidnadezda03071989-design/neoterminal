@@ -510,6 +510,26 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 .scan-detail-title { font-size: 10px; text-transform: uppercase;
   letter-spacing: .5px; color: var(--text-muted); margin-bottom: 2px; }
 .scan-detail-line { display: flex; justify-content: space-between; gap: 8px; }
+.scan-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.scan-show-trades-btn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.scan-show-trades-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+.scan-hide-trades-btn {
+  background: transparent;
+  color: var(--text-muted);
+}
 
 /* ---------- Сводка отчёта (ЧАСТЬ C/F) ---------- */
 .scan-summary { background: var(--bg-hover); padding: 12px;

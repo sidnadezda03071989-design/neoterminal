@@ -1,6 +1,10 @@
 /* Сканер стратегий (grid-search): панель, запуск /api/scan, SSE-прогресс
    (window.__scanProgress вешается в app_init.js), таблица результатов
-   с фильтром min_sharpe, детали по клику и экспорт CSV. */
+   с фильтром min_sharpe, детали по клику, экспорт CSV и кнопки
+   «Показать на графике»/«Скрыть сделки» (BLOCK-29b). */
+
+import { state } from './state.js';
+import { switchSymbol, setTimeframe } from './ui/toolbar.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -749,6 +753,10 @@ function _renderResults(results) {
     const row = document.createElement('div');
     row.className = 'scan-result-row ' + _rowClass(cs);
     const trades = test.trades != null ? test.trades : r.total_trades;
+    row.dataset.symbol = r.symbol || '';
+    row.dataset.timeframe = r.timeframe || '';
+    row.dataset.strategy = r.strategy || '';
+    row.dataset.params = JSON.stringify(r.params || {});
     const cells = [
       r.symbol || '—',
       r.timeframe || '—',
@@ -777,12 +785,119 @@ function _renderResults(results) {
     grid.className = 'scan-detail-grid';
     grid.append(_detailCol('Train (70%)', train), _detailCol('Test (30%)', test));
     details.appendChild(grid);
+    /* Кнопки «Показать на графике»/«Скрыть сделки» — внутри раскрытой
+       панели (BLOCK-29b). Клик обрабатывается делегированием на
+       #scan-results, см. _showTradesForRow. */
+    const actions = document.createElement('div');
+    actions.className = 'scan-row-actions';
+    const showBtn = document.createElement('button');
+    showBtn.className = 'btn scan-show-trades-btn';
+    showBtn.dataset.action = 'show-trades';
+    showBtn.textContent = '📊 Показать на графике';
+    const hideBtn = document.createElement('button');
+    hideBtn.className = 'btn scan-hide-trades-btn';
+    hideBtn.dataset.action = 'hide-trades';
+    hideBtn.textContent = '✕ Скрыть сделки';
+    actions.append(showBtn, hideBtn);
+    details.appendChild(actions);
     row.addEventListener('click', () => {
       const open = details.style.display !== 'none';
       details.style.display = open ? 'none' : 'block';
       row.classList.toggle('expanded', !open);
     });
     box.append(row, details);
+  }
+}
+
+/* ---------- Кнопки «Показать на графике»/«Скрыть сделки» (BLOCK-29b) ----------
+   Делегирование на #scan-results: кнопки лежат в .scan-result-details (это
+   сосед .scan-result-row, а не его потомок), поэтому строку берём через
+   previousElementSibling, а не closest. */
+(function () {
+  const box = $('scan-results');
+  if (!box) return;
+  box.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    if (btn.dataset.action === 'hide-trades') {
+      if (state.backtestRenderer) state.backtestRenderer.clear();
+      return;
+    }
+    if (btn.dataset.action !== 'show-trades') return;
+    const details = btn.closest('.scan-result-details');
+    const row = btn.closest('.scan-result-row') ||
+      (details ? details.previousElementSibling : null);
+    if (!row) return;
+    _showTradesForRow(row, btn);
+  });
+})();
+
+async function _showTradesForRow(row, btn) {
+  const symbol = row.dataset.symbol;
+  const timeframe = row.dataset.timeframe;
+  const strategy = row.dataset.strategy;
+  let params = {};
+  try { params = JSON.parse(row.dataset.params || '{}'); } catch (e) { /* ignore */ }
+  if (!symbol || !timeframe || !strategy) {
+    console.warn('Недостаточно данных строки для показа сделок', row.dataset);
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Загрузка...';
+
+  try {
+    const symSel = document.getElementById('symbol-select');
+    const tfSel = document.getElementById('timeframe-select');
+    const currentSym = symSel ? symSel.value : '';
+    const currentTf = tfSel ? tfSel.value : '';
+
+    if (currentSym !== symbol) switchSymbol(symbol);
+    if (currentTf !== timeframe) setTimeframe(timeframe);
+
+    if (currentSym !== symbol || currentTf !== timeframe) {
+      await new Promise((r) => setTimeout(r, 800));
+    }
+
+    const resp = await fetch('/api/backtest/trades', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol, timeframe, strategy, params, limit: 1000,
+      }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+
+    const trades = data.trades_full || [];
+    if (trades.length === 0) {
+      console.warn('Нет сделок для', symbol, timeframe, strategy);
+      btn.textContent = '⚠ Нет сделок';
+      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+      return;
+    }
+
+    if (!state.backtestRenderer) {
+      throw new Error('backtestRenderer не инициализирован');
+    }
+    state.backtestRenderer.render(trades);
+
+    try {
+      const first = trades[0].entry_time;
+      const last = trades[trades.length - 1].exit_time ||
+        trades[trades.length - 1].entry_time;
+      if (state.chart && first && last) {
+        state.chart.timeScale().setVisibleRange({ from: first, to: last });
+      }
+    } catch (e) { /* скролл не критичен */ }
+
+    btn.textContent = '✓ ' + trades.length + ' сделок';
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+  } catch (e) {
+    console.error('show trades failed:', e);
+    btn.textContent = '⚠ Ошибка: ' + e.message;
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
   }
 }
 
