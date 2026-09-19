@@ -457,7 +457,7 @@ function _collectCustomGrids(strategies) {
 /* Прогресс: «Прогон 24 120 комбинаций • Обработано 300 • Осталось ~2 ч 15 мин»
    (ETA приходит из SSE раз в SCAN_ETA_PUSH_EVERY комбинаций,
    см. ai/scanner.py). */
-function _setProgress(done, total, etaSeconds) {
+function _setProgress(done, total, etaSeconds, tfInfo) {
   const wrap = $('scan-progress');
   if (wrap) wrap.style.display = 'block';
   const bar = $('scan-progress-bar');
@@ -469,6 +469,9 @@ function _setProgress(done, total, etaSeconds) {
   if (!total) { text.textContent = '0/…'; return; }
   const eta = Number(etaSeconds);
   const parts = [`Прогон ${_fmtCount(total)} комбинаций`];
+  /* Текущая пара (symbol, tf) приходит в SSE-событии (tf_index/tf_total/
+     current_tf/current_symbol): при мульти-ТФ видно, где идёт скан. */
+  if (tfInfo) parts.push(tfInfo);
   if (done) parts.push(`Обработано ${_fmtCount(done)}`);
   if (Number.isFinite(eta) && eta > 0) {
     parts.push(`Осталось ~${_formatDuration(eta)}`);
@@ -494,7 +497,14 @@ export function updateScanProgress(data) {
   // не «мигал» между событиями без eta_seconds.
   const eta = Number(data.eta_seconds);
   if (Number.isFinite(eta) && eta > 0) local.etaSeconds = eta;
-  _setProgress(done, total, done >= total ? null : local.etaSeconds);
+  /* Текущая пара «ТФ i/n: tf · symbol» — видна при скане по нескольким ТФ. */
+  let tfInfo = null;
+  if (data.tf_total > 1) {
+    tfInfo = `ТФ ${data.tf_index}/${data.tf_total}`
+      + (data.current_tf ? ': ' + data.current_tf : '')
+      + (data.current_symbol ? ' · ' + data.current_symbol : '');
+  }
+  _setProgress(done, total, done >= total ? null : local.etaSeconds, tfInfo);
   if (total && done >= total) _finishScan();
 }
 
@@ -515,8 +525,15 @@ function _startPoll() {
       } else if (data.stats && data.stats.eta_seconds) {
         // Фолбэк ETA: SSE-событие потерялось — берём оценку из stats.
         local.etaSeconds = data.stats.eta_seconds;
-        _setProgress(Number(data.stats.done) || 0,
-          Number(data.stats.total) || 0, local.etaSeconds);
+        let tfInfo = null;
+        const s = data.stats;
+        if (s.tf_total > 1) {
+          tfInfo = `ТФ ${s.tf_index}/${s.tf_total}`
+            + (s.current_tf ? ': ' + s.current_tf : '')
+            + (s.current_symbol ? ' · ' + s.current_symbol : '');
+        }
+        _setProgress(Number(s.done) || 0,
+          Number(s.total) || 0, local.etaSeconds, tfInfo);
       }
     } catch { /* сеть могла моргнуть — повторим на следующем тике */ }
   }, POLL_MS);
@@ -724,6 +741,7 @@ function _renderResults(results) {
     const trades = test.trades != null ? test.trades : r.total_trades;
     const cells = [
       r.symbol || '—',
+      r.timeframe || '—',
       r.strategy_label || r.strategy || '—',
       _fmtParams(r.params),
       _fmtNum(cs),
@@ -735,7 +753,7 @@ function _renderResults(results) {
     cells.forEach((txt, idx) => {
       const s = document.createElement('span');
       s.textContent = txt;
-      if (idx === 7 && r.verdict) {
+      if (idx === 8 && r.verdict) {
         s.className = 'scan-verdict-cell scan-verdict-' + r.verdict;
         s.title = r.verdict_text || '';
       }

@@ -233,6 +233,41 @@ def test_estimate_seconds_scales_fetch_by_timeframes():
 
 
 # ------------------------------------------------------ POST /api/scan: лимиты
+def test_api_scan_accepts_timeframes_array(client, monkeypatch):
+    """POST /api/scan с body.timeframes (массив) — масштаб по числу ТФ."""
+    called = {}
+    done_ev = _patch_run_scan(monkeypatch, called)
+    resp = client.post("/api/scan", json={
+        "symbols": ["BTCUSDT"], "timeframes": ["15m", "1H", "4H"],
+        "strategies": ["sma_cross"],
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["total_timeframes"] == 3
+    assert data["total_combinations"] == 90 * 3  # sma_cross × 3 ТФ
+    assert done_ev.wait(timeout=5)
+    assert called["timeframe"] == ["15m", "1H", "4H"]  # передано без изменений
+
+
+def test_api_scan_rejects_unknown_timeframe(client):
+    """ТФ вне config.SCAN_TIMEFRAMES -> 400, скан не стартует."""
+    resp = client.post("/api/scan", json={
+        "symbols": ["BTCUSDT"], "timeframes": ["15m", "2h"],
+        "strategies": ["sma_cross"],
+    })
+    assert resp.status_code == 400
+    assert "Invalid timeframes" in resp.get_json()["error"]
+
+
+def test_api_scan_default_timeframes_in_grids(client):
+    """/api/scan/grids отдаёт default_timeframes для UI-чекбоксов."""
+    resp = client.get("/api/scan/grids")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert list(data["default_timeframes"]) == list(config.SCAN_DEFAULT_TIMEFRAMES)
+    assert set(data["default_timeframes"]) <= set(data["timeframes"])
+
+
 def test_api_scan_all_12_strategies_default_grid(client, monkeypatch):
     """12 стратегий с дефолтными гридами: 402 комбинации, без warning."""
     done_ev = _patch_run_scan(monkeypatch)
