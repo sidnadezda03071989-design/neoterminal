@@ -25,8 +25,15 @@ def api_backtest():
         from_sec = int(from_sec) if from_sec else None
         to_sec = int(to_sec) if to_sec else None
         initial_cash = float(body.get("initial_cash", 10000))
+        tp_atr = float(body.get("tp_atr")) if body.get("tp_atr") else None
+        sl_atr = float(body.get("sl_atr")) if body.get("sl_atr") else None
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid numeric params"}), 400
+
+    if tp_atr is not None and tp_atr <= 0:
+        return jsonify({"error": "tp_atr must be > 0"}), 400
+    if sl_atr is not None and sl_atr <= 0:
+        return jsonify({"error": "sl_atr must be > 0"}), 400
 
     if symbol not in config.SYMBOLS:
         return jsonify({"error": "Invalid symbol"}), 400
@@ -37,7 +44,8 @@ def api_backtest():
 
     result = run_backtest(symbol, tf, from_sec, to_sec,
                           strategy, params, initial_cash,
-                          replay_limit=body.get("limit"))
+                          replay_limit=body.get("limit"),
+                          tp_atr=tp_atr, sl_atr=sl_atr)
     if "error" in result:
         return jsonify(result), 400
     return jsonify(result)

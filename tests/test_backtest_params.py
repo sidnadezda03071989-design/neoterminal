@@ -129,6 +129,66 @@ def test_run_backtest_with_df_skips_get_replay_df(monkeypatch):
     assert calls == [1]  # без df — ровно один запрос
 
 
+# ------------------------------------------------------- TP/SL и полный список
+def _mk_tpsl_df():
+    """Плато -> рост (BUY) -> резкий обвал: TP/SL срабатывают детерминированно."""
+    n = 300
+    ts = [T - i * STEP for i in range(n)][::-1]
+    closes = ([100.0] * 100
+              + [100.0 + i * 4.0 for i in range(1, 11)]  # быстрый рост — BUY
+              + [140.0 - j * 8.0 for j in range(1, 191)])  # обвал — SL
+    return pd.DataFrame({
+        "timestamp": pd.to_datetime(ts, unit="s", utc=True),
+        "open": closes,
+        "high": [c + 0.5 for c in closes],
+        "low": [c - 0.5 for c in closes],
+        "close": closes,
+        "volume": [10.0] * n,
+    })
+
+
+def test_tp_sl_adds_exit_reason():
+    """tp_atr / sl_atr: сделки закрываются по стопу/профиту до SELL-сигнала."""
+    df = _mk_tpsl_df()
+    r_sl = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
+                        {"fast": 5, "slow": 20}, df=df, sl_atr=1.0)
+    r_tp = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
+                        {"fast": 5, "slow": 20}, df=df, tp_atr=0.5)
+    assert "error" not in r_sl and "error" not in r_tp
+    assert r_sl["total_trades"] == 1 and r_tp["total_trades"] == 1
+    assert r_sl["trades_full"][0]["exit_reason"] == "sl"
+    assert r_tp["trades_full"][0]["exit_reason"] == "tp"
+    assert r_sl["trades_full"][0]["exit_price"] < r_sl["trades_full"][0]["entry_price"]
+    assert r_tp["trades_full"][0]["exit_price"] > r_tp["trades_full"][0]["entry_price"]
+
+
+def test_tp_only_never_uses_sl():
+    """Только tp_atr: exit_reason только tp, ни одной 'sl'."""
+    r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
+                     {"fast": 5, "slow": 10}, df=_DF, tp_atr=2.0)
+    assert "error" not in r
+    assert all(t["exit_reason"] != "sl" for t in r["trades_full"])
+
+
+def test_sl_only_never_uses_tp():
+    """Только sl_atr: exit_reason только sl, ни одной 'tp'."""
+    df = _mk_tpsl_df()
+    r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
+                     {"fast": 5, "slow": 20}, df=df, sl_atr=1.0)
+    assert "error" not in r
+    assert all(t["exit_reason"] != "tp" for t in r["trades_full"])
+
+
+def test_trades_full_returns_every_trade():
+    """trades_full — все сделки, trades — последние 20 (обратная совместимость)."""
+    r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
+                     {"fast": 5, "slow": 10}, df=_DF)
+    assert "error" not in r
+    assert r["total_trades"] == len(r["trades_full"])
+    assert r["trades"] == r["trades_full"][-20:]
+    assert len(r["trades_full"]) > 0
+
+
 # --------------------------------------------------------------- scanner flow
 def test_run_scan_fetches_data_once_per_symbol(monkeypatch):
     """run_scan: get_replay_df 1 раз на символ (2 символа → 2, не 90)."""

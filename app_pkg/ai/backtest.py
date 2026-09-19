@@ -9,7 +9,9 @@ import pandas as pd
 
 from app_pkg import config, utils
 from app_pkg.data.fetch import get_replay_df
-from app_pkg.indicators import _adx, _supertrend, compute_indicators, rsi_wilder
+from app_pkg.indicators import (
+    _adx, _atr, _supertrend, compute_indicators, rsi_wilder,
+)
 
 log = logging.getLogger(__name__)
 
@@ -534,7 +536,8 @@ def _isna(v):
 
 
 def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
-                 initial_cash=10000, replay_limit=None, df=None, ind=None):
+                 initial_cash=10000, replay_limit=None, df=None, ind=None,
+                 tp_atr=None, sl_atr=None):
     """Запуск бэктеста; возвращает dict со статистикой и кривой эквити.
 
     df — опциональный готовый DataFrame (свечи): если передан, get_replay_df
@@ -547,6 +550,11 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     во всех комбинациях — иначе compute_indicators пересчитывался бы на
     каждый бэктест. Если ind не передан или не совпадает по длине — считается
     здесь.
+
+    tp_atr / sl_atr — take-profit / stop-loss в множителях ATR(14) от цены
+    входа (например 2.0 = +2×ATR / -2×ATR). Если заданы, LONG-позиция
+    закрывается по уровню в тот же бар (по high/low свечи), не дожидаясь
+    сигнала SELL. В trades добавляется поле "exit_reason": tp/sl/signal.
     """
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if not strategy_cls:
@@ -575,6 +583,12 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     entry_bar = 0
 
     ts = utils.epoch_secs(df["timestamp"])  # один раз, не в цикле (O(n^2) иначе)
+    # Предрасчёт массивов high/low/ATR: проверка TP/SL по уровням свечи
+    # (аналог сигнала стратегии) не должна растекаться в O(n^2).
+    high_arr = df["high"].to_numpy(dtype=float) if "high" in df else None
+    low_arr = df["low"].to_numpy(dtype=float) if "low" in df else None
+    atr_arr = (_atr(df["high"], df["low"], df["close"], 14).to_numpy(dtype=float)
+               if (tp_atr or sl_atr) and "high" in df and "low" in df else None)
     for i in range(len(df)):
         price = utils._clean(df["close"].iloc[i])
         if price is None:
@@ -584,6 +598,44 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             continue
         tstamp = int(ts[i])
         sig = strategy.next(df, ind, i, position, cash, equity_log)
+        # TP/SL LONG: уровни из ATR-множителей; проверяем ДО сигнала стратегии.
+        # Если на одном баре пробиты оба уровня, консервативно считаем, что
+        # первым сработал SL (риск важнее прибыли).
+        if position and atr_arr is not None:
+            exit_price = None
+            exit_reason = None
+            atr_i = utils._clean(atr_arr[i])
+            if atr_i is not None and atr_i > 0:
+                sl_price = None
+                tp_price = None
+                if sl_atr:
+                    sl_price = position["entry"] - sl_atr * atr_i
+                if tp_atr:
+                    tp_price = position["entry"] + tp_atr * atr_i
+                lo = utils._clean(low_arr[i])
+                hi = utils._clean(high_arr[i])
+                if sl_price is not None and lo is not None and lo <= sl_price:
+                    exit_price, exit_reason = sl_price, "sl"
+                elif (tp_price is not None and hi is not None
+                      and hi >= tp_price):
+                    exit_price, exit_reason = tp_price, "tp"
+            if exit_price is not None:
+                value = position["shares"] * exit_price
+                pnl = value - (position["shares"] * position["entry"])
+                trades.append({
+                    "entry_time": int(ts[entry_bar]),
+                    "exit_time": tstamp,
+                    "entry_price": position["entry"],
+                    "exit_price": exit_price,
+                    "pnl": round(pnl, 2),
+                    "r_ratio": 0,
+                    "exit_reason": exit_reason,
+                })
+                cash = value
+                position = None
+                equity = cash
+                equity_log.append({"time": tstamp, "equity": round(equity, 2)})
+                continue  # бар закрыт TP/SL — сигнал стратегии не обрабатываем
         if sig and sig["action"] == "BUY" and not position:
             shares = cash / sig["price"] if sig["price"] else 0
             position = {"shares": shares, "entry": sig["price"]}
@@ -599,6 +651,7 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 "exit_price": sig["price"],
                 "pnl": round(pnl, 2),
                 "r_ratio": 0,
+                "exit_reason": "signal",
             })
             cash = value
             position = None
@@ -639,5 +692,6 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         "total_trades": total_trades,
         "win_rate": round(win_rate, 2),
         "trades": trades[-20:],
+        "trades_full": trades,
         "equity_curve": equity_log,
     }
