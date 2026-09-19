@@ -9,6 +9,34 @@ import {
   updatePaneVisibility,
 } from './setup.js';
 
+/* Защита от null/NaN: lightweight-charts бросает "Value is null", если в
+   setData/update попадает точка с пустым time или значением. _cleanData
+   пропускает и свечи (термально закрытые OHLC — числовой close), и линейные
+   точки (числовой value). */
+function _isFiniteNumber(v) {
+  return typeof v === 'number' && !isNaN(v) && isFinite(v);
+}
+
+function _cleanData(data) {
+  if (!Array.isArray(data)) return [];
+  return data.filter((d) => d && d.time != null &&
+    (_isFiniteNumber(d.close) || _isFiniteNumber(d.value)));
+}
+
+export function safeSetData(series, data) {
+  if (!series) return;
+  try { series.setData(_cleanData(data)); }
+  catch (e) { console.warn('[chart] setData skipped:', e.message); }
+}
+
+export function safeUpdate(series, point) {
+  if (!series || !point) return;
+  if (point.time == null) return;
+  if (!_isFiniteNumber(point.close) && !_isFiniteNumber(point.value)) return;
+  try { series.update(point); }
+  catch (e) { console.warn('[chart] update skipped:', e.message); }
+}
+
 let _loadingTimer = null;
 
 export function showChartLoading() {
@@ -68,26 +96,28 @@ export function toMacdHist(arr) {
 }
 
 export function setAllData(candles, ind) {
+  if (!Array.isArray(candles) || candles.length === 0) return;
+  if (!ind || typeof ind !== 'object') ind = {};
   try { chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 }); } catch (e) {}
-  candleSeries.setData(candles);
-  volumeSeries.setData(state.indicators.volume ? toVolumeData(candles) : []);
-  smaSeries.setData(state.indicators.sma ? toLineData(ind.sma20) : []);
-  emaSeries.setData(state.indicators.ema ? toLineData(ind.ema50) : []);
-  bbUpSeries.setData(state.indicators.bb ? toLineData(ind.bb_up) : []);
-  bbMidSeries.setData(state.indicators.bb ? toLineData(ind.bb_mid) : []);
-  bbLowSeries.setData(state.indicators.bb ? toLineData(ind.bb_low) : []);
-  rsiSeries.setData(state.indicators.rsi ? toLineData(ind.rsi) : []);
-  macdHistSeries.setData(state.indicators.macd ? toMacdHist(ind.macd_hist) : []);
-  macdLineSeries.setData(state.indicators.macd ? toLineData(ind.macd) : []);
-  macdSignalSeries.setData(state.indicators.macd ? toLineData(ind.macd_signal) : []);
-  vwapSeries.setData(state.indicators.vwap ? toLineData(ind.vwap) : []);
-  supertrendSeries.setData(state.indicators.supertrend ? toLineData(ind.supertrend) : []);
-  stochKSeries.setData(state.indicators.stoch ? toLineData(ind.stoch_k) : []);
-  stochDSeries.setData(state.indicators.stoch ? toLineData(ind.stoch_d) : []);
-  adxSeries.setData(state.indicators.adx ? toLineData(ind.adx) : []);
-  cciSeries.setData(state.indicators.cci ? toLineData(ind.cci) : []);
-  obvSeries.setData(state.indicators.obv ? toLineData(ind.obv) : []);
-  pivotSeries.setData(state.indicators.pivot ? toLineData(ind.pivot) : []);
+  safeSetData(candleSeries, candles);
+  safeSetData(volumeSeries, state.indicators.volume ? toVolumeData(candles) : []);
+  safeSetData(smaSeries, state.indicators.sma ? toLineData(ind.sma20) : []);
+  safeSetData(emaSeries, state.indicators.ema ? toLineData(ind.ema50) : []);
+  safeSetData(bbUpSeries, state.indicators.bb ? toLineData(ind.bb_up) : []);
+  safeSetData(bbMidSeries, state.indicators.bb ? toLineData(ind.bb_mid) : []);
+  safeSetData(bbLowSeries, state.indicators.bb ? toLineData(ind.bb_low) : []);
+  safeSetData(rsiSeries, state.indicators.rsi ? toLineData(ind.rsi) : []);
+  safeSetData(macdHistSeries, state.indicators.macd ? toMacdHist(ind.macd_hist) : []);
+  safeSetData(macdLineSeries, state.indicators.macd ? toLineData(ind.macd) : []);
+  safeSetData(macdSignalSeries, state.indicators.macd ? toLineData(ind.macd_signal) : []);
+  safeSetData(vwapSeries, state.indicators.vwap ? toLineData(ind.vwap) : []);
+  safeSetData(supertrendSeries, state.indicators.supertrend ? toLineData(ind.supertrend) : []);
+  safeSetData(stochKSeries, state.indicators.stoch ? toLineData(ind.stoch_k) : []);
+  safeSetData(stochDSeries, state.indicators.stoch ? toLineData(ind.stoch_d) : []);
+  safeSetData(adxSeries, state.indicators.adx ? toLineData(ind.adx) : []);
+  safeSetData(cciSeries, state.indicators.cci ? toLineData(ind.cci) : []);
+  safeSetData(obvSeries, state.indicators.obv ? toLineData(ind.obv) : []);
+  safeSetData(pivotSeries, state.indicators.pivot ? toLineData(ind.pivot) : []);
   updatePaneVisibility();
 
   // Сброс ценовой шкалы под новый диапазон (критично при смене символа)
@@ -110,11 +140,11 @@ export function setAllData(candles, ind) {
 }
 
 export function updateAllLast(candles, ind) {
+  if (!Array.isArray(candles) || candles.length === 0) return;
   const last = candles[candles.length - 1];
-  if (!last) return;
-  candleSeries.update(last);
+  safeUpdate(candleSeries, last);
   if (state.indicators.volume) {
-    try { volumeSeries.update(toVolumeData([last])[0]); } catch (e) {}
+    safeUpdate(volumeSeries, toVolumeData([last])[0]);
   }
   const map = {};
   if (state.indicators.sma) map.sma20 = smaSeries;
@@ -134,6 +164,6 @@ export function updateAllLast(candles, ind) {
     if (!arr || !arr.length) continue;
     const it = arr[arr.length - 1];
     if (!it || it.value == null) continue;
-    series.update({ time: it.time, value: it.value });
+    safeUpdate(series, { time: it.time, value: it.value });
   }
 }
