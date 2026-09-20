@@ -53,8 +53,13 @@ const VERDICT_TEXT = {
 const local = { runId: null, running: false, pollTimer: null,
   grids: null, summary: null, etaSeconds: null, wired: false,
   timeframes: [] };
-/* Запасной фолбэк для дефолтных ТФ в UI, если /api/scan/grids не отдал
-   default_timeframes (например, при офлайн-стейте). */
+/* Полный список ТФ: фолбэк для config_timeframes(), пока /api/scan/grids
+   не загрузился (BLOCK-35). Раньше в фолбэке были только 15m/1H — на
+   первом открытии панели чекбоксы строились ДО ответа grids, поэтому
+   5m/4H/1D никогда не появлялись. */
+const TF_ALL = ['5m', '15m', '1H', '4H', '1D'];
+/* Дефолт-отмеченные ТФ в UI, если grids ещё не загрузились: повторяет
+   config.SCAN_DEFAULT_TIMEFRAMES (отмеченные по умолчанию). */
 const TF_FALLBACK = ['15m', '1H'];
 
 /* ------------------------------------------------------- панель open/close */
@@ -91,7 +96,9 @@ function _initFormDefaults() {
   mkChecks('scan-symbols', SYMBOLS, ['BTCUSDT']);
   mkChecks('scan-strategies', STRATEGIES, ['rsi_reversal', 'macd_cross']);
   mkChecks('scan-timeframes', config_timeframes(), local.timeframes.length
-    ? local.timeframes : TF_FALLBACK);
+    ? local.timeframes
+    : ((local.grids && Array.isArray(local.grids.default_timeframes))
+      ? local.grids.default_timeframes : TF_FALLBACK));
   // Любое изменение выбора символов/стратегий/ТФ пересчитывает counter,
   // оценку комбинаций/времени и состояние чекбоксов «Все».
   // wired: слушатели навешиваются один раз; _onSelectionChange продублирует
@@ -149,12 +156,13 @@ function _pluralStrategies(n) {
 }
 
 /* Таймфреймы, доступные в чекбоксах: берём из /api/scan/grids.timeframes,
-   если гриды ещё не загрузились — фолбэк из TF_FALLBACK. */
+   пока гриды не загрузились — полный список TF_ALL (5m/15m/1H/4H/1D). */
 function config_timeframes() {
-  if (local.grids && Array.isArray(local.grids.timeframes)) {
+  if (local.grids && Array.isArray(local.grids.timeframes)
+      && local.grids.timeframes.length) {
     return local.grids.timeframes;
   }
-  return TF_FALLBACK.slice();
+  return TF_ALL.slice();
 }
 
 /* ---------- Таймфреймы: toggle-all + counter ---------- */
@@ -230,9 +238,36 @@ async function _ensureGrids() {
     const resp = await fetch('/api/scan/grids');
     if (!resp.ok) return;
     local.grids = await resp.json();
+    _rebuildTimeframeChecks();
     _buildConfigBlocks();
     _updateComboCount();
   } catch { /* конструктор просто останется пустым до следующего открытия */ }
+}
+
+/* Чекбоксы ТФ строятся из полного списка /api/scan/grids (BLOCK-35):
+   на первом открытии панели grids ещё не загрузились, _initFormDefaults
+   успевает построить чекбоксы из фолбэка, а после ответа grids они НЕ
+   перестраивались — 5m/4H/1D пропадали из UI. Перестраиваем из полного
+   списка, сохраняя текущий выбор пользователя. */
+function _rebuildTimeframeChecks() {
+  const box = $('scan-timeframes');
+  const tfs = config_timeframes();
+  if (!box || !tfs.length) return;
+  const prev = new Set(_checkedValues('scan-timeframes'));
+  const defaults = (local.grids && Array.isArray(local.grids.default_timeframes))
+    ? local.grids.default_timeframes : TF_FALLBACK;
+  box.innerHTML = '';
+  for (const tf of tfs) {
+    const el = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = tf;
+    cb.checked = prev.has(tf) || defaults.includes(tf);
+    el.append(cb, document.createTextNode(tf));
+    box.appendChild(el);
+  }
+  _syncAllTimeframes();
+  _updateComboCount();
 }
 
 function _buildConfigBlocks() {
@@ -733,6 +768,14 @@ function _fmtPct(v) {
   return v == null || !isFinite(n) ? '—' : (n * 100).toFixed(1) + '%';
 }
 
+/* Winrate с точностью до 0.01% (BLOCK-35): 1 знак схлопывал train/test
+   с разным числом сделок (0.674 и 0.669 -> '67.4%' и '66.9%' различаются,
+   а '67%' и '67%' — нет). */
+function _fmtWinrate(v) {
+  const n = Number(v);
+  return v == null || !isFinite(n) ? '—' : (n * 100).toFixed(2) + '%';
+}
+
 function _fmtParams(params) {
   const p = params || {};
   const parts = Object.keys(p).map((k) => k + '=' + p[k]);
@@ -763,7 +806,7 @@ function _detailCol(title, m) {
   col.appendChild(t);
   const metrics = m || {};
   col.appendChild(_detailLine('Sharpe', _fmtNum(metrics.sharpe)));
-  col.appendChild(_detailLine('Winrate', _fmtPct(metrics.winrate)));
+  col.appendChild(_detailLine('Winrate', _fmtWinrate(metrics.winrate)));
   col.appendChild(_detailLine('Max DD', _fmtPct(metrics.max_dd)));
   col.appendChild(_detailLine('Trades',
     metrics.trades == null ? '—' : String(metrics.trades)));

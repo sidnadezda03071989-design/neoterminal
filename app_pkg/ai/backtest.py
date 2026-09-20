@@ -753,7 +753,9 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         "sharpe_ratio": round(sharpe, 2),
         "max_drawdown": round(max_dd, 4),
         "total_trades": total_trades,
-        "win_rate": round(win_rate, 2),
+        # BLOCK-35: 4 знака вместо 2 — иначе train/test winrate с разным числом
+        # сделок схлопывались в одно число (0.67/183 и 0.67/76 в панели).
+        "win_rate": round(win_rate, 4),
         "trades": trades_out,
         "trades_full": trades_out,
         "equity_curve": equity_log,
