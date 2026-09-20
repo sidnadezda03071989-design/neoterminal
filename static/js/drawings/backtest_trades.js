@@ -126,17 +126,18 @@ class BacktestTradesRendererImpl {
     const pSlLine = mgr.toPx(t.entry_time, t.sl_price);
 
     const xEntry = pEntry.x;
-    // BLOCK-36-fix4: если entry/exit совпали по X — расширяем блок до 12px вправо,
-    // иначе на плоских сделках видна вертикальная черта вместо блока.
-    let xExit = pExit ? pExit.x : xEntry + 40;
-    if (xExit === xEntry) xExit = xEntry + 12;
-    const width = Math.max(8, xExit - xEntry);
+    // BLOCK-36-fix5: ширина блока — минимум 20px, иначе на плоских сделках
+    // видна вертикальная черта вместо блока.
+    let xExit = pExit ? pExit.x : xEntry + 20;
+    if (xExit - xEntry < 20) xExit = xEntry + 20;
+    const width = xExit - xEntry;
     const isWin = t.pnl >= 0;
-    const MIN_HEIGHT = 30; // BLOCK-36-fix4: минимальная высота блока, px
+    const MIN_HEIGHT = 30; // BLOCK-36-fix4/fix5: минимальная высота блока, px
 
-    // 1. Прямоугольник сделки — от TP до SL (если есть) или от entry до exit.
-    //    Гарантируем MIN_HEIGHT вокруг центра, иначе блоки «слипаются» в полосу
-    //    и PnL-метка не читается.
+    // 1. Прямоугольник сделки. Каскад источников Y-координат:
+    //    TP/SL → entry/exit → fallback 30px вокруг entry (BLOCK-36-fix5:
+    //    раньше при отсутствии TP/SL и exit-координат блок вообще не
+    //    рисовался — на графике оставался только треугольник входа).
     let yTop = null, yBot = null;
     if (pTpLine && pSlLine) {
       // Вариант 1: есть TP/SL — прямоугольник от TP до SL
@@ -146,8 +147,11 @@ class BacktestTradesRendererImpl {
       // Вариант 2: нет TP/SL — блок от entry до exit
       yTop = Math.min(pEntry.y, pExit.y);
       yBot = Math.max(pEntry.y, pExit.y);
+    } else {
+      // Вариант 3: НЕТ ни TP/SL, ни exit → блок 30px вокруг entry
+      yTop = pEntry.y - MIN_HEIGHT / 2;
+      yBot = pEntry.y + MIN_HEIGHT / 2;
     }
-    if (yTop == null || yBot == null) return; // рисовать нечего
 
     const centerY = (yTop + yBot) / 2;
     if (yBot - yTop < MIN_HEIGHT) {
@@ -155,10 +159,11 @@ class BacktestTradesRendererImpl {
       yBot = centerY + MIN_HEIGHT / 2;
     }
 
-    // Заливка + обводка блока
-    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.18)' : 'rgba(248, 81, 73, 0.18)';
+    // Заливка + обводка блока (обводка сплошным цветом — контрастнее,
+    // чем rgba-граница из fix4).
+    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.25)' : 'rgba(248, 81, 73, 0.25)';
     ctx.fillRect(xEntry, yTop, width, yBot - yTop);
-    ctx.strokeStyle = isWin ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)';
+    ctx.strokeStyle = isWin ? '#3fb950' : '#f85149';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
 
