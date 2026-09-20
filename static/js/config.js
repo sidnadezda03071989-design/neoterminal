@@ -21,9 +21,9 @@ export const FULL_CANDLES = 20000;
 export const PROGRESSIVE_LOAD_ENABLED = true;
 // Прогрессивная догрузка идёт чанками: backend на запрос с большим limit
 // докачивает только дельту (по 1 странице Binance на шаг),
-// т.е. 1000→2000→…→20000 = 19 дешёвых шагов.
-export const PROGRESSIVE_STEP = 1000;
-export const PROGRESSIVE_STEP_DELAY_MS = 60;  // пауза между чанками
+// т.е. 5000→10000→15000→20000 = 4 дешёвых шага (~1.5 мин вместо 8).
+export const PROGRESSIVE_STEP = 5000;
+export const PROGRESSIVE_STEP_DELAY_MS = 200;  // пауза между чанками
 
 // Live-поллинг: каждый тик тянет только последний бар (/api/last-bar),
 // а полный /api/data — раз в POLL_FULL_RELOAD_MS (страховка от рассинхрона).

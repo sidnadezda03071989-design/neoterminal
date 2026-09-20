@@ -34,7 +34,7 @@ const STRATEGIES = [
 const ESTIMATE_DEFAULTS = {
   seconds_per_combination: 0.3, fetch_seconds_per_symbol: 15,
   workers: 8, max_combinations: 50000, warn_seconds: 1800,
-  hard_limit_seconds: 14400,
+  hard_limit_seconds: 14400, max_combinations_full: 2000,
 };
 /* Запасной поллинг: если SSE-событие scan_progress потерялось, дожидаемся
    конца прогона по stats.finished из GET /api/scan/<run_id>. */
@@ -105,6 +105,8 @@ function _initFormDefaults() {
     const allTf = $('scan-all-timeframes');
     if (allStr) allStr.addEventListener('change', toggleAllStrategies);
     if (allTf) allTf.addEventListener('change', toggleAllTimeframes);
+    const fullCb = $('scan-full-history');
+    if (fullCb) fullCb.addEventListener('change', _onSelectionChange);
     local.wired = true;
   }
   _onSelectionChange();
@@ -327,13 +329,34 @@ function _computedCombos(strategies, symbolsCount) {
 
 /* Оценка длительности прогона (сек) — формула та же, что в бэкенде
    (routes/scanner.py::_estimate_seconds): комбинации × сек/воркер + фетч
-   на каждый символ И таймфрейм (symbols × timeframes × сек). */
+   на каждый символ И таймфрейм (symbols × timeframes × сек). Полная история
+   (20k) в ~4× медленнее 5k — умножаем итог на 4 (те же цифры, что ETA
+   прогресса в ai/scanner.py::_eta_seconds). */
+
+/* Чекбокс «Полная история»: по умолчанию включён (checked в HTML — дефолт
+   backend config.SCAN_USE_FULL_HISTORY=True). */
+function _isFullHistory() {
+  const cb = $('scan-full-history');
+  return !cb || cb.checked;
+}
+
+/* Порог «больше лимита»: при полной истории — max_combinations_full (меньше
+   комбинаций за раз), иначе 50000 (SCAN_MAX_COMBINATIONS). */
+function _maxCombos() {
+  const cfg = Object.assign({}, ESTIMATE_DEFAULTS, local.grids || {});
+  return _isFullHistory()
+    ? (Number(cfg.max_combinations_full) ||
+      ESTIMATE_DEFAULTS.max_combinations_full)
+    : (Number(cfg.max_combinations) || ESTIMATE_DEFAULTS.max_combinations);
+}
+
 function _estimateSeconds(combos, symbolsCount, timeframesCount = 1) {
   const cfg = Object.assign({}, ESTIMATE_DEFAULTS, local.grids || {});
   const workers = Math.max(1, Number(cfg.workers) || 8);
   const timeframes = Math.max(1, Number(timeframesCount) || 1);
-  return (combos * Number(cfg.seconds_per_combination)) / workers +
+  const base = (combos * Number(cfg.seconds_per_combination)) / workers +
     symbolsCount * timeframes * Number(cfg.fetch_seconds_per_symbol);
+  return _isFullHistory() ? base * 4 : base;
 }
 
 /* Секунды -> '45 сек' / '12 мин' / '4 ч 15 мин' / '1 ч'. */
@@ -365,8 +388,7 @@ function _currentEstimate() {
     warnSeconds: Number(cfg.warn_seconds) || ESTIMATE_DEFAULTS.warn_seconds,
     hardSeconds: Number(cfg.hard_limit_seconds) ||
       ESTIMATE_DEFAULTS.hard_limit_seconds,
-    maxCombos: Number(cfg.max_combinations) ||
-      ESTIMATE_DEFAULTS.max_combinations,
+    maxCombos: _maxCombos(),
   };
 }
 
@@ -377,8 +399,7 @@ function _updateComboCount() {
   const timeframes = _checkedValues('scan-timeframes');
   const tfCount = Math.max(1, timeframes.length);
   const symCount = Math.max(1, symbols.length);
-  const maxCombos = (local.grids && local.grids.max_combinations) ||
-    ESTIMATE_DEFAULTS.max_combinations;
+  const maxCombos = _maxCombos();
   const el = $('scan-combo-count');
   if (el) {
     el.textContent = `Сгенерируется ${_fmtCount(total * symCount * tfCount)} комбинаций` +
@@ -405,8 +426,10 @@ function _updateEstimate(total, symbolsCount, badInput, maxCombos) {
   const tooLong = !over && seconds > hardSeconds;
   const warn = !over && !tooLong && seconds > warnSeconds;
   if (el) {
-    let msg = `Сгенерируется ~${_fmtCount(total)} комбинаций` +
-      ` (оценка ~${_formatDuration(seconds)})`;
+    const mode = _isFullHistory()
+      ? `полная история, ~${_formatDuration(seconds)}`
+      : `оценка ~${_formatDuration(seconds)}`;
+    let msg = `Сгенерируется ~${_fmtCount(total)} комбинаций (${mode})`;
     if (over) {
       msg += ` — больше лимита ${_fmtCount(maxCombos)}, сервер отклонит запуск`;
     }
@@ -564,6 +587,11 @@ function _finishScan() {
 /* ----------------------------------------------------------------- запуск */
 export async function runScan() {
   if (local.running) return;
+  // Данные графика ещё догружаются фоном — скан запускать рано.
+  if (!state.progressiveLoaded) {
+    alert('Данные графика ещё загружаются. Подождите.');
+    return;
+  }
   const symbols = _checkedValues('scan-symbols');
   const strategies = _checkedValues('scan-strategies');
   const timeframes = _checkedValues('scan-timeframes');
@@ -605,7 +633,10 @@ export async function runScan() {
   _hideResults();
 
   try {
-    const body = { symbols, timeframes, strategies };
+    const body = {
+      symbols, timeframes, strategies,
+      use_full_history: _isFullHistory(),
+    };
     const customGrids = _collectCustomGrids(strategies);
     if (customGrids) body.custom_grids = customGrids;
     const resp = await fetch('/api/scan', {
@@ -832,6 +863,15 @@ function _renderResults(results) {
   });
 })();
 
+async function _waitForData(timeoutMs = 120000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (state.progressiveLoaded === true) return true;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return false;
+}
+
 async function _showTradesForRow(row, btn) {
   const symbol = row.dataset.symbol;
   const timeframe = row.dataset.timeframe;
@@ -857,15 +897,23 @@ async function _showTradesForRow(row, btn) {
     if (currentTf !== timeframe) setTimeframe(timeframe);
 
     if (currentSym !== symbol || currentTf !== timeframe) {
-      await new Promise((r) => setTimeout(r, 800));
+      // Смена символа/ТФ инициирует новую прогрессивную догрузку: ждём её
+      // полного завершения (state.progressiveLoaded), иначе сделки нарисуем
+      // на недогруженных свечах и lightweight-charts сожмёт свечи.
+      const ready = await _waitForData();
+      if (!ready) {
+        alert('Данные не загрузились за 2 мин. Повторите.');
+        return;
+      }
     }
 
     const resp = await fetch('/api/backtest/trades', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbol, timeframe, strategy, params, limit: 1000,
-      }),
+      /* БЕЗ limit: визуализация идёт по ВСЕЙ истории сделок (backend берёт
+         BACKTEST_MAX_CANDLES=20000). Хардкод limit:1000 резал сделки —
+         видели 32 блока вместо 500+. */
+      body: JSON.stringify({ symbol, timeframe, strategy, params }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
@@ -893,12 +941,21 @@ async function _showTradesForRow(row, btn) {
     state.backtestRenderer.render(trades);
 
     try {
-      const first = trades[0].entry_time;
-      const last = trades[trades.length - 1].exit_time ||
-        trades[trades.length - 1].entry_time;
+      // Авто-зум на ПОСЛЕДНИЕ 200 сделок (не на все 500+): рыночный диапазон
+      // всех сделок сжимал свечи до полосы. entry/exit_time — unix-секунды
+      // (НЕ миллисекунды — ×1000 увело бы график в 1970). Плюс отступ 1 час.
+      // Сами блоки рисуются по ВСЕМ сделкам (появятся при zoom-out).
+      const MAX_TRADES_IN_VIEW = 200;
+      const visible = trades.length > MAX_TRADES_IN_VIEW
+        ? trades.slice(-MAX_TRADES_IN_VIEW) : trades;
+      const first = visible[0];
+      const last = visible[visible.length - 1];
+      const from = first.entry_time - 3600;
+      const to = (last.exit_time || last.entry_time) + 3600;
       if (state.chart && first && last) {
-        state.chart.timeScale().setVisibleRange({ from: first, to: last });
+        state.chart.timeScale().setVisibleRange({ from, to });
       }
+      console.log(`[scan] zoomed to last ${visible.length} of ${trades.length} trades`);
     } catch (e) { /* скролл не критичен */ }
 
     btn.textContent = '✓ ' + trades.length + ' сделок';

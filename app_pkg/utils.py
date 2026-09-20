@@ -51,6 +51,14 @@ def _atomic_json_write(path, data) -> None:
 
 
 def epoch_secs(series) -> np.ndarray:
-    """Переводит серию дат/таймстампов в int64 Unix-секунды через datetime64[s]."""
-    arr = np.asarray(pd.to_datetime(series))
-    return arr.astype("datetime64[s]").astype("int64")
+    """Переводит серию дат/таймстампов в int64 Unix-секунды.
+
+    Через pandas .astype('int64') на tz-aware UTC. Единица считывается из
+    dtype ('ns' на pandas 2.x, 'us' на pandas 3.x) и делится до секунд
+    (наносекунды → 1e9, микросекунды → 1e6). Без UserWarning про datetime64.
+    """
+    s = pd.to_datetime(series, utc=True)
+    divisor = {
+        "s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000,
+    }.get(getattr(s.dtype, "unit", "ns"), 1_000_000_000)
+    return (s.astype("int64") // divisor).to_numpy()

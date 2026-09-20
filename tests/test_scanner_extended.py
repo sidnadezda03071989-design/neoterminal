@@ -95,10 +95,12 @@ def _patch_run_scan(monkeypatch, called=None):
     """Подмена скана в фоне: POST /api/scan не должен реально считать."""
     done_ev = threading.Event()
 
-    def fake_run_scan(symbols, timeframe, strategies, run_id=None, grids=None):
+    def fake_run_scan(symbols, timeframe, strategies, run_id=None, grids=None,
+                      use_full_history=None):
         if called is not None:
             called.update(symbols=symbols, timeframe=timeframe,
-                          strategies=strategies, run_id=run_id, grids=grids)
+                          strategies=strategies, run_id=run_id, grids=grids,
+                          use_full_history=use_full_history)
         done_ev.set()
 
     monkeypatch.setattr(scanner_mod, "run_scan", fake_run_scan)
@@ -122,6 +124,13 @@ def client():
 
 
 # ------------------------------------------------------------ /api/scan/grids
+def _assert_full_history_grid_fields(data):
+    """Режим истории в /api/scan/grids: по умолчанию полная + порог для UI."""
+    assert data["default_use_full_history"] is config.SCAN_USE_FULL_HISTORY
+    assert (data["max_combinations_full"]
+            == config.SCAN_MAX_COMBINATIONS_FULL == 2000)
+
+
 def test_api_scan_grids_returns_12_strategies(client):
     """/api/scan/grids: 12 стратегий, у каждой label/params/default_grid."""
     resp = client.get("/api/scan/grids")
@@ -135,6 +144,9 @@ def test_api_scan_grids_returns_12_strategies(client):
     # Константы для UI: лимиты и оценка времени (scanner.js считает так же)
     assert data["max_combinations"] == 50000
     assert data["max_custom_values"] == 30
+    # Режим истории скана: по умолчанию полная (config), в быстром режиме —
+    # меньший порог комбинаций для UI (max_combinations_full).
+    _assert_full_history_grid_fields(data)
     assert data["param_limits"]["vwap_threshold"] == [0.001, 0.05]
     assert data["param_limits"]["adx_threshold"] == [10, 50]
     assert data["workers"] == config.SCAN_WORKERS
@@ -247,6 +259,33 @@ def test_api_scan_accepts_timeframes_array(client, monkeypatch):
     assert data["total_combinations"] == 90 * 3  # sma_cross × 3 ТФ
     assert done_ev.wait(timeout=5)
     assert called["timeframe"] == ["15m", "1H", "4H"]  # передано без изменений
+
+
+def test_api_scan_propagates_use_full_history(client, monkeypatch):
+    """use_full_history: True/False из body -> в run_scan(+echo в ответе)."""
+    for flag in (True, False):
+        called = {}
+        done_ev = _patch_run_scan(monkeypatch, called)
+        resp = client.post("/api/scan", json={
+            "symbols": ["BTCUSDT"], "timeframe": "15m",
+            "strategies": ["sma_cross"], "use_full_history": flag,
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["use_full_history"] is flag
+        assert done_ev.wait(timeout=5)
+        assert called["use_full_history"] is flag
+
+
+def test_api_scan_rejects_non_bool_use_full_history(client):
+    """use_full_history обязан быть bool — иначе 400, скан не стартует."""
+    for bad in ("yes", 1, 0, [], {}):
+        resp = client.post("/api/scan", json={
+            "symbols": ["BTCUSDT"], "timeframe": "15m",
+            "strategies": ["sma_cross"], "use_full_history": bad,
+        })
+        assert resp.status_code == 400
+        assert "use_full_history" in resp.get_json()["error"]
 
 
 def test_api_scan_rejects_unknown_timeframe(client):
@@ -500,6 +539,85 @@ def test_eta_seconds_math():
     assert scanner_mod._eta_seconds(start, 100, 100) is None  # закончили
     eta = scanner_mod._eta_seconds(start, 20, 100)            # 20 за 10 сек
     assert eta is not None and 35 <= eta <= 45
+
+
+def test_eta_seconds_elapsed_factor_x4(monkeypatch):
+    """Полная история (20k) ~4× дольше 5k: elapsed_factor растягивает прошедшее
+    время и ровно в factor раз завышает ETA при той же скорости."""
+    monkeypatch.setattr(scanner_mod.time, "time", lambda: 1000.0)
+    base = scanner_mod._eta_seconds(0, 5, 10, elapsed_factor=1.0)
+    full = scanner_mod._eta_seconds(0, 5, 10, elapsed_factor=4.0)
+    assert base == 1000 and full == 4000
+
+
+# ------------------------------------------------- fetch_limit / режим истории
+def _run_scan_capture_fetch(monkeypatch, use_full_history, df_rows=2500,
+                            history_limit=1500, replay_limit=999):
+    """Запуск run_scan с замером limit у get_replay_df и строк df в run_backtest.
+
+    Возвращает (calls, caps): calls — (symbol, tf, limit) каждого фетча;
+    caps["df_rows"] — число свечей, дошедших до первого прогона backtest
+    (после обрезки fetch_limit). _ws_push затыкаем, run_id чистим после.
+    """
+    calls = []
+    caps = {}
+
+    def fake_replay(symbol, tf, from_sec, to_sec, limit=None):
+        calls.append((symbol, tf, limit))
+        return _mk_df(df_rows)
+
+    def fake_bt(symbol, tf, from_sec, to_sec, strategy_name, params,
+                initial_cash=10000, replay_limit=None, df=None, ind=None):
+        caps.setdefault("df_rows", len(df) if df is not None else None)
+        return _fake_run_backtest()(symbol, tf, from_sec, to_sec,
+                                    strategy_name, params, initial_cash,
+                                    replay_limit, df, ind)
+
+    monkeypatch.setattr(scanner_mod, "get_replay_df", fake_replay)
+    monkeypatch.setattr(scanner_mod, "run_backtest", fake_bt)
+    monkeypatch.setattr(scanner_mod, "_ws_push", lambda event, data: None)
+    if history_limit is not None:
+        monkeypatch.setitem(config.HISTORY_LIMITS, "15m", history_limit)
+    if replay_limit is not None:
+        monkeypatch.setattr(config, "SCAN_REPLAY_LIMIT", replay_limit)
+
+    run_id = scanner_mod.run_scan(["BTCUSDT"], "15m", ["sma_cross"],
+                                  use_full_history=use_full_history)
+    _RUN_IDS.append(run_id)
+    return calls, caps
+
+
+def test_run_scan_full_history_fetch_limit(monkeypatch):
+    """use_full_history=True: фетч берёт HISTORY_LIMITS[tf] (НЕ
+    SCAN_REPLAY_LIMIT), избыточный df обрезается до этого лимита."""
+    calls, caps = _run_scan_capture_fetch(monkeypatch, True)
+    assert calls == [("BTCUSDT", "15m", 1500)]
+    # 2500 рядов обрезаны до 1500, до backtest доходит лишь train-часть (70%).
+    assert caps["df_rows"] == int(1500 * config.SCAN_TRAIN_SPLIT) == 1050
+
+
+def test_run_scan_fast_mode_fetch_limit(monkeypatch):
+    """use_full_history=False: фетч берёт SCAN_REPLAY_LIMIT (старый 5000)."""
+    calls, caps = _run_scan_capture_fetch(monkeypatch, False)
+    assert calls == [("BTCUSDT", "15m", 999)]
+    assert caps["df_rows"] == int(999 * config.SCAN_TRAIN_SPLIT) == 699
+
+
+def test_run_scan_warns_short_history(monkeypatch, caplog):
+    """Меньше 1000 рядов на пару (символ/ТФ) -> warning в лог."""
+    def fake_replay(symbol, tf, from_sec, to_sec, limit=None):
+        return _mk_df(900)
+
+    monkeypatch.setattr(scanner_mod, "get_replay_df", fake_replay)
+    monkeypatch.setattr(scanner_mod, "run_backtest", _fake_run_backtest())
+    monkeypatch.setattr(scanner_mod, "_ws_push", lambda event, data: None)
+    monkeypatch.setattr(config, "SCAN_MIN_TRADES", 0)
+
+    with caplog.at_level("WARNING", "app_pkg.ai.scanner"):
+        run_id = scanner_mod.run_scan(["BTCUSDT"], "15m", ["sma_cross"])
+        _RUN_IDS.append(run_id)
+
+    assert any("too few rows" in r.message for r in caplog.records)
 
 
 def test_run_scan_pushes_eta_every_n_combinations(monkeypatch):

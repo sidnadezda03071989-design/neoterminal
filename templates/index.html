@@ -36,6 +36,9 @@
         <span class="pulse-dot" id="pulse-dot"></span>
         <span id="status-text">подключение…</span>
       </span>
+      <span id="data-load-status" class="data-load-status" style="display:none">
+        загрузка: 0/20000
+      </span>
       <button id="ai-analysis-btn" class="btn ai-btn">🧠 AI Analysis</button>
       <button id="watchlist-toggle-btn" class="btn">📋 Watchlist</button>
       <button id="ai-toggle-btn" class="btn">🧠 AI</button>
@@ -238,6 +241,10 @@
           <label class="scan-all-label" for="scan-all-strategies">
             <input type="checkbox" id="scan-all-strategies">
             <span class="scan-all-icon">✓</span>Все стратегии
+          </label>
+          <label class="scan-mode-toggle" for="scan-full-history">
+            <input type="checkbox" id="scan-full-history" checked>
+            Полная история (20k, медленнее)
           </label>
           <span class="scan-strategies-count" id="scan-strategies-count">
             Выбрано: 0 стратегий

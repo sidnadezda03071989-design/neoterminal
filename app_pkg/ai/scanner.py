@@ -184,15 +184,19 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
     }
 
 
-def _eta_seconds(start, done, total):
+def _eta_seconds(start, done, total, elapsed_factor=1.0):
     """Оценка оставшегося времени (сек) по средней скорости прогона.
 
     rate = done / elapsed (комбинаций в секунду), eta = (total - done) / rate.
     None, если ещё ничего не обработано или прогон уже закончился.
+
+    elapsed_factor — поправка для полной истории (SCAN_USE_FULL_HISTORY):
+    бэктест на 20k свечей идёт ~4× дольше, чем на 5k, поэтому «эффективный»
+    прошедший отсчёт умножается на фактор (rate становится в разы ниже).
     """
     if not done or done >= total:
         return None
-    elapsed = time.time() - start
+    elapsed = (time.time() - start) * max(float(elapsed_factor), 1e-9)
     if elapsed <= 0:
         return None
     rate = done / elapsed
@@ -240,13 +244,18 @@ def _push_progress(run_id, done, total, current, eta_seconds=None,
         log.exception("scan_progress push failed")
 
 
-def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
+def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
+             use_full_history=None):
     """Запуск скана: символы × ТФ × стратегии, перебор комбинаций.
 
     timeframes — список ТФ (["15m", "1H"]); str принимается для обратной
     совместимости (оборачивается в [str]) — см. _normalize_timeframes.
 
     grids — опциональное переопределение дефолтных гридов (custom_grids).
+
+    use_full_history — опционально: переопределяет config.SCAN_USE_FULL_HISTORY
+    для ЭТОГО прогона (фетч берёт HISTORY_LIMITS[tf] вместо SCAN_REPLAY_LIMIT,
+    ETA прогресса умножается на ~4; полная история = 20k крипта / 13k форекс).
 
     Для каждой пары (symbol, tf): get_replay_df за SCAN_PERIOD_DAYS — ОДИН
     запрос на пару (df переиспользуется всеми комбинациями через df=), сплит
@@ -257,6 +266,9 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
     SCAN_ETA_PUSH_EVERY комбинаций в событие добавляется eta_seconds
     (остаток прогона, сек). Возвращает run_id.
     """
+    full = config.SCAN_USE_FULL_HISTORY if use_full_history is None \
+        else bool(use_full_history)
+    eta_factor = 4.0 if full else 1.0
     run_id = run_id or uuid.uuid4().hex
     start = time.time()  # отсчёт для ETA прогресса (см. _eta_seconds)
     to_sec = int(time.time())
@@ -295,9 +307,22 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
             # Один запрос данных на пару (symbol, tf): готовый df
             # переиспользуется во всех комбинациях (см. _run_single).
             if df_key != (symbol, tf):
+                # Полная история: максимум доступных свечей из HISTORY_LIMITS[tf]
+                # (НЕ SCAN_REPLAY_LIMIT — иначе упрёмся в 20000-потолок только
+                # по булеву режима); быстрый режим — SCAN_REPLAY_LIMIT.
+                fetch_limit = (
+                    config.HISTORY_LIMITS.get(tf, 20000)
+                    if full else config.SCAN_REPLAY_LIMIT
+                )
                 df = get_replay_df(symbol, tf, from_sec, to_sec,
-                                   limit=config.SCAN_REPLAY_LIMIT)
+                                   limit=fetch_limit)
                 df_key = (symbol, tf)
+                rows = 0 if df is None else len(df)
+                log.info("scan: %s/%s fetch limit=%d, got %d rows",
+                         symbol, tf, fetch_limit, rows)
+                if rows < 1000:
+                    log.warning("scan: %s/%s too few rows (%d) — данные почти "
+                                "не покрывают историю", symbol, tf, rows)
             if df is None or df.empty:
                 log.warning("scan: %s/%s empty df, skip", symbol, tf)
                 done += sum(len(combs) for combs in strategies.values())
@@ -308,10 +333,11 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
                                tf_index=tf_index, tf_total=len(tfs),
                                current_tf=tf, current_symbol=symbol)
                 continue
-            # Жёсткая обрезка: MT5 может вернуть куда больше лимита
-            # (напр. 23115 свечей XAUUSD при SCAN_REPLAY_LIMIT=5000).
-            if len(df) > config.SCAN_REPLAY_LIMIT:
-                df = df.iloc[-config.SCAN_REPLAY_LIMIT:].reset_index(drop=True)
+            # Жёсткая обрезка: MT5 может вернуть куда больше запрошенного
+            # лимита (напр. 23115 свечей XAUUSD при limit=5000) — обрезаем до
+            # fetch_limit (20000 в полной истории / SCAN_REPLAY_LIMIT в быстрой).
+            if len(df) > fetch_limit:
+                df = df.iloc[-fetch_limit:].reset_index(drop=True)
             log.info("scan: %s/%s df rows=%d", symbol, tf, len(df))
 
             # Сплит 70/30 по времени (df отсортирован по timestamp) и
@@ -362,7 +388,8 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None):
                         eta = None
                         if config.SCAN_ETA_PUSH_EVERY \
                                 and done % config.SCAN_ETA_PUSH_EVERY == 0:
-                            eta = _eta_seconds(start, done, total)
+                            eta = _eta_seconds(start, done, total,
+                                               elapsed_factor=eta_factor)
                         if eta is not None:
                             # Дублируем ETA в RUN_STATS: поллинг-фолбэк UI
                             # (GET /api/scan/<run_id>) видит его без SSE.

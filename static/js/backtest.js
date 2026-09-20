@@ -297,6 +297,21 @@ export async function runBacktest() {
     if (results) results.style.display = 'block';
     _drawEquity(data.equity_curve || [], initialCash);
     _renderTrades(data.trades || []);
+    // Авто-зум на ПОСЛЕДНИЕ 200 сделок (как в сканере): диапазон всех сделок
+    // сжимал свечи. Блоки на графике рисует BacktestTradesRenderer по всем
+    // сделкам — они появятся при zoom-out. Отступ 1 час по сторонам.
+    const btTrades = data.trades || [];
+    const VISIBLE_LIMIT = 200;
+    const btVisible = btTrades.length > VISIBLE_LIMIT
+      ? btTrades.slice(-VISIBLE_LIMIT) : btTrades;
+    if (btVisible.length && state.chart) {
+      const btFirst = btVisible[0];
+      const btLast = btVisible[btVisible.length - 1];
+      const btFrom = btFirst.entry_time - 3600;
+      const btTo = (btLast.exit_time || btLast.entry_time) + 3600;
+      state.chart.timeScale().setVisibleRange({ from: btFrom, to: btTo });
+      console.log(`[backtest] zoomed to last ${btVisible.length} of ${btTrades.length} trades`);
+    }
     _showStatusSummary(data);
     ok = true;
   } catch (e) {

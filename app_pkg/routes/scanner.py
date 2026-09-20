@@ -223,6 +223,13 @@ def api_scan_start():
     symbols = body.get("symbols") or []
     strategies = body.get("strategies") or []
     custom_grids = body.get("custom_grids") or None
+    # Опциональный выбор режима истории: True — полная (HISTORY_LIMITS[tf]),
+    # False — быстрая (SCAN_REPLAY_LIMIT). Не задан — дефолт из config.
+    use_full_history = body.get("use_full_history")
+    if use_full_history is not None and not isinstance(use_full_history, bool):
+        return jsonify({"error": "use_full_history must be a boolean"}), 400
+    effective_full = (config.SCAN_USE_FULL_HISTORY
+                      if use_full_history is None else bool(use_full_history))
 
     if not isinstance(symbols, list) or not symbols:
         return jsonify({"error": "symbols must be a non-empty list"}), 400
@@ -301,7 +308,7 @@ def api_scan_start():
         try:
             scanner_mod.run_scan(
                 symbols, timeframes, strategies,
-                run_id=run_id, grids=grids)
+                run_id=run_id, grids=grids, use_full_history=use_full_history)
         except Exception:  # noqa: BLE001
             log.exception("scan run %s failed", run_id)
 
@@ -309,6 +316,7 @@ def api_scan_start():
                      name=f"scan-{run_id[:8]}").start()
     payload = {
         "run_id": run_id, "status": "started",
+        "use_full_history": effective_full,
         "total_combinations": total_combinations,
         "estimated_seconds": estimated_seconds,
         "estimated_human": _human_seconds(estimated_seconds),
@@ -368,7 +376,9 @@ def api_scan_grids():
         "strategies": config.SCAN_ALLOWED_STRATEGIES,
         "timeframes": config.SCAN_TIMEFRAMES,
         "default_timeframes": list(config.SCAN_DEFAULT_TIMEFRAMES),
+        "default_use_full_history": config.SCAN_USE_FULL_HISTORY,
         "max_combinations": config.SCAN_MAX_COMBINATIONS,
+        "max_combinations_full": config.SCAN_MAX_COMBINATIONS_FULL,
         "max_custom_values": config.SCAN_MAX_CUSTOM_VALUES,
         "param_limits": config.SCAN_PARAM_LIMITS,
         "workers": config.SCAN_WORKERS,

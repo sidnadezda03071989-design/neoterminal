@@ -136,6 +136,14 @@ export function initUI() {
   /* SSE-прогресс сканера: integration/sse.js дергает window.__scanProgress
      (формат события scan_progress: {run_id, done, total, current}). */
   window.__scanProgress = updateScanProgress;
+  // Пока данные графика догружаются фоном, кнопка «🔍 Сканер → Запустить»
+  // заблокирована (state.progressiveLoaded ставится в live.js).
+  setInterval(() => {
+    const btn = document.getElementById('scan-run-btn');
+    if (!btn) return;
+    btn.disabled = !state.progressiveLoaded;
+    btn.title = state.progressiveLoaded ? '' : 'Данные загружаются…';
+  }, 500);
   document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
     btn.addEventListener('click', () => setTool(btn.dataset.tool));
   });

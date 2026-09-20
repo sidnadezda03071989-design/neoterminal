@@ -168,9 +168,11 @@ def test_api_scan_start_returns_run_id(client, monkeypatch):
     called = {}
     done_ev = threading.Event()
 
-    def fake_run_scan(symbols, timeframe, strategies, run_id=None, grids=None):
+    def fake_run_scan(symbols, timeframe, strategies, run_id=None, grids=None,
+                      use_full_history=None):
         called.update(symbols=symbols, timeframe=timeframe,
-                      strategies=strategies, run_id=run_id, grids=grids)
+                      strategies=strategies, run_id=run_id, grids=grids,
+                      use_full_history=use_full_history)
         done_ev.set()
 
     monkeypatch.setattr(scanner, "run_scan", fake_run_scan)
@@ -188,6 +190,10 @@ def test_api_scan_start_returns_run_id(client, monkeypatch):
     assert called["strategies"] == ["sma_cross"]
     assert called["grids"] is None
     assert called["run_id"] == data["run_id"]
+    # Режим истории не передан в body -> в run_scan уходит None, echo —
+    # дефолт из config (SCAN_USE_FULL_HISTORY).
+    assert called["use_full_history"] is None
+    assert data["use_full_history"] is config.SCAN_USE_FULL_HISTORY
 
 
 def test_api_scan_validates_input(client):
