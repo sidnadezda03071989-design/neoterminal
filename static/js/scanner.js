@@ -946,6 +946,37 @@ async function _waitForData(timeoutMs = 120000) {
   return false;
 }
 
+/* BLOCK-36: зум применяется только ПОСЛЕ полного завершения фоновой
+   прогрессивной догрузки (state.progressiveLoaded), плюс кадр на отрисовку.
+   Иначе fitChartToData после progressive перебивает setVisibleRange и
+   на экране остаются 2 блока из 97. */
+async function _applyZoomWhenReady(trades, dataset) {
+  const start = Date.now();
+  while (!state.progressiveLoaded && Date.now() - start < 180000) {
+    await new Promise(r => setTimeout(r, 300));
+  }
+  await new Promise(r => requestAnimationFrame(r));
+  await new Promise(r => setTimeout(r, 100));
+
+  // Авто-зум на ПОСЛЕДНИЕ 50 сделок: entry/exit_time — unix-секунды
+  // (НЕ миллисекунды), плюс отступ 1 час. 200 блоков сжимали barSpacing
+  // до ~0.5px (свечи исчезали); 50 — компромисс «и сделки видны, и свечи».
+  // Сами блоки рисуются по ВСЕМ сделкам (появятся при zoom-out).
+  const MAX_TRADES_IN_VIEW = 50;
+  const visible = trades.length > MAX_TRADES_IN_VIEW
+    ? trades.slice(-MAX_TRADES_IN_VIEW) : trades;
+  const first = visible[0];
+  const last = visible[visible.length - 1];
+  if (!state.chart || !first || !last) return;
+  const from = first.entry_time - 3600;
+  const to = (last.exit_time || last.entry_time) + 3600;
+  state.chart.timeScale().setVisibleRange({ from, to });
+  console.log('[scan] FINAL zoom:',
+    new Date(from * 1000).toISOString(), '→',
+    new Date(to * 1000).toISOString(),
+    `(${visible.length} of ${trades.length}, dataset=${dataset})`);
+}
+
 async function _showTradesForRow(row, btn) {
   const symbol = row.dataset.symbol;
   const timeframe = row.dataset.timeframe;
@@ -967,16 +998,27 @@ async function _showTradesForRow(row, btn) {
   const dataset = datasetRadio ? datasetRadio.value : 'test';
   console.log('[scan] request dataset=' + dataset);
 
+  /* BLOCK-36: замораживаем pollLive на время fetch + render + zoom,
+     чтобы фоновый полл не сбросил видимое окно посреди рендера сделок.
+     Разморозка — через 2 сек после завершения (finally ниже). */
+  state._suspendPoll = true;
   try {
+    /* BLOCK-36: дёргаем график только при РЕАЛЬНОЙ смене symbol/tf.
+       Повторный клик «Показать» на том же символе не должен запускать
+       loadLive(true) → progressive → fitChartToData, который перебивает
+       setVisibleRange и оставляет на экране 2 блока из 97. */
     const symSel = document.getElementById('symbol-select');
     const tfSel = document.getElementById('timeframe-select');
     const currentSym = symSel ? symSel.value : '';
     const currentTf = tfSel ? tfSel.value : '';
 
-    if (currentSym !== symbol) switchSymbol(symbol);
-    if (currentTf !== timeframe) setTimeframe(timeframe);
+    const symChanged = currentSym !== symbol;
+    const tfChanged = currentTf !== timeframe;
 
-    if (currentSym !== symbol || currentTf !== timeframe) {
+    if (symChanged || tfChanged) {
+      if (symChanged) switchSymbol(symbol);
+      if (tfChanged) setTimeframe(timeframe);
+      console.log('[scan] chart switched:', { symChanged, tfChanged });
       // Смена символа/ТФ инициирует новую прогрессивную догрузку: ждём её
       // полного завершения (state.progressiveLoaded), иначе сделки нарисуем
       // на недогруженных свечах и lightweight-charts сожмёт свечи.
@@ -985,6 +1027,8 @@ async function _showTradesForRow(row, btn) {
         alert('Данные не загрузились за 2 мин. Повторите.');
         return;
       }
+    } else {
+      console.log('[scan] chart unchanged, skipping reload');
     }
 
     const resp = await fetch('/api/backtest/trades', {
@@ -1032,23 +1076,9 @@ async function _showTradesForRow(row, btn) {
     }
     state.backtestRenderer.render(trades);
 
-    try {
-      // Авто-зум на ПОСЛЕДНИЕ 200 сделок (не на все 500+): рыночный диапазон
-      // всех сделок сжимал свечи до полосы. entry/exit_time — unix-секунды
-      // (НЕ миллисекунды — ×1000 увело бы график в 1970). Плюс отступ 1 час.
-      // Сами блоки рисуются по ВСЕМ сделкам (появятся при zoom-out).
-      const MAX_TRADES_IN_VIEW = 200;
-      const visible = trades.length > MAX_TRADES_IN_VIEW
-        ? trades.slice(-MAX_TRADES_IN_VIEW) : trades;
-      const first = visible[0];
-      const last = visible[visible.length - 1];
-      const from = first.entry_time - 3600;
-      const to = (last.exit_time || last.entry_time) + 3600;
-      if (state.chart && first && last) {
-        state.chart.timeScale().setVisibleRange({ from, to });
-      }
-      console.log(`[scan] zoomed to last ${visible.length} of ${trades.length} (dataset=${dataset}) trades`);
-    } catch (e) { /* скролл не критичен */ }
+    // BLOCK-36: zoom применяем только ПОСЛЕ завершения фоновой прогрессивной
+    // догрузки — иначе fitChartToData перебивает setVisibleRange (см. выше).
+    await _applyZoomWhenReady(trades, dataset);
 
     btn.textContent = '✓ ' + trades.length + ' сделок';
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
@@ -1056,6 +1086,10 @@ async function _showTradesForRow(row, btn) {
     console.error('show trades failed:', e);
     btn.textContent = '⚠ Ошибка: ' + e.message;
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+  } finally {
+    // BLOCK-36: pollLive размораживаем через 2 сек после рендера,
+    // чтобы он не перебил setVisibleRange/рисование блоков.
+    setTimeout(() => { state._suspendPoll = false; }, 2000);
   }
 }
 

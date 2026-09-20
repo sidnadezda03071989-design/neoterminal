@@ -115,13 +115,25 @@ export function initBacktestRenderer() {
 }
 
 export function onSymbolOrTfChange() {
+  const symSel = $('symbol-select');
+  const tfSel = $('timeframe-select');
+  const newSym = symSel ? symSel.value : 'BTCUSDT';
+  const newTf = tfSel ? tfSel.value : '15m';
+
+  /* BLOCK-36: symbol/tf НЕ изменились — НЕ перезагружать график. Раньше
+     любой вызов (в т.ч. ложный из switchSymbol/setTimeframe) запускал
+     loadLive(true) → progressive → fitChartToData, который перебивал
+     setVisibleRange сделок бэктеста (97 → 2 блока). */
+  if (state.symbol === newSym && state.timeframe === newTf) {
+    console.log('[init] onSymbolOrTfChange: no change, skip');
+    return;
+  }
+
   stopReplay();
   pauseReplay();
   showChartLoading();
-  const symSel = $('symbol-select');
-  const tfSel = $('timeframe-select');
-  state.symbol = symSel ? symSel.value : 'BTCUSDT';
-  state.timeframe = tfSel ? tfSel.value : '1H';
+  state.symbol = newSym;
+  state.timeframe = newTf;
   highlightActiveWatchlist(state.symbol);
   state.candles = [];
   state.ind = null;

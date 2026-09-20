@@ -15,6 +15,7 @@ export class BacktestTradesRenderer {
     this.clear();
     this.trades = Array.isArray(trades) ? trades : [];
     this._warnedSkipped = false;
+    this._loggedOnce = false; // BLOCK-36: диагностика — раз за рендер
     if (this.trades.length === 0) return;
 
     this.primitive = new BacktestTradesPrimitive(this.trades, this);
@@ -96,20 +97,19 @@ class BacktestTradesRendererImpl {
       // блоков, сколько сделок в статистике. Сделки вне загруженных свечей
       // (toPx == null) не рисуются, но НЕ отбрасываются из счётчика — блоки
       // появятся при zoom-out (они просто вне текущего viewport).
-      let skipped = 0;
+      // BLOCK-36: диагностика — сколько блоков реально нарисовано/пропущено.
+      // Флаг на manager, т.к. impl-объект создаётся заново на каждый кадр.
+      let drawn = 0, skipped = 0;
       for (const t of this.trades) {
         const pEntry = this.manager.toPx(t.entry_time, t.entry_price);
-        if (pEntry) {
-          this._drawTrade(ctx, size, t, pEntry);
-        } else {
-          skipped++;
-        }
+        if (!pEntry) { skipped++; continue; }
+        this._drawTrade(ctx, size, t, pEntry);
+        drawn++;
       }
-      if (skipped > 0 && !this.manager._warnedSkipped) {
-        this.manager._warnedSkipped = true;
-        console.warn(`BacktestTradesRenderer: ${skipped}/${this.trades.length} ` +
-          'сделок вне загруженных свечей (не отрисованы, счётчик не меняется; ' +
-          'появятся при zoom-out)');
+      if (!this.manager._loggedOnce) {
+        this.manager._loggedOnce = true;
+        console.log(`[viz] drew ${drawn}/${this.trades.length} trades ` +
+          `(null coords: ${skipped})`);
       }
       ctx.restore();
     });

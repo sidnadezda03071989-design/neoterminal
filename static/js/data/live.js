@@ -164,6 +164,13 @@ async function _loadFullInBackground(seq, key, fullLimit) {
 }
 
 export async function pollLive() {
+  /* BLOCK-36: на время рендера сделок бэктеста (fetch + render + zoom)
+     полл заморожен — иначе обновление данных сбрасывает видимое окно
+     (view) посреди setVisibleRange. Разморозка через 2 сек в scanner.js. */
+  if (state._suspendPoll) {
+    console.log('[live] poll suspended during render');
+    return;
+  }
   if (state.mode !== 'live') return;
 
   const key = state.symbol + '|' + state.timeframe;

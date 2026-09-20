@@ -62,12 +62,25 @@ export function switchMode(mode) {
 
 export function switchSymbol(sym) {
   const sel = $('symbol-select');
-  if (sel) sel.value = sym;
+  if (!sel) return;
+  /* BLOCK-36: тот же символ — не дёргаем _changeHandler, иначе loadLive(true)
+     запустит progressive и fitChartToData перебьёт setVisibleRange сделок. */
+  if (sel.value === sym) {
+    console.log('[toolbar] switchSymbol: same value, skip');
+    return;
+  }
+  sel.value = sym;
   if (_changeHandler) _changeHandler();
 }
 
 export function setTimeframe(tf) {
   const sel = $('timeframe-select');
-  if (sel) sel.value = tf;
+  if (!sel) return;
+  /* BLOCK-36: тот же ТФ — не дёргаем _changeHandler (см. switchSymbol). */
+  if (sel.value === tf) {
+    console.log('[toolbar] setTimeframe: same value, skip');
+    return;
+  }
+  sel.value = tf;
   if (_changeHandler) _changeHandler();
 }
