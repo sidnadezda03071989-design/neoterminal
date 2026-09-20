@@ -9,6 +9,10 @@ export const state = {
   candlesPrevLength: 0,
   first: true,
   progressiveLoaded: false,  // фоновая прогрессивная догрузка завершилась (live/replay)
+  // BLOCK-34: true в первый load и на смену symbol/tf — setAllData тогда
+  // единственный раз делает fit (последние ~200 свечей + авто-цена);
+  // прогрессивные чанки и reload того же symbol/tf флаг не выставляют.
+  chartNeedsFit: true,
   replay: { index:0, total:0, playing:false, timer:null, speed:2 },
   indicators: {
     sma:true, ema:true, bb:true, volume:true, rsi:false,

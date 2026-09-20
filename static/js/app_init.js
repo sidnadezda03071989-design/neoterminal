@@ -128,8 +128,10 @@ export function onSymbolOrTfChange() {
   if (state.dm && state.dm.setCurrentContext) {
     state.dm.setCurrentContext(state.symbol, state.timeframe);
   }
-  if (state.mode === 'live') loadLive(true);
-  else loadReplay();
+  // BLOCK-34: смена symbol/tf — разовый fit после загрузки, дальше график
+  // реагирует только на действия пользователя.
+  if (state.mode === 'live') { state.chartNeedsFit = true; loadLive(true); }
+  else { state.chartNeedsFit = true; loadReplay(); }
 }
 
 export function initUI() {

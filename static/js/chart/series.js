@@ -95,6 +95,24 @@ export function toMacdHist(arr) {
       color: it.value >= 0 ? 'rgba(66,165,245,0.55)' : 'rgba(239,83,80,0.55)' }));
 }
 
+// Разовый fit после первой загрузки / смены symbol/tf (state.chartNeedsFit):
+// показываем последние ~200 свечей и включаем авто-масштаб ценовой шкалы.
+// Повторные вызовы невозможны — флаг снимается сразу (BLOCK-34).
+export function fitChartToData(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return;
+  state.chartNeedsFit = false;
+  try {
+    const n = candles.length;
+    chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 });
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, n - 200),
+      to: n - 1,
+    });
+    candleSeries.priceScale().applyOptions({ autoScale: true });
+    chart.priceScale('right').applyOptions({ autoScale: true });
+  } catch (e) { /* noop: fit не критичен */ }
+}
+
 export function setAllData(candles, ind) {
   if (!Array.isArray(candles) || candles.length === 0) return;
   if (!ind || typeof ind !== 'object') ind = {};
@@ -120,21 +138,10 @@ export function setAllData(candles, ind) {
   safeSetData(pivotSeries, state.indicators.pivot ? toLineData(ind.pivot) : []);
   updatePaneVisibility();
 
-  // Сброс ценовой шкалы под новый диапазон (критично при смене символа)
-  try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (e) {}
-  try { chart.priceScale('right').applyOptions({ autoScale: true }); } catch (e) {}
-
-  // Жёсткий сброс timescale: показываем последние 200 баров
-  try {
-    const n = candles.length;
-    if (n > 0) {
-      chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 });
-      chart.timeScale().setVisibleLogicalRange({
-        from: Math.max(0, n - 200),
-        to: n - 1,
-      });
-    }
-  } catch (e) {}
+  // Fit — ТОЛЬКО когда его явно попросили (первый load / смена symbol-tf).
+  // Прогрессивные чанки и полный reload того же symbol/tf флаг не ставят:
+  // их видимый zoom/скролл сохраняется (BLOCK-34).
+  if (state.chartNeedsFit === true) fitChartToData(candles);
 
   hideChartLoading();
 }

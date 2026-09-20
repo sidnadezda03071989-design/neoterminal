@@ -69,7 +69,9 @@ export async function loadLive(fit) {
     state.ind = data.indicators;
     state.activeCandles = data.candles;
     if (fit) {
-      // Первый load/смена symbol — жёсткий сброс вида (последние 200 баров).
+      // Первый load/смена symbol или TF — однократный fit (последние ~200
+      // баров, авто-цена). Дальше график сам не двигается (BLOCK-34).
+      state.chartNeedsFit = true;
       setAllData(data.candles, data.indicators);
     } else {
       // Полный reload того же symbol — сохраняем видимый zoom/скролл.

@@ -21,8 +21,33 @@ export const chart = LightweightCharts.createChart(container, {
     vertLines: { color: COLORS.grid },
     horzLines: { color: COLORS.grid },
   },
-  rightPriceScale: { borderColor: COLORS.border },
-  timeScale: { borderColor: COLORS.border, timeVisible:true, secondsVisible:false },
+  rightPriceScale: { borderColor: COLORS.border, autoScale: true },
+  // BLOCK-34: график живёт своими руками. shiftVisibleRangeOnNewBar=false —
+  // новый бар НЕ автоскроллит видимый диапазон; rightBarStaysOnScroll=true —
+  // крайний бар не «уплывает» при прокрутке.
+  timeScale: {
+    borderColor: COLORS.border, timeVisible: true, secondsVisible: false,
+    shiftVisibleRangeOnNewBar: false,
+    rightBarStaysOnScroll: true,
+  },
+  handleScroll: {
+    mouseWheel: true,
+    pressedMouseMove: true,      // drag мышью работает
+    horzTouchDrag: true,
+    vertTouchDrag: false,        // вертикальный drag не нужен
+  },
+  handleScale: {
+    axisPressedMouseMove: {      // НЕ даём двигать ТФ за ось времени
+      time: false,
+      price: true,               // ценовую шкалу разрешаем
+    },
+    axisDoubleClickReset: {
+      time: false,
+      price: true,
+    },
+    mouseWheel: true,
+    pinch: true,
+  },
   crosshair: {
     vertLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor:'#4a4f5f' },
     horzLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor:'#4a4f5f' },
