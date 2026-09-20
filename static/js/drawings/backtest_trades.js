@@ -1,5 +1,18 @@
 // BacktestTradesRenderer — primitive для отрисовки сделок бэктеста на графике.
 // Паттерн (paneViews/attached/detach/attachPrimitive) повторяет DrawingsManager.
+
+// BLOCK-36-fix6: валидная пиксельная координата — конечное число, не левее
+// нуля по X и внутри canvas по Y. Хелпер нужен потому, что toPx(time, null)
+// НЕ возвращает null: lightweight-charts считает y без проверки цены
+// (null в арифметике → 0 → конечная координата далеко за canvas,
+// undefined → NaN → fillRect молча ничего не рисует). Отсюда симптом
+// "drew 97/97", при котором блоков на графике не видно.
+function _validPx(p, canvasH) {
+  return !!p && typeof p.x === 'number' && isFinite(p.x) && p.x >= 0
+    && typeof p.y === 'number' && isFinite(p.y)
+    && p.y >= 0 && p.y <= canvasH;
+}
+
 export class BacktestTradesRenderer {
   constructor(chart, series, container, candlesRef) {
     this.chart = chart;
@@ -16,6 +29,7 @@ export class BacktestTradesRenderer {
     this.trades = Array.isArray(trades) ? trades : [];
     this._warnedSkipped = false;
     this._loggedOnce = false; // BLOCK-36: диагностика — раз за рендер
+    this._firstTraceDone = false; // BLOCK-36-fix6: трассировка первой сделки
     if (this.trades.length === 0) return;
 
     this.primitive = new BacktestTradesPrimitive(this.trades, this);
@@ -101,29 +115,69 @@ class BacktestTradesRendererImpl {
       // Флаг на manager, т.к. impl-объект создаётся заново на каждый кадр.
       let drawn = 0, skipped = 0;
       for (const t of this.trades) {
-        const pEntry = this.manager.toPx(t.entry_time, t.entry_price);
-        if (!pEntry) { skipped++; continue; }
-        this._drawTrade(ctx, size, t, pEntry);
-        drawn++;
+        // BLOCK-36-fix6: валидность координат проверяет сам _drawTrade
+        // (невалидная точка входа → false, без рисования).
+        if (this._drawTrade(ctx, size, t)) drawn++; else skipped++;
       }
       if (!this.manager._loggedOnce) {
         this.manager._loggedOnce = true;
         console.log(`[viz] drew ${drawn}/${this.trades.length} trades ` +
-          `(null coords: ${skipped})`);
+          `(invalid coords skipped: ${skipped})`);
       }
       ctx.restore();
     });
   }
 
-  _drawTrade(ctx, mediaSize, t, pEntry) {
+  // Возвращает true, если сделка реально нарисована (BLOCK-36-fix6).
+  _drawTrade(ctx, mediaSize, t) {
     const mgr = this.manager;
+    const h = mediaSize.height;
 
-    // Точки входа и выхода
-    const pExit = t.exit_time ? mgr.toPx(t.exit_time, t.exit_price) : null;
-    const pTp = t.tp_time ? mgr.toPx(t.tp_time, t.tp_price) : null;
-    const pSl = t.sl_time ? mgr.toPx(t.sl_time, t.sl_price) : null;
-    const pTpLine = mgr.toPx(t.entry_time, t.tp_price);   // для линии TP на всю ширину сделки
-    const pSlLine = mgr.toPx(t.entry_time, t.sl_price);
+    // BLOCK-36-fix6: диагностика — первая сделка один раз за рендер.
+    if (!mgr._firstTraceDone && this.trades.length > 0) {
+      const t0 = this.trades[0];
+      const p0 = mgr.toPx(t0.entry_time, t0.entry_price);
+      const pTp0 = mgr.toPx(t0.entry_time, t0.tp_price);
+      const pSl0 = mgr.toPx(t0.entry_time, t0.sl_price);
+      const pEx0 = t0.exit_time
+        ? mgr.toPx(t0.exit_time, t0.exit_price) : null;
+      console.log('[viz-trace] trade[0]:', {
+        entry_price: t0.entry_price,
+        exit_price: t0.exit_price,
+        tp_price: t0.tp_price,
+        sl_price: t0.sl_price,
+        pEntry: p0, pExit: pEx0, pTp: pTp0, pSl: pSl0,
+        canvasH: mgr.container?.clientHeight,
+      });
+      mgr._firstTraceDone = true;
+    }
+
+    // Точки входа и выхода. Валидной считается только координата-число
+    // внутри canvas: null/отсутствующие цены lightweight-charts превращает
+    // в y далеко за canvas или NaN (см. _validPx).
+    const pEntry = _validPx(mgr.toPx(t.entry_time, t.entry_price), h)
+      ? mgr.toPx(t.entry_time, t.entry_price) : null;
+    // Без валидной точки входа рисовать нечего: entry — база для блока,
+    // линии входа, треугольника и метки PnL.
+    if (!pEntry) return false;
+
+    const pExit = t.exit_time && t.exit_price != null
+      && _validPx(mgr.toPx(t.exit_time, t.exit_price), h)
+      ? mgr.toPx(t.exit_time, t.exit_price) : null;
+    const pTp = t.tp_time && t.tp_price != null
+      && _validPx(mgr.toPx(t.tp_time, t.tp_price), h)
+      ? mgr.toPx(t.tp_time, t.tp_price) : null;
+    const pSl = t.sl_time && t.sl_price != null
+      && _validPx(mgr.toPx(t.sl_time, t.sl_price), h)
+      ? mgr.toPx(t.sl_time, t.sl_price) : null;
+    // Линии TP/SL на всю ширину сделки: цена null (signal/end-выход, скан
+    // без TP/SL) или координата вне canvas → null, каскад возьмёт entry/exit.
+    const pTpLine = t.tp_price != null
+      && _validPx(mgr.toPx(t.entry_time, t.tp_price), h)
+      ? mgr.toPx(t.entry_time, t.tp_price) : null;
+    const pSlLine = t.sl_price != null
+      && _validPx(mgr.toPx(t.entry_time, t.sl_price), h)
+      ? mgr.toPx(t.entry_time, t.sl_price) : null;
 
     const xEntry = pEntry.x;
     // BLOCK-36-fix5: ширина блока — минимум 20px, иначе на плоских сделках
@@ -158,6 +212,12 @@ class BacktestTradesRendererImpl {
       yTop = centerY - MIN_HEIGHT / 2;
       yBot = centerY + MIN_HEIGHT / 2;
     }
+
+    // BLOCK-36-fix6: после расширения до MIN_HEIGHT зажимаем блок в пределы
+    // canvas — у сделки у края диапазона прямоугольник иначе уезжает за
+    // границу и остаётся невидимым.
+    yTop = Math.max(0, yTop);
+    yBot = Math.min(h, yBot);
 
     // Заливка + обводка блока (обводка сплошным цветом — контрастнее,
     // чем rgba-граница из fix4).
@@ -228,5 +288,7 @@ class BacktestTradesRendererImpl {
       ctx.arc(pSl.x, pSl.y, 2, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    return true; // BLOCK-36-fix6: сделка нарисована
   }
 }
