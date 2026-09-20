@@ -42,6 +42,29 @@ def _prune_run_stats():
         RUN_STATS.pop(run_id, None)
 
 
+# Отмена сканов по кнопке «Отменить» (POST /api/scan/<run_id>/cancel).
+# run_scan проверяет флаг на границах пар/стратегий/комбинаций и завершает
+# прогон досрочно; статистика помечается "cancelled": True, а записавшиеся
+# результаты остаются доступны через GET /api/scan/<run_id>.
+_CANCELLED = set()
+_CANCELLED_MAX = 50
+
+
+def cancel_run(run_id):
+    """Пометить прогон на остановку. Воркер остановится на ближайшей
+    границе (пара/комбинация) и закроет RUN_STATS с cancelled=True."""
+    log.info("scan: %s cancel requested", run_id)
+    _CANCELLED.add(run_id)
+    if len(_CANCELLED) > _CANCELLED_MAX:
+        for rid in list(_CANCELLED)[:len(_CANCELLED) - _CANCELLED_MAX]:
+            _CANCELLED.discard(rid)
+
+
+def is_cancelled(run_id):
+    """True, если прогон помечен на отмену (в т.ч. уже завершённый)."""
+    return run_id in _CANCELLED
+
+
 def _generate_combinations(strategy, grid):
     """Декартово произведение параметров грида -> list[dict].
 
@@ -152,10 +175,11 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
     на символ), а не 900. combined_sharpe = min(train, test) —
     консервативная оценка: стратегия должна быть хороша на обоих окнах.
 
-    TP/SL (BLOCK-37): оба окна считаются с уровнями config.BACKTEST_TP_ATR /
-    config.BACKTEST_SL_ATR (2×ATR / 1×ATR от entry) — это рутинные выходы
-    стратегии, а не опция. Панель и «📊 Показать на графике» гонят один и тот
-    же вариант, поэтому trades в панели и блоки на графике совпадают 1:1.
+    TP/SL (BLOCK-37): оба окна считаются с уровнями — SL = BACKTEST_SL_ATR×ATR,
+    TP строится от стопа с базовым R/R из настройки скана (db.get_scan_rr(),
+    UI-поле «Базовый R/R»; фолбэк config.BACKTEST_RR). Панель и «📊 Показать
+    на графике» гонят один и тот же вариант (routes/backtest.py читает ту же
+    настройку), поэтому trades в панели и блоки на графике совпадают 1:1.
 
     ind_train/ind_test — готовые индикаторы окон (compute_indicators),
     посчитанные ОДИН раз на пару (symbol, tf) в run_scan; если не переданы
@@ -181,11 +205,11 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
     res_train = run_backtest(symbol, tf, None, None, strategy_name, params,
                              df=df_train, ind=ind_train,
                              sl_atr=config.BACKTEST_SL_ATR,
-                             rr=config.BACKTEST_RR)
+                             rr=db.get_scan_rr())
     res_test = run_backtest(symbol, tf, None, None, strategy_name, params,
                             df=df_test, ind=ind_test,
                             sl_atr=config.BACKTEST_SL_ATR,
-                            rr=config.BACKTEST_RR)
+                            rr=db.get_scan_rr())
     if "error" in res_train or "error" in res_test:
         log.warning("scan %s %s %s: бэктест вернул ошибку",
                     symbol, strategy_name, params)
@@ -232,7 +256,8 @@ def _task_key(task):
 
 def _push_progress(run_id, done, total, current, eta_seconds=None,
                    tf_index=None, tf_total=None, current_tf=None,
-                   current_symbol=None, last_error=None, failed_at=None):
+                   current_symbol=None, last_error=None, failed_at=None,
+                   cancelled=False):
     """SSE-событие прогресса скана (прогресс не должен ломать сам скан).
 
     eta_seconds добавляется не в каждое событие, а раз в
@@ -247,6 +272,10 @@ def _push_progress(run_id, done, total, current, eta_seconds=None,
     Поля ошибки (пара (symbol, tf) упала): last_error — текст исключения,
     failed_at — "SYMBOL/TF". Ошибка не останавливает скан — следующая пара
     обрабатывается.
+
+    cancelled=True — финальное событие после остановки по кнопке «Отменить»
+    (done может быть < total): UI завершает прогон и показывает частичные
+    результаты.
     """
     try:
         data = {"run_id": run_id, "done": done, "total": total,
@@ -259,6 +288,8 @@ def _push_progress(run_id, done, total, current, eta_seconds=None,
         if last_error is not None:
             data["last_error"] = last_error
             data["failed_at"] = failed_at
+        if cancelled:
+            data["cancelled"] = True
         _ws_push("scan_progress", data)
     except Exception:  # noqa: BLE001
         log.exception("scan_progress push failed")
@@ -320,6 +351,8 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
     timeout = config.SCAN_SYMBOL_TIMEOUT_SECONDS
 
     for (symbol, tf), strategies in plan_by_pair.items():
+        if is_cancelled(run_id):
+            break
         tf_index = tf_index_by_name.get(tf, 1)
         pair_start = time.time()
         log.info("scan: start %s (tf=%s)", symbol, tf)
@@ -370,6 +403,8 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
             ind_test = compute_indicators(df_test)
 
             for strategy, params_list in strategies.items():
+                if is_cancelled(run_id):
+                    break
                 if time.time() - pair_start > timeout:
                     log.warning("scan: %s/%s timeout — пропуск стратегии %s "
                                 "(%d комбинаций)", symbol, tf, strategy,
@@ -378,15 +413,20 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                 log.info("scan: %s/%s strategy=%s — %d combos",
                          symbol, tf, strategy, len(params_list))
                 strategy_kept = 0
-                with ThreadPoolExecutor(
-                        max_workers=config.SCAN_WORKERS) as ex:
+                executor = ThreadPoolExecutor(
+                    max_workers=config.SCAN_WORKERS)
+                try:
                     futures = {
-                        ex.submit(_run_single, symbol, tf, strategy,
-                                  params, df_train, df_test,
-                                  ind_train, ind_test): params
+                        executor.submit(_run_single, symbol, tf, strategy,
+                                        params, df_train, df_test,
+                                        ind_train, ind_test): params
                         for params in params_list
                     }
                     for fut in as_completed(futures):
+                        if is_cancelled(run_id):
+                            for pending in futures:
+                                pending.cancel()
+                            break
                         if time.time() - pair_start > timeout:
                             log.warning("scan: %s/%s timeout (%ds)",
                                         symbol, tf, timeout)
@@ -425,6 +465,12 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                                        eta_seconds=eta, tf_index=tf_index,
                                        tf_total=len(tfs), current_tf=tf,
                                        current_symbol=symbol)
+                finally:
+                    # Отмена: не ждём незаконченные воркеры (wait=False,
+                    # cancel_futures=True) — финальное скан-progress событие
+                    # уходит сразу, а дописывающиеся результаты сохраняются
+                    # в фоне.
+                    executor.shutdown(wait=False, cancel_futures=True)
                 log.info("scan: %s/%s strategy=%s done (%d saved)",
                          symbol, tf, strategy, strategy_kept)
         except Exception as exc:  # noqa: BLE001 — не валим весь скан
@@ -439,15 +485,20 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
             continue
 
     # Финальное событие: done — фактическое число обработанных комбинаций
-    # (при таймаутах/ошибках может быть меньше total).
+    # (при таймаутах/ошибках/отмене может быть меньше total).
+    cancelled = is_cancelled(run_id)
+    if cancelled:
+        log.info("scan: %s cancelled (done=%d/%d)", run_id, done, total)
     _push_progress(run_id, done, total, None,  # финальное событие
+                   cancelled=cancelled,
                    tf_index=len(tfs), tf_total=len(tfs),
                    current_tf=tfs[-1] if tfs else None, current_symbol=None)
     # update, а не новый dict: сохраняем done/eta_seconds, накопленные в
     # прогрессе (их читает поллинг-фолбэк UI, GET /api/scan/<run_id> -> stats).
     stats = RUN_STATS.get(run_id) or {}
     stats.update({"total": total, "kept": kept, "filtered": total - kept,
-                  "finished": True})
+                  "finished": True, "cancelled": cancelled})
     RUN_STATS[run_id] = stats
     _prune_run_stats()
+    _CANCELLED.discard(run_id)  # прогон завершён — флаг отмены больше не нужен
     return run_id

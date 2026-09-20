@@ -535,41 +535,75 @@ def _isna(v):
     return v is None or (isinstance(v, float) and np.isnan(v))
 
 
-def rr_levels(entry_price, risk_atr, atr_entry, rr=None):
+def rr_levels(entry_price, risk_atr, atr_entry, rr=None, direction="BUY"):
     """Уровни сделки СТРОГО с R/R = rr (по умолчанию config.BACKTEST_RR).
 
-    Стоп — первичен (риск трейдера): SL = entry − risk_atr×ATR.
-    Тейк — ВСЕГДА вдвое (rr) дальше стопа: TP = entry + rr×(entry − SL),
-    то есть расстояние TP→entry ровно в rr раз больше расстояния entry→SL
-    и НЕ зависит от знака/величины tp_atr, переданного вызывающим.
+    Стоп — первичен: риск = |risk_atr|×ATR от entry.
+    Long:  SL = entry − risk, TP = entry + rr×risk.
+    Short: SL = entry + risk, TP = entry − rr×risk.
+    Расстояние |TP−entry| ровно в rr раз больше |entry−SL| — всегда.
     Возвращает (tp_price, sl_price, risk); (None, None, None) если уровни
-    построить нельзя (нет ATR/rr/риска) — тогда сделка не открывается.
+    построить нельзя — сделка не открывается.
     """
     r = None if rr is None else abs(float(rr))
     risk = None
-    if entry_price and risk_atr and atr_entry and atr_entry > 0:
+    entry = utils._clean(entry_price)
+    if entry and risk_atr and atr_entry and atr_entry > 0:
         risk = abs(float(risk_atr)) * float(atr_entry)
-    if not entry_price or not r or r <= 0 or not risk or risk <= 0:
+    if not entry or not r or r <= 0 or not risk or risk <= 0:
         return None, None, None
-    sl_price = round(entry_price - risk, 8)
-    tp_price = round(entry_price + r * risk, 8)
+    is_long = str(direction or "BUY").upper() != "SELL"
+    if is_long:
+        sl_price = round(entry - risk, 8)
+        tp_price = round(entry + r * risk, 8)
+    else:
+        sl_price = round(entry + risk, 8)
+        tp_price = round(entry - r * risk, 8)
     return tp_price, sl_price, risk
 
 
-def _exit_on_bar(position, high, low):
-    """Первая линия, которой коснулась цена на баре: ("tp"|"sl", цена).
+def _hit_sl(is_long, sl_price, hi, lo, op):
+    if sl_price is None:
+        return False
+    if is_long:
+        if op is not None and op <= sl_price:
+            return True
+        return lo is not None and lo <= sl_price
+    if op is not None and op >= sl_price:
+        return True
+    return hi is not None and hi >= sl_price
 
-    Возвращает (None, None), если ни TP, ни SL не задеты. Оба уровня на
-    одном баре — консервативно побеждает SL (риск важнее прибыли): по OHLC
-    нельзя узнать, что было раньше, поэтому результат не завышаем.
+
+def _hit_tp(is_long, tp_price, hi, lo, op):
+    if tp_price is None:
+        return False
+    if is_long:
+        if op is not None and op >= tp_price:
+            return True
+        return hi is not None and hi >= tp_price
+    if op is not None and op <= tp_price:
+        return True
+    return lo is not None and lo <= tp_price
+
+
+def _exit_on_bar(position, high, low, open_=None):
+    """Первая линия, которой коснулась цена на баре: (цена, "tp"|"sl").
+
+    Гэп через уровень: open уже за SL/TP — этот уровень. Оба уровня на
+    одном баре (фитиль задел и стоп, и тейк) — всегда SL: по OHLC нельзя
+    узнать порядок касаний, тейк после стопа считать нельзя.
     """
     hi = utils._clean(high)
     lo = utils._clean(low)
+    op = utils._clean(open_)
     sl_price = position.get("sl_price")
     tp_price = position.get("tp_price")
-    if sl_price is not None and lo is not None and lo <= sl_price:
+    is_long = str(position.get("direction") or "BUY").upper() != "SELL"
+    sl_hit = _hit_sl(is_long, sl_price, hi, lo, op)
+    tp_hit = _hit_tp(is_long, tp_price, hi, lo, op)
+    if sl_hit:
         return sl_price, "sl"
-    if tp_price is not None and hi is not None and hi >= tp_price:
+    if tp_hit:
         return tp_price, "tp"
     return None, None
 
@@ -606,10 +640,16 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     exit_reason всегда "tp" или "sl". Соответственно risk/reward, а не
     направление сигнала, определяют результат каждой сделки.
 
-    Сделки, у которых уровни построить нельзя (нет ATR/rr/риска), НЕ
-    открываются: у 100% записанных сделок есть tp_price/sl_price/tp_time/
-    sl_time, а позиция, не дожившая до уровня, просто не попадает в trades —
-    это открытая позиция, а не результат (BLOCK-42).
+    Сделки, у которых уровни построить нельзя (нет ATR/rr/риска) или
+    расстояние TP↔SL меньше BACKTEST_MIN_TP_SL_CANDLES средних свечей окна
+    (mean(high-low)) — НЕ открываются: у 100% записанных сделок есть
+    tp_price/sl_price/tp_time/sl_time, а позиция, не дожившая до уровня,
+    просто не попадает в trades — это открытая позиция, а не результат
+    (BLOCK-42).
+
+    Сделки не открываются одна внутри другой: выход (касание TP/SL) закрывает
+    позицию, после чего бар пропускается (continue) — новая сделка может
+    войти только со следующего бара, поэтому entry_time > exit_time прошлой.
 
     dataset — "full" (вся история), "train" (первые SCAN_TRAIN_SPLIT=70%) или
     "test" (последние 30%, out-of-sample). При train/test история делится на
@@ -690,10 +730,22 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     # (аналог сигнала стратегии) не должна растекаться в O(n^2).
     high_arr = df["high"].to_numpy(dtype=float) if "high" in df else None
     low_arr = df["low"].to_numpy(dtype=float) if "low" in df else None
-    # ATR(14) нужен ВСЕГДА (BLOCK-42): уровни TP/SL строятся для каждой
-    # сделки, без них сделка не открывается вообще.
-    atr_arr = (_atr(df["high"], df["low"], df["close"], 14).to_numpy(dtype=float)
+    open_arr = df["open"].to_numpy(dtype=float) if "open" in df else None
+    # ATR нужен ВСЕГДА (BLOCK-42): уровни TP/SL строятся для каждой сделки,
+    # без них сделка не открывается вообще. Период — config.BACKTEST_ATR_PERIOD
+    # (дефолт 14): atr_at_entry в trades считается ровно этим ATR.
+    atr_arr = (_atr(df["high"], df["low"], df["close"],
+                    config.BACKTEST_ATR_PERIOD).to_numpy(dtype=float)
                if "high" in df and "low" in df else None)
+    # Фильтр микро-сделок: расстояние TP↔SL должно быть не меньше
+    # BACKTEST_MIN_TP_SL_CANDLES×средняя_свеча окна (mean(high-low)). Если
+    # окно пустое/плоское — фильтр выключен (min_tp_sl=None).
+    min_tp_sl = None
+    if high_arr is not None and low_arr is not None \
+            and config.BACKTEST_MIN_TP_SL_CANDLES > 0:
+        avg_candle = utils._clean(float(np.nanmean(high_arr - low_arr)))
+        if avg_candle and avg_candle > 0:
+            min_tp_sl = config.BACKTEST_MIN_TP_SL_CANDLES * avg_candle
     for i in range(len(df)):
         price = utils._clean(df["close"].iloc[i])
         if price is None:
@@ -703,22 +755,20 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             continue
         tstamp = int(ts[i])
         sig = strategy.next(df, ind, i, position, cash, equity_log)
-        # BLOCK-42: результат сделки — ЛИНИЯ, которой цена коснулась первой.
-        # Уровни зафиксированы на баре входа (R/R = rr) и проверяются ДО
-        # сигнала стратегии: сигналы стратегии отвечают только за открытие
-        # позиции, закрытие всегда по TP/SL. Пробиты оба уровня в одном баре —
-        # консервативно считаем, что первым сработал SL (риск важнее прибыли).
-        if position is not None:
+        # Выход ТОЛЬКО по касанию TP/SL, со следующего бара после входа
+        # (вход по close — фитиль бара входа уже в прошлом, это не выход).
+        # Оба уровня на одном баре → SL: тейк после стопа не засчитывается.
+        if position is not None and i > entry_bar:
             exit_price, exit_reason = _exit_on_bar(
-                position, high_arr[i] if high_arr is not None else None,
-                low_arr[i] if low_arr is not None else None)
+                position,
+                high_arr[i] if high_arr is not None else None,
+                low_arr[i] if low_arr is not None else None,
+                open_arr[i] if open_arr is not None else None)
             if exit_price is not None:
                 value = position["shares"] * exit_price
-                pnl = value - (position["shares"] * position["entry"])
                 entry_shares = position["shares"]
                 entry_price = position["entry"]
-                # Отметка сработавшего уровня: позицию закрыл TP/SL на этом
-                # баре — время выхода и есть время касания уровня.
+                pnl = value - (entry_shares * entry_price)
                 if exit_reason == "tp":
                     position["tp_time"] = tstamp
                 else:
@@ -729,18 +779,17 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                     "exit_time": tstamp,
                     "entry_price": entry_price,
                     "exit_price": exit_price,
-                    "direction": "BUY",
-                    # Уровни входа берутся из позиции: они есть у 100% сделок
-                    # (сделка без уровней просто не открывается).
+                    "direction": position.get("direction") or "BUY",
                     "tp_price": position.get("tp_price"),
                     "sl_price": position.get("sl_price"),
+                    # ATR на баре входа (config.BACKTEST_ATR_PERIOD): фронтенд
+                    # строит зоны TP/SL строго по этим уровням и atr_at_entry.
+                    "atr_at_entry": position.get("atr_at_entry"),
                     "tp_time": position.get("tp_time"),
                     "sl_time": position.get("sl_time"),
                     "pnl": round(pnl, 2),
                     "pnl_pct": round((pnl / (entry_shares * entry_price)) * 100, 4)
                                if entry_shares and entry_price else 0,
-                    # BLOCK-42: R-мультипликатор сделки: +rr при тейке, −1 при
-                    # стопе — фактический R/R виден в каждой сделке.
                     "r_ratio": rr if exit_reason == "tp" else -1.0,
                     "exit_reason": exit_reason,
                 })
@@ -752,26 +801,53 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         if sig and sig["action"] == "BUY" and not position:
             atr_entry = utils._clean(atr_arr[i]) if atr_arr is not None else None
             tp_price, sl_price, _risk = rr_levels(
-                sig["price"], risk_atr, atr_entry, rr)
-            if tp_price is not None:
+                sig["price"], risk_atr, atr_entry, rr, direction="BUY")
+            if tp_price is not None and \
+                    (min_tp_sl is None or abs(tp_price - sl_price) >= min_tp_sl):
                 shares = cash / sig["price"] if sig["price"] else 0
                 position = {
                     "shares": shares,
                     "entry": sig["price"],
-                    # Уровни считаются СРАЗУ на входе (ATR(14) бара входа) и
-                    # живут в позиции до закрытия. Позиции здесь только LONG
-                    # (SELL — не сигнал к шорту, а условие для новой покупки).
+                    "direction": "BUY",
                     "tp_price": tp_price,
                     "sl_price": sl_price,
-                    "tp_time": None,  # время касания заполнит выход по уровню
+                    "atr_at_entry": atr_entry,
+                    "tp_time": None,
                     "sl_time": None,
                 }
                 entry_bar = i
                 cash = 0
-            # else: нет ATR/риска — уровни не построить, сделку не открываем
+            # else: нет ATR/риска (или TP↔SL короче трёх средних свечей) —
+            # уровни не построить/сделка микроразмера — не открываем
 
     if not equity_log:
-        return {"error": "Пустая кривая эквити"}
+        # Ни одной закрытой сделки: сигналов не было либо все отфильтрованы
+        # (TP↔SL короче трёх средних свечей). Валидный прогон с нулевыми
+        # метриками, а НЕ ошибка — иначе скан пометит комбинацию ошибкой,
+        # хотя это просто «0 сделок» (отсев SCAN_MIN_TRADES и так её выкинет).
+        return {
+            "total_return": 0.0,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "avg_win_pct": 0.0,
+            "avg_loss_pct": 0.0,
+            "expectancy": 0.0,
+            "rr_ratio": None,
+            "profit_factor": 0.0,
+            "tp_touches": 0,
+            "sl_touches": 0,
+            "trades": [],
+            "trades_full": [],
+            "equity_curve": [],
+            "candles_used": len(df),
+            "bars_from": int(ts[0]),
+            "bars_to": int(ts[-1]),
+            "dataset": dataset,
+            "train_range": train_range,
+            "test_range": test_range,
+        }
 
     # BLOCK-42: позиция, открытая, но не коснувшаяся ни TP, ни SL к концу
     # данных, НЕ попадает в сделки: результат — это линия, которую цена

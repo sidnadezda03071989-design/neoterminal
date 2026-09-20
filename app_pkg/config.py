@@ -89,6 +89,23 @@ BACKTEST_SL_ATR = 1.0     # размер риска (стоп) = 1×ATR(14) от
 BACKTEST_RR = 2.0         # Take Profit = 2×ATR от entry (entry↔TP = rr × entry↔SL)
 # Обратная совместимость: старые вызывающие могли передать tp_atr напрямую.
 BACKTEST_TP_ATR = BACKTEST_RR * BACKTEST_SL_ATR  # 2.0
+# Минимальное расстояние между TP и SL у сделки: не меньше
+# BACKTEST_MIN_TP_SL_CANDLES средних свечей графика (mean(high-low) по окну
+# бэктеста). Сделки с микро-стопом (TP↔SL уже трёх свечей) НЕ открываются.
+BACKTEST_MIN_TP_SL_CANDLES = 3.0
+# Период ATR для уровней TP/SL сделки (SL = BACKTEST_SL_ATR×ATR от entry,
+# TP строится от стопа с R/R = BACKTEST_RR; atr_at_entry в trades — это ATR
+# этого периода на баре входа).
+BACKTEST_ATR_PERIOD = 14
+
+# Настройка «базовый R/R» скана (поле в UI сканера): хранится в БД
+# (settings.scan_rr), применяется к скану, /api/backtest и
+# /api/backtest/trades — чтобы панель и блоки на графике всегда совпадали 1:1.
+# BACKTEST_RR выше остаётся фолбэком/дефолтом, когда настройка не задана.
+SCAN_RR_DEFAULT = 2.0
+SCAN_RR_MIN = 0.5
+SCAN_RR_MAX = 10.0
+SCAN_RR_STEP = 0.1
 
 # --------------------------------------------- grid-search сканер стратегий
 # Лимит комбинаций параметров на один запуск сканера. Если декартово

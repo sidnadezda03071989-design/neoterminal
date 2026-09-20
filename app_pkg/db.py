@@ -112,9 +112,63 @@ def _init_db(conn) -> None:
             created_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_scan_run ON scan_results(run_id);
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
         """
     )
     conn.commit()
+
+# ------------------------------------------------------------------ settings
+def get_setting(key: str, default=None):
+    """Значение настройки (settings.key -> value) или default, если её нет."""
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+    except sqlite3.Error:
+        return default
+
+
+def set_setting(key: str, value) -> None:
+    """Сохранить настройку (upsert). value приводится к строке."""
+    conn = _get_db()
+    with _db_lock:
+        with conn:
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)),
+            )
+
+
+def get_scan_rr() -> float:
+    """Базовый R/R скана (настройка UI). Фолбэк — config.BACKTEST_RR."""
+    raw = get_setting("scan_rr")
+    if raw is None:
+        return config.BACKTEST_RR
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return config.BACKTEST_RR
+
+
+def set_scan_rr(value) -> float:
+    """Сохранить базовый R/R скана (с clamp по config.SCAN_RR_MIN/MAX).
+
+    Кидает ValueError при нечисловом входе; возвращает сохранённое значение.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("rr must be a number")
+    v = max(config.SCAN_RR_MIN, min(config.SCAN_RR_MAX, v))
+    set_setting("scan_rr", v)
+    return v
+
 
 # ------------------------------------------------------------------ drawings
 def _row_to_drawing(row) -> dict:

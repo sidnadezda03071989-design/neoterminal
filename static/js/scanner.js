@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { switchSymbol, setTimeframe } from './ui/toolbar.js';
+import { setLevelConfig } from './drawings/backtest_trades.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -238,10 +239,48 @@ async function _ensureGrids() {
     const resp = await fetch('/api/scan/grids');
     if (!resp.ok) return;
     local.grids = await resp.json();
+    _initRrInput();
     _rebuildTimeframeChecks();
     _buildConfigBlocks();
     _updateComboCount();
   } catch { /* конструктор просто останется пустым до следующего открытия */ }
+}
+
+/* Поле «Базовый R/R (TP:SL)»: значение из /api/scan/grids.rr (настройка
+   хранится на бэкенде), сохранение по change в POST /api/scan/settings.
+   Множители уровней на графике (setLevelConfig) синхронизируем теми же
+   rr/sl_atr — при данных без tp_price/sl_price зоны строятся с этим же R/R. */
+function _initRrInput() {
+  const inp = $('scan-rr');
+  if (!inp || !local.grids) return;
+  inp.min = local.grids.rr_min ?? 0.5;
+  inp.max = local.grids.rr_max ?? 10;
+  inp.step = local.grids.rr_step ?? 0.1;
+  inp.value = local.grids.rr;
+  setLevelConfig(local.grids.rr, local.grids.sl_atr);
+  inp.onchange = async () => {
+    const v = parseFloat(inp.value);
+    if (!Number.isFinite(v) || v < inp.min || v > inp.max) {
+      _showError(`Базовый R/R вне диапазона (${inp.min}–${inp.max})`);
+      inp.value = local.grids.rr;
+      return;
+    }
+    try {
+      const resp = await fetch('/api/scan/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rr: v }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'HTTP ' + resp.status);
+      inp.value = data.rr;
+      local.grids.rr = data.rr;
+      setLevelConfig(data.rr, local.grids.sl_atr);
+    } catch (e) {
+      _showError('Не удалось сохранить базовый R/R: ' + e.message);
+      inp.value = local.grids.rr;
+    }
+  };
 }
 
 /* Чекбоксы ТФ строятся из полного списка /api/scan/grids (BLOCK-35):
@@ -577,7 +616,8 @@ export function updateScanProgress(data) {
       + (data.current_symbol ? ' · ' + data.current_symbol : '');
   }
   _setProgress(done, total, done >= total ? null : local.etaSeconds, tfInfo);
-  if (total && done >= total) _finishScan();
+  if (data.cancelled) { _finishScan(true); return; }
+  if (total && done >= total) _finishScan(false);
 }
 
 function _stopPoll() {
@@ -593,7 +633,7 @@ function _startPoll() {
       if (!resp.ok) return;
       const data = await resp.json();
       if (data.stats && data.stats.finished) {
-        _finishScan();
+        _finishScan(!!data.stats.cancelled);
       } else if (data.stats && data.stats.eta_seconds) {
         // Фолбэк ETA: SSE-событие потерялось — берём оценку из stats.
         local.etaSeconds = data.stats.eta_seconds;
@@ -611,12 +651,53 @@ function _startPoll() {
   }, POLL_MS);
 }
 
-function _finishScan() {
+function _finishScan(cancelled) {
   _stopPoll();
   local.running = false;
+  _setCancelUi(false);
   const runBtn = $('scan-run-btn');
   if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Запустить'; }
+  if (cancelled) {
+    _showError('Скан отменён — показаны частичные результаты.');
+  }
   loadResults();
+}
+
+/* Кнопка «Отменить» рядом с «Запустить»: видна всегда, активна только пока
+   идёт прогон (disabled до старта и после завершения). */
+function _setCancelUi(visible) {
+  const btn = $('scan-cancel-btn');
+  if (!btn) return;
+  btn.disabled = !visible;
+  btn.textContent = 'Отменить';
+  if (visible) {
+    const runBtn = $('scan-run-btn');
+    if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Выполняется…'; }
+  }
+}
+
+/* Отмена прогона: POST /api/scan/<run_id>/cancel помечает run_id на сервере,
+   run_scan остановится на ближайшей границе и пришлёт финальное
+   scan_progress {cancelled} — его обработает updateScanProgress (или фолбэк
+   поллинг по stats.finished). */
+export async function cancelScan() {
+  if (!local.running || !local.runId) return;
+  const btn = $('scan-cancel-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Отменяем…'; }
+  try {
+    const resp = await fetch(`/api/scan/${local.runId}/cancel`, {
+      method: 'POST',
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || 'HTTP ' + resp.status);
+    }
+  } catch (e) {
+    _showError('Не удалось отменить скан: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Отменить'; }
+    return;
+  }
+  _showError('Отмена… скан остановится после текущей комбинации.');
 }
 
 /* ----------------------------------------------------------------- запуск */
@@ -660,6 +741,7 @@ export async function runScan() {
 
   const runBtn = $('scan-run-btn');
   if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Выполняется…'; }
+  _setCancelUi(true);
   local.running = true;
   local.runId = null;
   local.etaSeconds = null;
@@ -701,6 +783,7 @@ export async function runScan() {
     _showError(e.message);
     local.running = false;
     _stopPoll();
+    _setCancelUi(false);
     if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Запустить'; }
   }
 }

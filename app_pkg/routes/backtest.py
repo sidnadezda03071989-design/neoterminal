@@ -6,7 +6,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
-from app_pkg import config
+from app_pkg import config, db
 from app_pkg.ai.backtest import run_backtest, STRATEGY_MAP
 
 bp = Blueprint("backtest", __name__)
@@ -36,20 +36,20 @@ def api_backtest():
     if strategy not in STRATEGY_MAP:
         return jsonify({"error": f"Unknown strategy: {strategy}"}), 400
 
-    # BLOCK-42: прогон ВСЕГДА с уровнями config — SL = BACKTEST_SL_ATR×ATR
-    # (риск), TP строится СТРОГО от него с R/R = BACKTEST_RR (2:1). Выход
-    # ТОЛЬКО по касанию TP/SL — тот же движок выходов, что у сканера и
-    # /api/backtest/trades. Раньше здесь tp_atr/sl_atr=None: позиции закрывались
-    # ТОЛЬКО по сигналу, и в тренде long-only стратегия закрывалась в плюс почти
-    # каждый раз — панель показывала винрейт ~70% при RR 2:1, что невозможно
-    # для реального RR (TP бьётся в ~33% случаев у стратегии без edge). Теперь
-    # цифры панели, сканера и блоков на графике считаются одинаково и совпадают
-    # 1:1.
+    # BLOCK-42: прогон ВСЕГДА с уровнями — SL = BACKTEST_SL_ATR×ATR (риск),
+    # TP строится СТРОГО от него с базовым R/R скана (db.get_scan_rr(), UI
+    # «Базовый R/R»; фолбэк config.BACKTEST_RR). Выход ТОЛЬКО по касанию
+    # TP/SL — тот же движок выходов, что у сканера и /api/backtest/trades.
+    # Раньше здесь tp_atr/sl_atr=None: позиции закрывались ТОЛЬКО по сигналу,
+    # и в тренде long-only стратегия закрывалась в плюс почти каждый раз —
+    # панель показывала винрейт ~70% при RR 2:1, что невозможно для реального
+    # RR (TP бьётся в ~33% случаев у стратегии без edge). Теперь цифры панели,
+    # сканера и блоков на графике считаются одинаково и совпадают 1:1.
     result = run_backtest(symbol, tf, from_sec, to_sec,
                           strategy, params, initial_cash,
                           replay_limit=None,  # полная история (BACKTEST_MAX_CANDLES)
                           sl_atr=config.BACKTEST_SL_ATR,
-                          rr=config.BACKTEST_RR)
+                          rr=db.get_scan_rr())
     if "error" in result:
         return jsonify(result), 400
     return jsonify(result)
@@ -73,8 +73,9 @@ def api_backtest_trades():
     совпадает с TEST Trades сканера).
 
     TP/SL (BLOCK-42): чекбокса «TP/SL уровни» больше нет — прогон ВСЕГДА
-    идёт с уровнями config.BACKTEST_SL_ATR / BACKTEST_RR (SL×ATR для риска,
-    TP = SL×R/R). Выход ТОЛЬКО по касанию линии — ровно как сканер. Поэтому
+    идёт с уровнями — SL = config.BACKTEST_SL_ATR×ATR (риск), TP строится
+    от стопа с базовым R/R скана (db.get_scan_rr(), UI «Базовый R/R»).
+    Выход ТОЛЬКО по касанию линии — ровно как сканер. Поэтому
     число сделок здесь совпадает с колонкой TEST/TRAIN/FULL Trades панели
     1:1, а у каждой сделки есть tp_price/sl_price/tp_time/sl_time (IN/OUT/TP/SL).
 
@@ -119,10 +120,11 @@ def api_backtest_trades():
         strategy_name=strategy, params=params,
         initial_cash=10000,
         replay_limit=limit,
-        # BLOCK-42: всегда уровни config — SL×ATR для риска, TP = SL×R/R.
-        # Чекбокса «TP/SL уровни» больше нет: выход ТОЛЬКО по касанию линии.
+        # BLOCK-42: всегда уровни — SL×ATR для риска, TP = SL×R/R (тот же
+        # базовый R/R, что у сканера: db.get_scan_rr()). Чекбокса «TP/SL
+        # уровни» больше нет: выход ТОЛЬКО по касанию линии.
         sl_atr=config.BACKTEST_SL_ATR,
-        rr=config.BACKTEST_RR,
+        rr=db.get_scan_rr(),
         dataset=dataset,
     )
     if "error" in result:

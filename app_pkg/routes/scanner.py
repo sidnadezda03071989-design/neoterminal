@@ -4,6 +4,7 @@
 POST /api/scan                   — запуск скана (опц. body.custom_grids)
 GET  /api/scan/grids             — доступные стратегии/гриды/ТФ для UI
 GET  /api/scan/<run_id>          — топ SCAN_TOP_N + verdict по каждой
+POST /api/scan/<run_id>/cancel   — остановить прогон (кнопка «Отменить»)
 GET  /api/scan/<run_id>/summary  — человекочитаемая сводка + рекомендации
 GET  /api/scan/<run_id>/export.csv — CSV со всеми результатами прогона
 """
@@ -331,9 +332,18 @@ def api_scan_start():
     return jsonify(payload)
 
 
+@bp.route("/api/scan/<run_id>/cancel", methods=["POST"])
+def api_scan_cancel(run_id):
+    """Остановить прогон скана (кнопка «Отменить» в UI).
 
-
-@bp.route("/api/scan/<run_id>")
+    Не убивает воркер жёстко, а помечает run_id на отмену: run_scan
+    проверяет флаг на границах пар/стратегий/комбинаций и завершает прогон
+    досрочно. Успевшие записаться результаты остаются (GET /api/scan/<run_id>
+    отдаст частичные данные; RL stats получают "cancelled": True, SSE шлёт
+    финальное scan_progress с cancelled=True).
+    """
+    scanner_mod.cancel_run(str(run_id))
+    return jsonify({"status": "cancelled", "run_id": str(run_id)})
 
 
 @bp.route("/api/scan/<run_id>")
@@ -371,6 +381,10 @@ def api_scan_grids():
     комбинаций (и время прогона) теми же цифрами, что и POST /api/scan.
     default_timeframes — ТФ, отмеченные в UI по умолчанию (чекбоксы
     #scan-timeframes): берутся из config.SCAN_DEFAULT_TIMEFRAMES.
+
+    rr / sl_atr — базовый R/R скана (настройка UI, db.get_scan_rr) и
+    стоп в ATR: те самые множители, которыми run_backtest строит TP/SL.
+    Фронт показывает поле «Базовый R/R» с этими же границами.
     """
     return jsonify({
         "strategies": config.SCAN_ALLOWED_STRATEGIES,
@@ -386,7 +400,33 @@ def api_scan_grids():
         "fetch_seconds_per_symbol": config.SCAN_FETCH_SECONDS_PER_SYMBOL,
         "warn_seconds": config.SCAN_WARN_SECONDS,
         "hard_limit_seconds": config.SCAN_HARD_LIMIT_SECONDS,
+        "rr": db.get_scan_rr(),
+        "rr_default": config.SCAN_RR_DEFAULT,
+        "rr_min": config.SCAN_RR_MIN,
+        "rr_max": config.SCAN_RR_MAX,
+        "rr_step": config.SCAN_RR_STEP,
+        "sl_atr": config.BACKTEST_SL_ATR,
     })
+
+
+@bp.route("/api/scan/settings", methods=["POST"])
+def api_scan_settings():
+    """Сохранить настройку скана по ключу body {rr: <число>}.
+
+    Пока поддерживается один ключ — «базовый R/R» (body.rr), которым
+    run_backtest строит TP от стопа (TP = rr × SL-дистанция). Значение
+    валидируется и клампится в [rr_min, rr_max]. Применяется к следующему
+    прогону скана, а также к /api/backtest и /api/backtest/trades — чтобы
+    блоки на графике и панель оставались 1:1.
+    """
+    body = request.get_json(silent=True) or {}
+    if "rr" not in body:
+        return jsonify({"error": "rr is required"}), 400
+    try:
+        saved = db.set_scan_rr(body.get("rr"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"status": "saved", "rr": saved})
 
 
 @bp.route("/api/scan/<run_id>/summary")

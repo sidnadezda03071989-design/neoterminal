@@ -7,11 +7,15 @@
 //   • красная зона  — entry → SL, на ту же ширину;
 //   • белая пунктирная вертикаль на баре входа — левая граница позиции;
 //   • серая пунктирная линия от точки входа к точке выхода;
-//   • подпись НАД позицией (BLOCK-41): чем закрылась — TP/SL — и результат
-//     в % со знаком ('TP +0.42%' / 'SL -0.21%').
+//   • подпись НАД позицией (BLOCK-41): чем закрылась — take/stop — и
+//     результат в % со знаком ('take +0.42%' / 'stop -0.21%').
 // Соотношение зон СТРОГО 2:1: TP = 2×ATR, SL = 1×ATR от входа
-// (config.BACKTEST_TP_ATR / config.BACKTEST_SL_ATR). Сделки не перекрываются:
+// (config.BACKTEST_TP_ATR / config.BACKTEST_SL_ATR). Высота зон зависит от
+// волатильности: бэкенд отдаёт atr_at_entry (ATR на баре входа), по нему
+// фронтенд восстанавливает TP/SL, если уровней нет. Сделки не перекрываются:
 // правая граница блока зажимается по входу следующей сделки.
+// Последний костыль: если ни tp_price/sl_price, ни atr_at_entry нет (легаси) —
+// зоны рисуются фиксированными смещениями 40px (TP) / 20px (SL) от входа.
 
 const GREEN_FILL = 'rgba(38, 166, 154, 0.35)';  // зона профита (entry → TP)
 const RED_FILL = 'rgba(239, 83, 80, 0.35)';     // зона риска (entry → SL)
@@ -22,7 +26,19 @@ const RED_TEXT = '#ef5350';                     // подпись SL / убыт�
 const NEUTRAL_TEXT = '#9ea5b2';                 // pnl == 0
 
 const MIN_WIDTH = 20; // мин ширина позиции, px (сделка без координаты выхода)
-const MIN_BAND = 12;  // мин высота зоны, px (когда уровень не задан сделкой)
+
+// Множители для зон, когда tp_price/sl_price нет на бэкенде: TP/SL
+// восстанавливаются из atr_at_entry — SL = sl_atr×ATR, TP = rr×sl_atr×ATR от
+// входа (те же rr/sl_atr, что у сканера: настройка «Базовый R/R» +
+// config.BACKTEST_SL_ATR). Заполняются из /api/scan/grids (setLevelConfig).
+let levelCfg = { rr: 2.0, slAt: 1.0 };
+
+/* Синхронизировать множители уровней с настройкой сканера (rr = «базовый
+   R/R», slAt = стоп ×ATR из /api/scan/grids). */
+export function setLevelConfig(rr, slAt) {
+  if (Number.isFinite(Number(rr))) levelCfg.rr = Number(rr);
+  if (Number.isFinite(Number(slAt))) levelCfg.slAt = Number(slAt);
+}
 
 export class BacktestTradesRenderer {
   constructor(chart, series, container, candlesRef) {
@@ -142,7 +158,6 @@ class BacktestTradesRendererImpl {
   // отсекает canvas (lightweight-charts клипует сам).
   _drawTrade(ctx, t, nextTrade) {
     const mgr = this.manager;
-    const isLong = t.direction !== 'SELL';
 
     const pEntry = mgr.toPx(t.entry_time, t.entry_price);
     if (!pEntry) return false;
@@ -162,37 +177,48 @@ class BacktestTradesRendererImpl {
     }
     const width = xEnd - pEntry.x;
 
-    // Y-уровни TP/SL (null у сделки — уровень не задан). Линия уровня берётся
-    // на баре входа: зона постоянна по всей ширине позиции, как на макете.
-    // Соотношение расстояний СТРОГО 2:1 (TP = 2×ATR, SL = 1×ATR от entry —
-    // config.BACKTEST_TP_ATR / BACKTEST_SL_ATR), закреплено тестом.
-    const pTp = t.tp_price != null ? mgr.toPx(t.entry_time, t.tp_price) : null;
-    const pSl = t.sl_price != null ? mgr.toPx(t.entry_time, t.sl_price) : null;
+    // Y-уровни TP/SL: высота зон пропорциональна реальной волатильности.
+    // Готовые tp_price/sl_price есть у каждой сделки run_backtest. Если уровня
+    // нет — восстанавливаем из atr_at_entry (ATR на баре входа): TP = entry
+    // ± 2×ATR, SL = entry ∓ 1×ATR. И только если нет ни уровней, ни atr
+    // (легаси-данные) — последний костыль: фикс-смещения 40px/20px от входа,
+    // чтобы зелёная зона визуально осталась ровно в 2 раза больше красной.
+    const isLong = t.direction !== 'SELL';
+    const dir = isLong ? 1 : -1;
+    const atr = (t.atr_at_entry != null && isFinite(t.atr_at_entry))
+      ? Number(t.atr_at_entry) : 0;
+    const tpPrice = t.tp_price != null ? t.tp_price
+      : (atr > 0 ? t.entry_price + dir * levelCfg.rr * levelCfg.slAt * atr : null);
+    const slPrice = t.sl_price != null ? t.sl_price
+      : (atr > 0 ? t.entry_price - dir * levelCfg.slAt * atr : null);
+    const pTp = tpPrice != null ? mgr.toPx(t.entry_time, tpPrice) : null;
+    const pSl = slPrice != null ? mgr.toPx(t.entry_time, slPrice) : null;
+    const yProfit = pTp ? pTp.y : pEntry.y + (isLong ? -40 : 40);
+    const yRisk = pSl ? pSl.y : pEntry.y + (isLong ? 20 : -20);
 
-    // Конец зелёной зоны: TP; без TP — точка выхода при прибыли, иначе
-    // минимальная полоса в сторону профита.
-    let yProfit = pTp ? pTp.y
-      : (pExit && t.pnl > 0 ? pExit.y
-        : pEntry.y + (isLong ? -MIN_BAND : MIN_BAND));
-    // Конец красной зоны: SL; без SL — точка выхода при убытке, иначе
-    // минимальная полоса в сторону риска.
-    let yRisk = pSl ? pSl.y
-      : (pExit && t.pnl < 0 ? pExit.y
-        : pEntry.y + (isLong ? MIN_BAND : -MIN_BAND));
+    // exit_reason: бэкенд отдаёт его для каждой сделки ('tp'/'sl'/'signal'/
+    // 'end'). Если вдруг нет (легаси) — определяем по тому, какой уровень
+    // (TP или SL) ближе к exit_price: чья линия встретилась первой, тот и виноват.
+    let exitReason = t.exit_reason;
+    if (!exitReason && t.exit_price != null && tpPrice != null && slPrice != null) {
+      const dTp = Math.abs(t.exit_price - tpPrice);
+      const dSl = Math.abs(t.exit_price - slPrice);
+      exitReason = dTp < dSl ? 'tp' : (dSl < dTp ? 'sl' : '');
+    }
 
     // 1. Зона профита: rect между entry и TP (для SHORT TP ниже entry —
     //    формула rect между двумя Y одинаковая).
     ctx.fillStyle = GREEN_FILL;
     ctx.fillRect(pEntry.x, Math.min(pEntry.y, yProfit), width,
-      Math.max(MIN_BAND, Math.abs(yProfit - pEntry.y)));
+      Math.abs(yProfit - pEntry.y));
 
-    // 2. Зона риска: rect между entry и SL.
+    // 2. Зона риска: rect между entry и SL (ровно вдвое меньше зоны профита).
     ctx.fillStyle = RED_FILL;
     ctx.fillRect(pEntry.x, Math.min(pEntry.y, yRisk), width,
-      Math.max(MIN_BAND, Math.abs(yRisk - pEntry.y)));
+      Math.abs(yRisk - pEntry.y));
 
-    // 3. Белая пунктирная вертикаль входа — от верха зелёной зоны до низа
-    //    красной (левая граница позиции, как на макете).
+    // 3. Белая пунктирная вертикаль входа — левая граница позиции, от верха
+    //    зелёной зоны до низа красной (как на макете).
     const yTop = Math.min(pEntry.y, yProfit, yRisk);
     const yBot = Math.max(pEntry.y, yProfit, yRisk);
     ctx.strokeStyle = ENTRY_LINE;
@@ -212,14 +238,16 @@ class BacktestTradesRendererImpl {
       ctx.stroke();
     }
 
-    // 5. Подпись НАД позицией: чем закрылась сделка (TP/SL — а также SIG/END
-    //    для сигнальных выходов) и результат в % со знаком. Цвет — по итогу.
+    // 5. Подпись НАД позицией: чем закрылась сделка (take/stop — а также
+    //    SIG/END для сигнальных выходов) и результат в % со знаком.
+    //    Слово — по ЛИНИИ, которую цена коснулась первой (exit_reason):
+    //    стоп, задетый раньше тейка, всегда называется stop, а не take.
     const pct = t.pnl_pct != null ? Number(t.pnl_pct) : 0;
     const reasonText =
-      t.exit_reason === 'tp' ? 'TP'
-      : t.exit_reason === 'sl' ? 'SL'
-      : t.exit_reason === 'signal' ? 'SIG'
-      : t.exit_reason === 'end' ? 'END' : '—';
+      exitReason === 'sl' ? 'stop'
+      : exitReason === 'tp' ? 'take'
+      : exitReason === 'signal' ? 'SIG'
+      : exitReason === 'end' ? 'END' : '—';
     const label = reasonText + (pct >= 0 ? ' +' : ' ') + pct.toFixed(2) + '%';
     ctx.font = 'bold 11px "Segoe UI", Tahoma, sans-serif';
     ctx.fillStyle = t.pnl > 0 ? GREEN_TEXT

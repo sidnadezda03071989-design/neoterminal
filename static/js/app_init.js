@@ -14,7 +14,7 @@ import { bindHotkeys } from './ui/hotkeys.js';
 import { indMap, toggleIndicator } from './ui/indicators.js';
 import { openAlerts, closeAlerts, showAlertToast, createAlert } from './ui/alerts.js';
 import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
-import { openScanner, closeScanner, runScan, loadResults, exportCsv,
+import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
   copySummaryReport } from './scanner.js';
 import { chart, candleSeries, container } from './chart/setup.js';
@@ -250,6 +250,8 @@ export function initUI() {
   if (scClose) scClose.addEventListener('click', closeScanner);
   const scRun = $('scan-run-btn');
   if (scRun) scRun.addEventListener('click', runScan);
+  const scCancel = $('scan-cancel-btn');
+  if (scCancel) scCancel.addEventListener('click', cancelScan);
   const scExport = $('scan-export-btn');
   if (scExport) scExport.addEventListener('click', exportCsv);
   const scMin = $('scan-min-sharpe');
