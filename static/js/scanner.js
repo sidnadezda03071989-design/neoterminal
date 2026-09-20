@@ -776,6 +776,35 @@ function _fmtWinrate(v) {
   return v == null || !isFinite(n) ? '—' : (n * 100).toFixed(2) + '%';
 }
 
+/* Expectancy — средний профит на сделку в % от цены входа (BLOCK-38).
+   ГЛАВНАЯ метрика: winrate без неё врёт (36% выигрышей при R/R 2:1 — плюс,
+   70% при R/R 1:3 — минус). Всегда со знаком: '+0.08% за сделку'.
+   Точность адаптивная: реальный порядок expectancy — сотые доли процента
+   (BTCUSDT/15m/R7: +0.004%), и фиксированные 2 знака давали бессмысленное
+   '+0.00% за сделку'; значения >= 0.01% печатаются как в макете, меньшие —
+   с 3 знаками. */
+function _fmtExpectancy(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return '—';
+  const digits = Math.abs(n) >= 0.01 ? 2 : 3;
+  return (n >= 0 ? '+' : '') + n.toFixed(digits) + '% за сделку';
+}
+
+/* R/R — во сколько раз средний профит больше среднего убытка: '2.0:1'.
+   null от бэкенда = убыточных сделок не было (R/R не определён) -> '—'. */
+function _fmtRr(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n) || n <= 0) return '—';
+  return n.toFixed(1) + ':1';
+}
+
+/* Цвет значения expectancy: плюс — зелёный (--up), минус — красный (--down). */
+function _expectancyColor(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return '';
+  return n >= 0 ? 'var(--up)' : 'var(--down)';
+}
+
 function _fmtParams(params) {
   const p = params || {};
   const parts = Object.keys(p).map((k) => k + '=' + p[k]);
@@ -786,13 +815,15 @@ function _rowClass(cs) {
   return cs >= 1.0 ? 'win' : cs >= 0 ? 'neutral' : 'lose';
 }
 
-function _detailLine(label, value) {
+function _detailLine(label, value, color) {
   const line = document.createElement('div');
   line.className = 'scan-detail-line';
   const l = document.createElement('span');
   l.textContent = label;
   const v = document.createElement('span');
   v.textContent = value;
+  /* color — необязательный (BLOCK-38): expectancy подсвечиваем --up/--down. */
+  if (color) v.style.color = color;
   line.append(l, v);
   return line;
 }
@@ -807,6 +838,12 @@ function _detailCol(title, m) {
   const metrics = m || {};
   col.appendChild(_detailLine('Sharpe', _fmtNum(metrics.sharpe)));
   col.appendChild(_detailLine('Winrate', _fmtWinrate(metrics.winrate)));
+  /* BLOCK-38: expectancy и R/R — сразу под Winrate (главная метрика: сколько
+     в среднем даёт одна сделка в % и во сколько раз профит больше убытка). */
+  col.appendChild(_detailLine('Expectancy',
+    _fmtExpectancy(metrics.expectancy),
+    _expectancyColor(metrics.expectancy)));
+  col.appendChild(_detailLine('R/R', _fmtRr(metrics.rr_ratio)));
   col.appendChild(_detailLine('Max DD', _fmtPct(metrics.max_dd)));
   col.appendChild(_detailLine('Trades',
     metrics.trades == null ? '—' : String(metrics.trades)));

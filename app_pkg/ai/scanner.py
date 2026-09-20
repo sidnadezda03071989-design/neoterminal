@@ -123,12 +123,18 @@ def _metrics(res):
     if loss > 0:
         profit_factor = round(gross / loss, 2)
     else:
-        # run_backtest отдаёт только последние 20 сделок — убытков может
-        # не быть; бесконечность в JSON/SQLite не кладём, каппим.
+        # Убыточных сделок нет; бесконечность в JSON/SQLite не кладём, каппим.
         profit_factor = 999.0 if gross > 0 else 0.0
     return {
         "sharpe": res.get("sharpe_ratio", 0),
         "winrate": res.get("win_rate", 0),
+        # BLOCK-38: expectancy (% за сделку) и R/R — главные метрики панели:
+        # один winrate не отличает 36% выигрышей при R/R 2:1 (плюс) от 70% при
+        # R/R 1:3 (минус). Считает run_backtest по pnl_pct сделок.
+        "expectancy": res.get("expectancy", 0),
+        "rr_ratio": res.get("rr_ratio"),
+        "avg_win_pct": res.get("avg_win_pct", 0),
+        "avg_loss_pct": res.get("avg_loss_pct", 0),
         "max_dd": res.get("max_drawdown", 0),
         "total_return": res.get("total_return", 0),
         "profit_factor": profit_factor,

@@ -809,6 +809,21 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     wins = sum(1 for t in trades if t["pnl"] > 0)
     win_rate = wins / total_trades if total_trades else 0
 
+    # BLOCK-38: expectancy — ГЛАВНАЯ метрика (средний профит на сделку в % от
+    # цены входа): winrate без неё обманывает — 36% выигрышей при R/R 2:1 дают
+    # плюс, а 70% при R/R 1:3 — минус. Считаем по pnl_pct сделок:
+    #   avg_win_pct  — средний плюс среди прибыльных,
+    #   avg_loss_pct — средний минус по модулю среди убыточных,
+    #   expectancy   — winrate×avg_win − (1−winrate)×avg_loss (% за сделку),
+    #   rr_ratio     — avg_win / avg_loss (во сколько раз профит больше убытка);
+    #                  None, если убыточных сделок нет — R/R не определён.
+    win_pcts = [t["pnl_pct"] for t in trades if t["pnl"] > 0]
+    loss_pcts = [-t["pnl_pct"] for t in trades if t["pnl"] < 0]
+    avg_win_pct = sum(win_pcts) / len(win_pcts) if win_pcts else 0.0
+    avg_loss_pct = sum(loss_pcts) / len(loss_pcts) if loss_pcts else 0.0
+    expectancy = win_rate * avg_win_pct - (1 - win_rate) * avg_loss_pct
+    rr_ratio = (avg_win_pct / avg_loss_pct) if avg_loss_pct > 0 else None
+
     # trades/trades_full — ПОЛНЫЙ список (без среза [-20:]): счётчик сделок в
     # статистике должен совпадать с числом блоков на графике (BLOCK-30).
     trades_out = trades
@@ -823,6 +838,12 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         # BLOCK-35: 4 знака вместо 2 — иначе train/test winrate с разным числом
         # сделок схлопывались в одно число (0.67/183 и 0.67/76 в панели).
         "win_rate": round(win_rate, 4),
+        # BLOCK-38: expectancy и R/R — их панель сканера показывает рядом с
+        # winrate (через scanner._metrics -> train_json/test_json).
+        "avg_win_pct": round(avg_win_pct, 4),
+        "avg_loss_pct": round(avg_loss_pct, 4),
+        "expectancy": round(expectancy, 4),
+        "rr_ratio": round(rr_ratio, 2) if rr_ratio is not None else None,
         "trades": trades_out,
         "trades_full": trades_out,
         "equity_curve": equity_log,
