@@ -126,39 +126,45 @@ class BacktestTradesRendererImpl {
     const pSlLine = mgr.toPx(t.entry_time, t.sl_price);
 
     const xEntry = pEntry.x;
-    const xExit = pExit ? pExit.x : xEntry + 40;
+    // BLOCK-36-fix4: если entry/exit совпали по X — расширяем блок до 12px вправо,
+    // иначе на плоских сделках видна вертикальная черта вместо блока.
+    let xExit = pExit ? pExit.x : xEntry + 40;
+    if (xExit === xEntry) xExit = xEntry + 12;
     const width = Math.max(8, xExit - xEntry);
     const isWin = t.pnl >= 0;
+    const MIN_HEIGHT = 30; // BLOCK-36-fix4: минимальная высота блока, px
 
-    // 1. Прямоугольник сделки — от TP до SL (если есть) или от entry до exit
-    let yTop = null, yBot = null, blockFill, blockBorder;
+    // 1. Прямоугольник сделки — от TP до SL (если есть) или от entry до exit.
+    //    Гарантируем MIN_HEIGHT вокруг центра, иначе блоки «слипаются» в полосу
+    //    и PnL-метка не читается.
+    let yTop = null, yBot = null;
     if (pTpLine && pSlLine) {
       // Вариант 1: есть TP/SL — прямоугольник от TP до SL
       yTop = Math.min(pTpLine.y, pSlLine.y);
       yBot = Math.max(pTpLine.y, pSlLine.y);
-      blockFill = isWin ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)';
-      blockBorder = isWin ? 'rgba(63, 185, 80, 0.6)' : 'rgba(248, 81, 73, 0.6)';
-    } else if (pEntry && pExit) {
+    } else if (pExit) {
       // Вариант 2: нет TP/SL — блок от entry до exit
       yTop = Math.min(pEntry.y, pExit.y);
       yBot = Math.max(pEntry.y, pExit.y);
-      // Минимальная высота, чтобы блок был виден на плоских сделках
-      if (yBot - yTop < 4) { yTop -= 2; yBot += 2; }
-      blockFill = isWin ? 'rgba(63, 185, 80, 0.2)' : 'rgba(248, 81, 73, 0.2)';
-      blockBorder = isWin ? 'rgba(63, 185, 80, 0.7)' : 'rgba(248, 81, 73, 0.7)';
+    }
+    if (yTop == null || yBot == null) return; // рисовать нечего
+
+    const centerY = (yTop + yBot) / 2;
+    if (yBot - yTop < MIN_HEIGHT) {
+      yTop = centerY - MIN_HEIGHT / 2;
+      yBot = centerY + MIN_HEIGHT / 2;
     }
 
-    if (yTop != null && yBot != null) {
-      ctx.fillStyle = blockFill;
-      ctx.fillRect(xEntry, yTop, width, yBot - yTop);
-      ctx.strokeStyle = blockBorder;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
-    }
+    // Заливка + обводка блока
+    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.18)' : 'rgba(248, 81, 73, 0.18)';
+    ctx.fillRect(xEntry, yTop, width, yBot - yTop);
+    ctx.strokeStyle = isWin ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
 
     // 2. Линия entry (горизонтальная пунктирная)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
     ctx.moveTo(xEntry, pEntry.y);
@@ -166,20 +172,24 @@ class BacktestTradesRendererImpl {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 3. Точка входа (треугольник вверх/вниз)
+    // 3. Точка входа (треугольник вверх/вниз, 12px высота / 14px ширина,
+    //    белая обводка 1px — читается на любом фоне)
     ctx.fillStyle = t.direction === 'BUY' ? '#3fb950' : '#f85149';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
     ctx.beginPath();
     if (t.direction === 'BUY') {
-      ctx.moveTo(xEntry, pEntry.y + 8);
-      ctx.lineTo(xEntry - 5, pEntry.y + 16);
-      ctx.lineTo(xEntry + 5, pEntry.y + 16);
+      ctx.moveTo(xEntry, pEntry.y + 12);
+      ctx.lineTo(xEntry - 7, pEntry.y + 24);
+      ctx.lineTo(xEntry + 7, pEntry.y + 24);
     } else {
-      ctx.moveTo(xEntry, pEntry.y - 8);
-      ctx.lineTo(xEntry - 5, pEntry.y - 16);
-      ctx.lineTo(xEntry + 5, pEntry.y - 16);
+      ctx.moveTo(xEntry, pEntry.y - 12);
+      ctx.lineTo(xEntry - 7, pEntry.y - 24);
+      ctx.lineTo(xEntry + 7, pEntry.y - 24);
     }
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
 
     // 4. Точка выхода
     if (pExit) {
@@ -189,19 +199,14 @@ class BacktestTradesRendererImpl {
       ctx.fill();
     }
 
-    // 5. Метка с PnL (только если ширина > 40px)
-    if (width > 40) {
-      const pct = t.pnl_pct != null ? t.pnl_pct : 0;
-      const label = `${isWin ? '+' : ''}${pct.toFixed(2)}%`;
-      ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
-      ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
-      const tw = ctx.measureText(label).width;
-      const lx = xEntry + width / 2 - tw / 2;
-      const ly = (yTop != null)
-        ? (yTop + yBot) / 2
-        : pEntry.y - 10;
-      ctx.fillText(label, lx, ly);
-    }
+    // 5. Метка с PnL — в центре блока
+    const labelY = yTop + (yBot - yTop) / 2;
+    const pct = t.pnl_pct != null ? t.pnl_pct : 0;
+    const label = (isWin ? '+' : '') + pct.toFixed(2) + '%';
+    ctx.font = 'bold 11px "Segoe UI", Tahoma, sans-serif';
+    ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
+    const tw = ctx.measureText(label).width;
+    ctx.fillText(label, xEntry + width / 2 - tw / 2, labelY + 4);
 
     // 6. Маркер TP (маленький зелёный кружок) если сработал
     if (t.exit_reason === 'tp' && pTp) {
