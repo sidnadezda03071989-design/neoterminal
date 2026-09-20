@@ -1,17 +1,9 @@
 // BacktestTradesRenderer — primitive для отрисовки сделок бэктеста на графике.
 // Паттерн (paneViews/attached/detach/attachPrimitive) повторяет DrawingsManager.
 
-// BLOCK-36-fix6: валидная пиксельная координата — конечное число, не левее
-// нуля по X и внутри canvas по Y. Хелпер нужен потому, что toPx(time, null)
-// НЕ возвращает null: lightweight-charts считает y без проверки цены
-// (null в арифметике → 0 → конечная координата далеко за canvas,
-// undefined → NaN → fillRect молча ничего не рисует). Отсюда симптом
-// "drew 97/97", при котором блоков на графике не видно.
-function _validPx(p, canvasH) {
-  return !!p && typeof p.x === 'number' && isFinite(p.x) && p.x >= 0
-    && typeof p.y === 'number' && isFinite(p.y)
-    && p.y >= 0 && p.y <= canvasH;
-}
+// BLOCK-36-fix9: ручная валидация пиксельных координат (_validPx из fix6)
+// убрана — она отбрасывала сделки с y вне canvas ("[viz] drew 1/97 trades"),
+// хотя lightweight-charts/canvas сами клипуют всё за пределами области.
 
 export class BacktestTradesRenderer {
   constructor(chart, series, container, candlesRef) {
@@ -115,8 +107,8 @@ class BacktestTradesRendererImpl {
       // Флаг на manager, т.к. impl-объект создаётся заново на каждый кадр.
       let drawn = 0, skipped = 0;
       for (const t of this.trades) {
-        // BLOCK-36-fix6: валидность координат проверяет сам _drawTrade
-        // (невалидная точка входа → false, без рисования).
+        // BLOCK-36-fix9: _drawTrade возвращает false ТОЛЬКО когда нет точки
+        // входа; координаты за пределами области рисования не отбраковываются.
         if (this._drawTrade(ctx, size, t)) drawn++; else skipped++;
       }
       if (!this.manager._loggedOnce) {
@@ -128,7 +120,9 @@ class BacktestTradesRendererImpl {
     });
   }
 
-  // Возвращает true, если сделка реально нарисована (BLOCK-36-fix6).
+  // Возвращает true, если сделка нарисована; false — только если нет
+  // пиксельной координаты входа (BLOCK-36-fix9). Ручная проверка "y внутри
+  // canvas" убрана: lightweight-charts клипует всё за пределами области сам.
   _drawTrade(ctx, mediaSize, t) {
     const mgr = this.manager;
     const h = mediaSize.height;
@@ -137,8 +131,10 @@ class BacktestTradesRendererImpl {
     if (!mgr._firstTraceDone && this.trades.length > 0) {
       const t0 = this.trades[0];
       const p0 = mgr.toPx(t0.entry_time, t0.entry_price);
-      const pTp0 = mgr.toPx(t0.entry_time, t0.tp_price);
-      const pSl0 = mgr.toPx(t0.entry_time, t0.sl_price);
+      const pTp0 = t0.tp_price != null
+        ? mgr.toPx(t0.entry_time, t0.tp_price) : null;
+      const pSl0 = t0.sl_price != null
+        ? mgr.toPx(t0.entry_time, t0.sl_price) : null;
       const pEx0 = t0.exit_time
         ? mgr.toPx(t0.exit_time, t0.exit_price) : null;
       console.log('[viz-trace] trade[0]:', {
@@ -152,31 +148,23 @@ class BacktestTradesRendererImpl {
       mgr._firstTraceDone = true;
     }
 
-    // Точки входа и выхода. Валидной считается только координата-число
-    // внутри canvas: null/отсутствующие цены lightweight-charts превращает
-    // в y далеко за canvas или NaN (см. _validPx).
-    const pEntry = _validPx(mgr.toPx(t.entry_time, t.entry_price), h)
-      ? mgr.toPx(t.entry_time, t.entry_price) : null;
-    // Без валидной точки входа рисовать нечего: entry — база для блока,
-    // линии входа, треугольника и метки PnL.
-    if (!pEntry) return false;
+    // Точки сделки (BLOCK-36-fix9 — простой расчёт без проверки координат).
+    // Проверок ровно две: есть ли цена (null-цены: сделка без TP/SL из
+    // сканера, ещё не сработавший TP/SL) и что toPx вернул координату.
+    // Всё, что попало за пределы видимой области, отсекает canvas.
+    const pEntry = mgr.toPx(t.entry_time, t.entry_price);
+    // Без точки входа рисовать нечего: entry — база для блока, линии входа,
+    // треугольника и метки PnL.
+    if (!pEntry) return;
 
-    const pExit = t.exit_time && t.exit_price != null
-      && _validPx(mgr.toPx(t.exit_time, t.exit_price), h)
-      ? mgr.toPx(t.exit_time, t.exit_price) : null;
-    const pTp = t.tp_time && t.tp_price != null
-      && _validPx(mgr.toPx(t.tp_time, t.tp_price), h)
-      ? mgr.toPx(t.tp_time, t.tp_price) : null;
-    const pSl = t.sl_time && t.sl_price != null
-      && _validPx(mgr.toPx(t.sl_time, t.sl_price), h)
-      ? mgr.toPx(t.sl_time, t.sl_price) : null;
-    // Линии TP/SL на всю ширину сделки: цена null (signal/end-выход, скан
-    // без TP/SL) или координата вне canvas → null, каскад возьмёт entry/exit.
+    const pExit = t.exit_time ? mgr.toPx(t.exit_time, t.exit_price) : null;
+    const pTp = t.tp_time ? mgr.toPx(t.tp_time, t.tp_price) : null;
+    const pSl = t.sl_time ? mgr.toPx(t.sl_time, t.sl_price) : null;
+    // Линии TP/SL на всю ширину сделки: цена null (сделка без TP/SL) → null,
+    // каскад ниже возьмёт entry/exit.
     const pTpLine = t.tp_price != null
-      && _validPx(mgr.toPx(t.entry_time, t.tp_price), h)
       ? mgr.toPx(t.entry_time, t.tp_price) : null;
     const pSlLine = t.sl_price != null
-      && _validPx(mgr.toPx(t.entry_time, t.sl_price), h)
       ? mgr.toPx(t.entry_time, t.sl_price) : null;
 
     const xEntry = pEntry.x;
@@ -213,9 +201,9 @@ class BacktestTradesRendererImpl {
       yBot = centerY + MIN_HEIGHT / 2;
     }
 
-    // BLOCK-36-fix6: после расширения до MIN_HEIGHT зажимаем блок в пределы
-    // canvas — у сделки у края диапазона прямоугольник иначе уезжает за
-    // границу и остаётся невидимым.
+    // После расширения до MIN_HEIGHT зажимаем ГЕОМЕТРИЮ блока в пределы canvas
+    // (BLOCK-36-fix9: это не отбраковка сделки — сама сделка рисуется всегда,
+    // зажим лишь не даёт прямоугольнику уехать за верх/низ области).
     yTop = Math.max(0, yTop);
     yBot = Math.min(h, yBot);
 
@@ -335,6 +323,6 @@ class BacktestTradesRendererImpl {
       ctx.fill();
     }
 
-    return true; // BLOCK-36-fix6: сделка нарисована
+    return true; // BLOCK-36-fix9: сделка нарисована
   }
 }

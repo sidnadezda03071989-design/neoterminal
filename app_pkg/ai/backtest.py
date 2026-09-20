@@ -552,12 +552,19 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     здесь.
 
     tp_atr / sl_atr — take-profit / stop-loss в множителях ATR(14) от цены
-    входа (например 2.0 = +2×ATR / -2×ATR). Если заданы, LONG-позиция
-    закрывается по уровню в тот же бар (по high/low свечи), не дожидаясь
-    сигнала SELL. В trades добавляется поле "exit_reason": tp/sl/signal.
-    Если оба не заданы — выходы только по сигналу стратегии либо в конце
-    данных (exit_reason="end"): незакрытую позицию фиксируем по последней
-    свече, чтобы число сделок на графике совпадало со статистикой (BLOCK-36).
+    входа (например 2.0 = +2×ATR / -2×ATR). Уровни считаются СРАЗУ на баре
+    входа и сохраняются в позиции (BLOCK-36-fix10): tp_price/sl_price есть
+    у 100% сделок независимо от exit_reason (tp/sl/signal/end — на графике
+    пунктирные линии уровней видны всегда), а tp_time/sl_time заполняются
+    только когда уровень реально сработал (exit_time) иначе None. Если
+    заданы, LONG-позиция закрывается по уровню в тот же бар (по high/low
+    свечи), не дожидаясь сигнала SELL. В trades добавляется поле
+    "exit_reason": tp/sl/signal.
+    Если оба не заданы — tp_price/sl_price остаются None, как раньше (панель
+    сканера гонит бэктест без TP/SL), выходы только по сигналу стратегии либо
+    в конце данных (exit_reason="end"): незакрытую позицию фиксируем по
+    последней свече, чтобы число сделок на графике совпадало со
+    статистикой (BLOCK-36).
 
     dataset — "full" (вся история), "train" (первые SCAN_TRAIN_SPLIT=70%) или
     "test" (последние 30%, out-of-sample). При train/test история делится на
@@ -642,42 +649,45 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             continue
         tstamp = int(ts[i])
         sig = strategy.next(df, ind, i, position, cash, equity_log)
-        # TP/SL LONG: уровни из ATR-множителей; проверяем ДО сигнала стратегии.
-        # Если на одном баре пробиты оба уровня, консервативно считаем, что
-        # первым сработал SL (риск важнее прибыли).
-        if position and atr_arr is not None:
+        # TP/SL LONG: уровни зафиксированы на баре входа (BLOCK-36-fix10),
+        # проверяем ДО сигнала стратегии. Если на одном баре пробиты оба
+        # уровня, консервативно считаем, что первым сработал SL (риск важнее
+        # прибыли). Позиция без уровней (tp_atr/sl_atr не заданы) — блок
+        # ничего не делает.
+        if position is not None:
             exit_price = None
             exit_reason = None
-            atr_i = utils._clean(atr_arr[i])
-            if atr_i is not None and atr_i > 0:
-                sl_price = None
-                tp_price = None
-                if sl_atr:
-                    sl_price = position["entry"] - sl_atr * atr_i
-                if tp_atr:
-                    tp_price = position["entry"] + tp_atr * atr_i
-                lo = utils._clean(low_arr[i])
-                hi = utils._clean(high_arr[i])
-                if sl_price is not None and lo is not None and lo <= sl_price:
-                    exit_price, exit_reason = sl_price, "sl"
-                elif (tp_price is not None and hi is not None
-                      and hi >= tp_price):
-                    exit_price, exit_reason = tp_price, "tp"
+            tp_price = position.get("tp_price")
+            sl_price = position.get("sl_price")
+            lo = utils._clean(low_arr[i]) if low_arr is not None else None
+            hi = utils._clean(high_arr[i]) if high_arr is not None else None
+            if sl_price is not None and lo is not None and lo <= sl_price:
+                exit_price, exit_reason = sl_price, "sl"
+            elif tp_price is not None and hi is not None and hi >= tp_price:
+                exit_price, exit_reason = tp_price, "tp"
             if exit_price is not None:
                 value = position["shares"] * exit_price
                 pnl = value - (position["shares"] * position["entry"])
                 entry_shares = position["shares"]
                 entry_price = position["entry"]
+                # Отметка сработавшего уровня: позицию закрыл TP/SL на этом
+                # баре — время выхода и есть время касания уровня.
+                if exit_reason == "tp":
+                    position["tp_time"] = tstamp
+                else:
+                    position["sl_time"] = tstamp
                 trades.append({
                     "entry_time": int(ts[entry_bar]),
                     "exit_time": tstamp,
                     "entry_price": entry_price,
                     "exit_price": exit_price,
                     "direction": "BUY",
-                    "tp_price": round(tp_price, 8) if tp_price is not None else None,
-                    "sl_price": round(sl_price, 8) if sl_price is not None else None,
-                    "tp_time": tstamp if exit_reason == "tp" else None,
-                    "sl_time": tstamp if exit_reason == "sl" else None,
+                    # BLOCK-36-fix10: уровни входа берутся из позиции — они
+                    # есть у 100% сделок, а не только у tp/sl-выходов.
+                    "tp_price": position.get("tp_price"),
+                    "sl_price": position.get("sl_price"),
+                    "tp_time": position.get("tp_time"),
+                    "sl_time": position.get("sl_time"),
                     "pnl": round(pnl, 2),
                     "pnl_pct": round((pnl / (entry_shares * entry_price)) * 100, 4)
                                if entry_shares and entry_price else 0,
@@ -692,6 +702,24 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         if sig and sig["action"] == "BUY" and not position:
             shares = cash / sig["price"] if sig["price"] else 0
             position = {"shares": shares, "entry": sig["price"]}
+            # BLOCK-36-fix10: уровни TP/SL считаются СРАЗУ на входе (ATR(14)
+            # бара входа) и живут в позиции до закрытия. Раньше они
+            # заполнялись только у сделок с exit_reason tp/sl, поэтому у
+            # выходов по signal/end пунктирных уровней на графике не было.
+            # Позиции здесь только LONG (SELL — уже закрытие).
+            atr_entry = utils._clean(atr_arr[i]) if atr_arr is not None else None
+            position["tp_price"] = None
+            position["sl_price"] = None
+            if atr_entry is not None and atr_entry > 0:
+                if tp_atr:
+                    position["tp_price"] = round(
+                        sig["price"] + tp_atr * atr_entry, 8)
+                if sl_atr:
+                    position["sl_price"] = round(
+                        sig["price"] - sl_atr * atr_entry, 8)
+            # Уровни ещё не сработали: время касания заполнит выход.
+            position["tp_time"] = None
+            position["sl_time"] = None
             entry_bar = i
             cash = 0
         elif sig and sig["action"] == "SELL" and position:
@@ -703,10 +731,12 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 "entry_price": position["entry"],
                 "exit_price": sig["price"],
                 "direction": "BUY",
-                "tp_price": None,
-                "sl_price": None,
-                "tp_time": None,
-                "sl_time": None,
+                # BLOCK-36-fix10: уровни входа остаются в сделке и при выходе
+                # по сигналу; tp_time/sl_time = None (уровни не срабатывали).
+                "tp_price": position.get("tp_price"),
+                "sl_price": position.get("sl_price"),
+                "tp_time": position.get("tp_time"),
+                "sl_time": position.get("sl_time"),
                 "pnl": round(pnl, 2),
                 "pnl_pct": round((pnl / (position["shares"] * position["entry"])) * 100, 4)
                            if position["shares"] and position["entry"] else 0,
@@ -740,10 +770,12 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 "entry_price": entry_price,
                 "exit_price": price_last,
                 "direction": "BUY",
-                "tp_price": None,
-                "sl_price": None,
-                "tp_time": None,
-                "sl_time": None,
+                # BLOCK-36-fix10: уровни входа остаются в сделке и при выходе
+                # по последней свече; tp_time/sl_time = None.
+                "tp_price": position.get("tp_price"),
+                "sl_price": position.get("sl_price"),
+                "tp_time": position.get("tp_time"),
+                "sl_time": position.get("sl_time"),
                 "pnl": round(pnl_end, 2),
                 "pnl_pct": round(
                     (pnl_end / (entry_shares * entry_price)) * 100, 4)
