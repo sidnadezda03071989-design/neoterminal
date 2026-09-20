@@ -219,23 +219,69 @@ class BacktestTradesRendererImpl {
     yTop = Math.max(0, yTop);
     yBot = Math.min(h, yBot);
 
-    // Заливка + обводка блока (обводка сплошным цветом — контрастнее,
-    // чем rgba-граница из fix4).
-    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.25)' : 'rgba(248, 81, 73, 0.25)';
+    // Заливка + обводка блока (BLOCK-36-fix7: заливка 0.12 вместо 0.25 —
+    // блок читается как подложка, поверх неё яркие линии уровней).
+    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.12)' : 'rgba(248, 81, 73, 0.12)';
     ctx.fillRect(xEntry, yTop, width, yBot - yTop);
-    ctx.strokeStyle = isWin ? '#3fb950' : '#f85149';
+    ctx.strokeStyle = isWin ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
 
-    // 2. Линия entry (горизонтальная пунктирная)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 3]);
+    // 2. Линии уровней сделки (BLOCK-36-fix7). Метки IN/OUT/TP/SL — у правого
+    //    края линии; шрифт задаётся в блоке ENTRY и дальше переиспользуется.
+    //    Линия ENTRY — сплошная голубая (заменила белую пунктирную из fix6).
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(xEntry, pEntry.y);
-    ctx.lineTo(xExit, pEntry.y);
+    ctx.lineTo(xEntry + width, pEntry.y);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
+    ctx.fillStyle = '#58a6ff';
+    ctx.textAlign = 'left';
+    ctx.fillText('IN', xEntry + width + 3, pEntry.y + 3);
+
+    // Линия EXIT — сплошная, цвет по результату сделки.
+    if (pExit) {
+      const exitColor = isWin ? '#3fb950' : '#f85149';
+      ctx.strokeStyle = exitColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(xEntry, pExit.y);
+      ctx.lineTo(xEntry + width, pExit.y);
+      ctx.stroke();
+      ctx.fillStyle = exitColor;
+      ctx.fillText('OUT', xEntry + width + 3, pExit.y + 3);
+    }
+
+    // Линия TP — пунктирная зелёная (только если у сделки есть tp_price).
+    if (pTpLine) {
+      ctx.strokeStyle = '#3fb950';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xEntry, pTpLine.y);
+      ctx.lineTo(xEntry + width, pTpLine.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#3fb950';
+      ctx.fillText('TP', xEntry + width + 3, pTpLine.y + 3);
+    }
+
+    // Линия SL — пунктирная красная (только если у сделки есть sl_price).
+    if (pSlLine) {
+      ctx.strokeStyle = '#f85149';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xEntry, pSlLine.y);
+      ctx.lineTo(xEntry + width, pSlLine.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f85149';
+      ctx.fillText('SL', xEntry + width + 3, pSlLine.y + 3);
+    }
 
     // 3. Точка входа (треугольник вверх/вниз, 12px высота / 14px ширина,
     //    белая обводка 1px — читается на любом фоне)

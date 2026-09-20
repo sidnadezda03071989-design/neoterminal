@@ -996,7 +996,12 @@ async function _showTradesForRow(row, btn) {
      дефолт — test (последние 30% истории, цифра = TEST Trades сканера). */
   const datasetRadio = document.querySelector('input[name="scan-dataset"]:checked');
   const dataset = datasetRadio ? datasetRadio.value : 'test';
-  console.log('[scan] request dataset=' + dataset);
+  /* BLOCK-36-fix7: чекбокс «TP/SL уровни» (templates/index.html). ВКЛ →
+     backend гонит бэктест с tp_atr=2.0/sl_atr=1.0 и на графике появляются
+     пунктирные TP/SL; числа сделок при этом могут отличаться от панели
+     сканера (панель считает БЕЗ TP/SL). */
+  const showTpSl = document.getElementById('scan-show-tpsl')?.checked || false;
+  console.log('[scan] request dataset=' + dataset + ' tp_sl=' + showTpSl);
 
   /* BLOCK-36: замораживаем pollLive на время fetch + render + zoom,
      чтобы фоновый полл не сбросил видимое окно посреди рендера сделок.
@@ -1037,7 +1042,10 @@ async function _showTradesForRow(row, btn) {
       /* БЕЗ limit: визуализация идёт по ВСЕЙ истории сделок (backend берёт
          BACKTEST_MAX_CANDLES=20000). Хардкод limit:1000 резал сделки —
          видели 32 блока вместо 500+. */
-      body: JSON.stringify({ symbol, timeframe, strategy, params, dataset }),
+      body: JSON.stringify({
+        symbol, timeframe, strategy, params, dataset,
+        tp_sl: showTpSl,
+      }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
@@ -1059,6 +1067,11 @@ async function _showTradesForRow(row, btn) {
     if (panelCount) {
       if (String(trades.length) === String(panelCount)) {
         console.log(`[scan] OK: trades_full=${trades.length} == панель ${dataset.toUpperCase()} (${panelCount})`);
+      } else if (showTpSl) {
+        /* BLOCK-36-fix7: панель считает БЕЗ TP/SL — при включённом чекбоксе
+           расхождение ожидаемо (часть сделок закрывается по стопу/профиту). */
+        console.log(`[scan] trades_full=${trades.length} != панель ` +
+          `${dataset.toUpperCase()}=${panelCount} — ожидаемо при tp_sl=on`);
       } else {
         console.warn(`[scan] trades_full=${trades.length} != панель ${dataset.toUpperCase()}=${panelCount}`);
       }

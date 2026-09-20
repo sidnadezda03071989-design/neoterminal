@@ -62,10 +62,12 @@ def api_backtest_trades():
     (BLOCK-33). По умолчанию "test" (последние 30% — out-of-sample, цифра
     совпадает с TEST Trades сканера).
 
-    TP/SL НЕ применяются (BLOCK-36): сканер считает чистые сигнальные выходы,
-    и визуализация должна показывать РОВНО те сделки, что в панели сканера
-    (95 == 95, а не 95 vs 321). Сделки закрываются по сигналу или в конце
-    данных (exit_reason="end").
+    tp_sl (BLOCK-36-fix7): false/отсутствует (дефолт) — TP/SL НЕ применяются,
+    сканер считает чистые сигнальные выходы, и визуализация показывает РОВНО
+    те сделки, что в панели (95 == 95, а не 95 vs 321); сделки закрываются по
+    сигналу или в конце данных (exit_reason="end"). true — прогон с
+    tp_atr=2.0/sl_atr=1.0 (чекбокс «TP/SL уровни»): на графике появляются
+    уровни TP/SL, число сделок может отличаться от панели.
 
     Возвращает: {trades_full, metrics, candles_used, dataset, dataset_range,
     bars_from, bars_to, train_range, test_range}
@@ -82,6 +84,14 @@ def api_backtest_trades():
         return jsonify({"error": "Invalid limit"}), 400
     if limit <= 0:
         return jsonify({"error": "limit must be > 0"}), 400
+
+    # TP/SL (BLOCK-36-fix7): чекбокс «TP/SL уровни» в панели сканера.
+    # ВЫКЛ (дефолт) — TP/SL не применяются, число сделок совпадает с панелью.
+    # ВКЛ — tp_atr=2.0/sl_atr=1.0: на графике появляются уровни TP/SL,
+    # число сделок может отличаться от панели (она считает без TP/SL).
+    show_tp_sl = bool(body.get("tp_sl", False))
+    tp_atr = 2.0 if show_tp_sl else None
+    sl_atr = 1.0 if show_tp_sl else None
 
     # Валидация symbol/timeframe/strategy — как в api_backtest
     if symbol not in config.SYMBOLS:
@@ -105,8 +115,9 @@ def api_backtest_trades():
         strategy_name=strategy, params=params,
         initial_cash=10000,
         replay_limit=limit,
-        # Без TP/SL (BLOCK-36): те же сигнальные выходы, что в сканере.
-        tp_atr=None, sl_atr=None,
+        # TP/SL (BLOCK-36-fix7): по умолчанию те же сигнальные выходы, что в
+        # сканере; при включённом чекбоксе «TP/SL уровни» — с уровнями.
+        tp_atr=tp_atr, sl_atr=sl_atr,
         dataset=dataset,
     )
     if "error" in result:

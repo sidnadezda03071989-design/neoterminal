@@ -290,6 +290,16 @@
           <input type="number" id="scan-min-sharpe" value="0" step="0.1">
           <button id="scan-export-btn" class="btn">📥 Экспорт CSV</button>
         </div>
+        <!-- BLOCK-36-fix7: «TP/SL уровни» для кнопки «📊 Показать на графике».
+             Радио TEST/TRAIN/FULL генерируются для каждой раскрытой строки
+             (scanner.js, .scan-dataset-radio), поэтому чекбокс — один общий на
+             панель: он влияет на следующий запрос /api/backtest/trades.
+             Стиль переиспользует .scan-mode-toggle (отдельный CSS не нужен). -->
+        <label class="scan-mode-toggle scan-tpsl-toggle"
+               title="Числа могут отличаться от панели — панель считает без TP/SL">
+          <input type="checkbox" id="scan-show-tpsl">
+          TP/SL уровни
+        </label>
         <div class="scan-warning" id="scan-warning" style="display:none"></div>
         <div class="scan-empty" id="scan-empty" style="display:none">
           Нет результатов по фильтру. Попробуйте снизить min_sharpe
