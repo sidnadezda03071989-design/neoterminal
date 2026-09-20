@@ -1,26 +1,28 @@
 // BacktestTradesRenderer — primitive для отрисовки сделок бэктеста на графике.
 // Паттерн (paneViews/attached/detach/attachPrimitive) повторяет DrawingsManager.
 
-// BLOCK-36-fix9: ручная валидация пиксельных координат (_validPx из fix6)
-// убрана — она отбрасывала сделки с y вне canvas ("[viz] drew 1/97 trades"),
-// хотя lightweight-charts/canvas сами клипуют всё за пределами области.
+// BLOCK-40: логика отрисовки позиции переписана с нуля. Вид СТРОГО как на
+// макете (TradingView long/short position):
+//   • зелёная зона  — entry → TP, на всю ширину сделки (вход → выход);
+//   • красная зона  — entry → SL, на ту же ширину;
+//   • белая пунктирная вертикаль на баре входа — левая граница позиции;
+//   • серая пунктирная линия от точки входа к точке выхода;
+//   • подпись НАД позицией (BLOCK-41): чем закрылась — TP/SL — и результат
+//     в % со знаком ('TP +0.42%' / 'SL -0.21%').
+// Соотношение зон СТРОГО 2:1: TP = 2×ATR, SL = 1×ATR от входа
+// (config.BACKTEST_TP_ATR / config.BACKTEST_SL_ATR). Сделки не перекрываются:
+// правая граница блока зажимается по входу следующей сделки.
 
-// BLOCK-39: подпись уровня позиции. Без цены и % от входа линия стопа ничего
-// не сообщает, а у сделок с выходом по стопу уровень SL совпадает с ценой
-// выхода — раньше подписи "OUT" и "SL" печатались в одну точку, и стоп
-// визуально пропадал.
-function _fmtPrice(v) {
-  const n = Number(v);
-  if (!isFinite(n)) return '—';
-  return Math.abs(n) >= 10 ? n.toFixed(2) : n.toFixed(4);
-}
+const GREEN_FILL = 'rgba(38, 166, 154, 0.35)';  // зона профита (entry → TP)
+const RED_FILL = 'rgba(239, 83, 80, 0.35)';     // зона риска (entry → SL)
+const ENTRY_LINE = 'rgba(255, 255, 255, 0.55)'; // пунктирная вертикаль входа
+const EXIT_LINE = 'rgba(158, 165, 178, 0.9)';   // пунктир вход → выход
+const GREEN_TEXT = '#26a69a';                   // подпись TP / профит, %
+const RED_TEXT = '#ef5350';                     // подпись SL / убыток, %
+const NEUTRAL_TEXT = '#9ea5b2';                 // pnl == 0
 
-function _levelPct(entry, level) {
-  const e = Number(entry), l = Number(level);
-  if (!isFinite(e) || !isFinite(l) || e === 0) return '';
-  const pct = ((l - e) / e) * 100;
-  return ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%)';
-}
+const MIN_WIDTH = 20; // мин ширина позиции, px (сделка без координаты выхода)
+const MIN_BAND = 12;  // мин высота зоны, px (когда уровень не задан сделкой)
 
 export class BacktestTradesRenderer {
   constructor(chart, series, container, candlesRef) {
@@ -30,15 +32,12 @@ export class BacktestTradesRenderer {
     this.candlesRef = candlesRef || (() => []);
     this.trades = [];
     this.primitive = null;
-    this._warnedSkipped = false;
   }
 
   render(trades) {
     this.clear();
     this.trades = Array.isArray(trades) ? trades : [];
-    this._warnedSkipped = false;
-    this._loggedOnce = false; // BLOCK-36: диагностика — раз за рендер
-    this._firstTraceDone = false; // BLOCK-36-fix6: трассировка первой сделки
+    this._loggedOnce = false; // диагностика — раз за рендер
     if (this.trades.length === 0) return;
 
     this.primitive = new BacktestTradesPrimitive(this.trades, this);
@@ -117,257 +116,117 @@ class BacktestTradesRendererImpl {
       ctx.save();
       ctx.beginPath(); ctx.rect(0, 0, size.width, size.height); ctx.clip();
       // ОБХОДИМ ВСЕ сделки без среза/break: на графике должно быть столько же
-      // блоков, сколько сделок в статистике. Сделки вне загруженных свечей
+      // позиций, сколько сделок в статистике. Сделки вне загруженных свечей
       // (toPx == null) не рисуются, но НЕ отбрасываются из счётчика — блоки
       // появятся при zoom-out (они просто вне текущего viewport).
-      // BLOCK-36: диагностика — сколько блоков реально нарисовано/пропущено.
-      // Флаг на manager, т.к. impl-объект создаётся заново на каждый кадр.
       let drawn = 0, skipped = 0;
-      for (const t of this.trades) {
-        // BLOCK-36-fix9: _drawTrade возвращает false ТОЛЬКО когда нет точки
-        // входа; координаты за пределами области рисования не отбраковываются.
-        if (this._drawTrade(ctx, size, t)) drawn++; else skipped++;
+      for (let i = 0; i < this.trades.length; i++) {
+        // Следующая сделка передаётся для запрета перекрытия: блок позиции
+        // не имеет права залезть на блок соседней сделки.
+        if (this._drawTrade(ctx, this.trades[i], this.trades[i + 1])) drawn++;
+        else skipped++;
       }
       if (!this.manager._loggedOnce) {
         this.manager._loggedOnce = true;
-        console.log(`[viz] drew ${drawn}/${this.trades.length} trades ` +
-          `(invalid coords skipped: ${skipped})`);
+        console.log(`[viz] drew ${drawn}/${this.trades.length} positions ` +
+          `(no entry coords skipped: ${skipped})`);
       }
       ctx.restore();
     });
   }
 
-  // Возвращает true, если сделка нарисована; false — только если нет
-  // пиксельной координаты входа (BLOCK-36-fix9). Ручная проверка "y внутри
-  // canvas" убрана: lightweight-charts клипует всё за пределами области сам.
-  _drawTrade(ctx, mediaSize, t) {
+  // Одна позиция = две зоны (профит/риск) + пунктиры входа и вход→выход
+  // + подпись НАД позицией: чем закрылась (TP/SL) и результат в %.
+  // Возвращает false только если нет пиксельной координаты входа — без неё
+  // позицию рисовать не из чего. Всё, что попало за пределы видимой области,
+  // отсекает canvas (lightweight-charts клипует сам).
+  _drawTrade(ctx, t, nextTrade) {
     const mgr = this.manager;
-    const h = mediaSize.height;
+    const isLong = t.direction !== 'SELL';
 
-    // BLOCK-36-fix6: диагностика — первая сделка один раз за рендер.
-    if (!mgr._firstTraceDone && this.trades.length > 0) {
-      const t0 = this.trades[0];
-      const p0 = mgr.toPx(t0.entry_time, t0.entry_price);
-      const pTp0 = t0.tp_price != null
-        ? mgr.toPx(t0.entry_time, t0.tp_price) : null;
-      const pSl0 = t0.sl_price != null
-        ? mgr.toPx(t0.entry_time, t0.sl_price) : null;
-      const pEx0 = t0.exit_time
-        ? mgr.toPx(t0.exit_time, t0.exit_price) : null;
-      console.log('[viz-trace] trade[0]:', {
-        entry_price: t0.entry_price,
-        exit_price: t0.exit_price,
-        tp_price: t0.tp_price,
-        sl_price: t0.sl_price,
-        pEntry: p0, pExit: pEx0, pTp: pTp0, pSl: pSl0,
-        canvasH: mgr.container?.clientHeight,
-      });
-      mgr._firstTraceDone = true;
-    }
-
-    // Точки сделки (BLOCK-36-fix9 — простой расчёт без проверки координат).
-    // Проверок ровно две: есть ли цена (null-цены: сделка без TP/SL из
-    // сканера, ещё не сработавший TP/SL) и что toPx вернул координату.
-    // Всё, что попало за пределы видимой области, отсекает canvas.
     const pEntry = mgr.toPx(t.entry_time, t.entry_price);
-    // Без точки входа рисовать нечего: entry — база для блока, линии входа,
-    // треугольника и метки PnL.
-    if (!pEntry) return;
+    if (!pEntry) return false;
 
+    // Ширина позиции: вход → выход. Выхода нет/вне экрана — MIN_WIDTH,
+    // чтобы позиция не схлопывалась в вертикальную черту.
     const pExit = t.exit_time ? mgr.toPx(t.exit_time, t.exit_price) : null;
-    const pTp = t.tp_time ? mgr.toPx(t.tp_time, t.tp_price) : null;
-    const pSl = t.sl_time ? mgr.toPx(t.sl_time, t.sl_price) : null;
-    // Линии TP/SL на всю ширину сделки: цена null (сделка без TP/SL) → null,
-    // каскад ниже возьмёт entry/exit.
-    const pTpLine = t.tp_price != null
-      ? mgr.toPx(t.entry_time, t.tp_price) : null;
-    const pSlLine = t.sl_price != null
-      ? mgr.toPx(t.entry_time, t.sl_price) : null;
+    let xEnd = pExit ? pExit.x : pEntry.x + MIN_WIDTH;
+    if (xEnd - pEntry.x < MIN_WIDTH) xEnd = pEntry.x + MIN_WIDTH;
 
-    const xEntry = pEntry.x;
-    // BLOCK-36-fix5: ширина блока — минимум 20px, иначе на плоских сделках
-    // видна вертикальная черта вместо блока.
-    let xExit = pExit ? pExit.x : xEntry + 20;
-    if (xExit - xEntry < 20) xExit = xEntry + 20;
-    const width = xExit - xEntry;
-    const isWin = t.pnl >= 0;
-    const MIN_HEIGHT = 30; // BLOCK-36-fix4/fix5: минимальная высота блока, px
-
-    // 1. Прямоугольник сделки. Каскад источников Y-координат:
-    //    TP/SL → entry/exit → fallback 30px вокруг entry (BLOCK-36-fix5:
-    //    раньше при отсутствии TP/SL и exit-координат блок вообще не
-    //    рисовался — на графике оставался только треугольник входа).
-    let yTop = null, yBot = null;
-    if (pTpLine && pSlLine) {
-      // Вариант 1: есть TP/SL — прямоугольник от TP до SL
-      yTop = Math.min(pTpLine.y, pSlLine.y);
-      yBot = Math.max(pTpLine.y, pSlLine.y);
-    } else if (pExit) {
-      // Вариант 2: нет TP/SL — блок от entry до exit
-      yTop = Math.min(pEntry.y, pExit.y);
-      yBot = Math.max(pEntry.y, pExit.y);
-    } else {
-      // Вариант 3: НЕТ ни TP/SL, ни exit → блок 30px вокруг entry
-      yTop = pEntry.y - MIN_HEIGHT / 2;
-      yBot = pEntry.y + MIN_HEIGHT / 2;
+    // BLOCK-41: сделка НЕ МОЖЕТ быть внутри другой — правая граница блока
+    // зажимается по входу следующей сделки (движок открывает новую позицию
+    // только после закрытия предыдущей, но зажим страхует визуально).
+    if (nextTrade) {
+      const pNext = mgr.toPx(nextTrade.entry_time, nextTrade.entry_price);
+      if (pNext && pNext.x > pEntry.x && xEnd > pNext.x) xEnd = pNext.x;
     }
+    const width = xEnd - pEntry.x;
 
-    const centerY = (yTop + yBot) / 2;
-    if (yBot - yTop < MIN_HEIGHT) {
-      yTop = centerY - MIN_HEIGHT / 2;
-      yBot = centerY + MIN_HEIGHT / 2;
-    }
+    // Y-уровни TP/SL (null у сделки — уровень не задан). Линия уровня берётся
+    // на баре входа: зона постоянна по всей ширине позиции, как на макете.
+    // Соотношение расстояний СТРОГО 2:1 (TP = 2×ATR, SL = 1×ATR от entry —
+    // config.BACKTEST_TP_ATR / BACKTEST_SL_ATR), закреплено тестом.
+    const pTp = t.tp_price != null ? mgr.toPx(t.entry_time, t.tp_price) : null;
+    const pSl = t.sl_price != null ? mgr.toPx(t.entry_time, t.sl_price) : null;
 
-    // После расширения до MIN_HEIGHT зажимаем ГЕОМЕТРИЮ блока в пределы canvas
-    // (BLOCK-36-fix9: это не отбраковка сделки — сама сделка рисуется всегда,
-    // зажим лишь не даёт прямоугольнику уехать за верх/низ области).
-    yTop = Math.max(0, yTop);
-    yBot = Math.min(h, yBot);
+    // Конец зелёной зоны: TP; без TP — точка выхода при прибыли, иначе
+    // минимальная полоса в сторону профита.
+    let yProfit = pTp ? pTp.y
+      : (pExit && t.pnl > 0 ? pExit.y
+        : pEntry.y + (isLong ? -MIN_BAND : MIN_BAND));
+    // Конец красной зоны: SL; без SL — точка выхода при убытке, иначе
+    // минимальная полоса в сторону риска.
+    let yRisk = pSl ? pSl.y
+      : (pExit && t.pnl < 0 ? pExit.y
+        : pEntry.y + (isLong ? MIN_BAND : -MIN_BAND));
 
-    // Заливка + обводка блока (BLOCK-36-fix7: заливка 0.12 вместо 0.25 —
-    // блок читается как подложка, поверх неё яркие линии уровней).
-    ctx.fillStyle = isWin ? 'rgba(63, 185, 80, 0.12)' : 'rgba(248, 81, 73, 0.12)';
-    ctx.fillRect(xEntry, yTop, width, yBot - yTop);
-    ctx.strokeStyle = isWin ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
+    // 1. Зона профита: rect между entry и TP (для SHORT TP ниже entry —
+    //    формула rect между двумя Y одинаковая).
+    ctx.fillStyle = GREEN_FILL;
+    ctx.fillRect(pEntry.x, Math.min(pEntry.y, yProfit), width,
+      Math.max(MIN_BAND, Math.abs(yProfit - pEntry.y)));
 
-    // 1b. Зоны позиции (BLOCK-39): риск entry↔SL (красная) и профит entry↔TP
-    //     (зелёная). Именно красная зона отвечает на вопрос "где стоп": у
-    //     sl-выходов пунктир SL ложился ровно на сплошную линию OUT и
-    //     пропадал, а зона видна всегда.
-    if (pSlLine) {
-      ctx.fillStyle = 'rgba(248, 81, 73, 0.22)';
-      const yRisk = Math.min(pEntry.y, pSlLine.y);
-      ctx.fillRect(xEntry, yRisk, width, Math.abs(pSlLine.y - pEntry.y));
-    }
-    if (pTpLine) {
-      ctx.fillStyle = 'rgba(63, 185, 80, 0.22)';
-      const yReward = Math.min(pEntry.y, pTpLine.y);
-      ctx.fillRect(xEntry, yReward, width, Math.abs(pTpLine.y - pEntry.y));
-    }
+    // 2. Зона риска: rect между entry и SL.
+    ctx.fillStyle = RED_FILL;
+    ctx.fillRect(pEntry.x, Math.min(pEntry.y, yRisk), width,
+      Math.max(MIN_BAND, Math.abs(yRisk - pEntry.y)));
 
-    // 2. Линии уровней сделки (BLOCK-36-fix7, метки — BLOCK-39). Метки IN/TP/SL
-    //    — у правого края линии, метка OUT — у левого (справа её накрывали
-    //    метки уровней, когда выход совпал с TP/SL); шрифт задаётся в блоке
-    //    ENTRY и дальше переиспользуется.
-    //    Линия ENTRY — сплошная голубая (заменила белую пунктирную из fix6).
-    ctx.strokeStyle = '#58a6ff';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(xEntry, pEntry.y);
-    ctx.lineTo(xEntry + width, pEntry.y);
-    ctx.stroke();
-    ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
-    ctx.fillStyle = '#58a6ff';
-    ctx.textAlign = 'left';
-    ctx.fillText('IN', xEntry + width + 3, pEntry.y + 3);
-
-    // Линия EXIT — сплошная, цвет по результату сделки.
-    if (pExit) {
-      const exitColor = isWin ? '#3fb950' : '#f85149';
-      ctx.strokeStyle = exitColor;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(xEntry, pExit.y);
-      ctx.lineTo(xEntry + width, pExit.y);
-      ctx.stroke();
-      ctx.fillStyle = exitColor;
-      // BLOCK-39: метка OUT — слева от блока (справа её перекрывали метки
-      // TP/SL, когда выход произошёл ровно по уровню).
-      ctx.textAlign = 'right';
-      ctx.fillText('OUT', xEntry - 4, pExit.y + 3);
-      ctx.textAlign = 'left';
-    }
-
-    // Линия TP — пунктирная зелёная + цена уровня и % от входа (BLOCK-39:
-    // 2px и длинный пунктир — уровень читается поверх сплошных линий).
-    if (pTpLine) {
-      ctx.strokeStyle = '#3fb950';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([7, 4]);
-      ctx.beginPath();
-      ctx.moveTo(xEntry, pTpLine.y);
-      ctx.lineTo(xEntry + width, pTpLine.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#3fb950';
-      ctx.fillText('TP ' + _fmtPrice(t.tp_price)
-        + _levelPct(t.entry_price, t.tp_price),
-        xEntry + width + 3, pTpLine.y + 3);
-    }
-
-    // Линия SL — пунктирная красная + цена стопа и % от входа. Рисуется
-    // последней из уровней: для sl-выходов она совпадает с линией OUT, и
-    // раньше уходила под неё (BLOCK-39).
-    if (pSlLine) {
-      ctx.strokeStyle = '#f85149';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([7, 4]);
-      ctx.beginPath();
-      ctx.moveTo(xEntry, pSlLine.y);
-      ctx.lineTo(xEntry + width, pSlLine.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#f85149';
-      ctx.fillText('SL ' + _fmtPrice(t.sl_price)
-        + _levelPct(t.entry_price, t.sl_price),
-        xEntry + width + 3, pSlLine.y + 3);
-    }
-
-    // 3. Точка входа (треугольник вверх/вниз, 12px высота / 14px ширина,
-    //    белая обводка 1px — читается на любом фоне)
-    ctx.fillStyle = t.direction === 'BUY' ? '#3fb950' : '#f85149';
-    ctx.strokeStyle = '#fff';
+    // 3. Белая пунктирная вертикаль входа — от верха зелёной зоны до низа
+    //    красной (левая граница позиции, как на макете).
+    const yTop = Math.min(pEntry.y, yProfit, yRisk);
+    const yBot = Math.max(pEntry.y, yProfit, yRisk);
+    ctx.strokeStyle = ENTRY_LINE;
     ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    if (t.direction === 'BUY') {
-      ctx.moveTo(xEntry, pEntry.y + 12);
-      ctx.lineTo(xEntry - 7, pEntry.y + 24);
-      ctx.lineTo(xEntry + 7, pEntry.y + 24);
-    } else {
-      ctx.moveTo(xEntry, pEntry.y - 12);
-      ctx.lineTo(xEntry - 7, pEntry.y - 24);
-      ctx.lineTo(xEntry + 7, pEntry.y - 24);
-    }
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(pEntry.x, yTop);
+    ctx.lineTo(pEntry.x, yBot);
     ctx.stroke();
 
-    // 4. Точка выхода
+    // 4. Серый пунктир от точки входа к точке выхода (траектория результата).
     if (pExit) {
-      ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
+      ctx.strokeStyle = EXIT_LINE;
       ctx.beginPath();
-      ctx.arc(pExit.x, pExit.y, 3, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(pEntry.x, pEntry.y);
+      ctx.lineTo(pExit.x, pExit.y);
+      ctx.stroke();
     }
 
-    // 5. Метка с PnL — в центре блока
-    const labelY = yTop + (yBot - yTop) / 2;
-    const pct = t.pnl_pct != null ? t.pnl_pct : 0;
-    const label = (isWin ? '+' : '') + pct.toFixed(2) + '%';
+    // 5. Подпись НАД позицией: чем закрылась сделка (TP/SL — а также SIG/END
+    //    для сигнальных выходов) и результат в % со знаком. Цвет — по итогу.
+    const pct = t.pnl_pct != null ? Number(t.pnl_pct) : 0;
+    const reasonText =
+      t.exit_reason === 'tp' ? 'TP'
+      : t.exit_reason === 'sl' ? 'SL'
+      : t.exit_reason === 'signal' ? 'SIG'
+      : t.exit_reason === 'end' ? 'END' : '—';
+    const label = reasonText + (pct >= 0 ? ' +' : ' ') + pct.toFixed(2) + '%';
     ctx.font = 'bold 11px "Segoe UI", Tahoma, sans-serif';
-    ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
-    const tw = ctx.measureText(label).width;
-    ctx.fillText(label, xEntry + width / 2 - tw / 2, labelY + 4);
+    ctx.fillStyle = t.pnl > 0 ? GREEN_TEXT
+      : (t.pnl < 0 ? RED_TEXT : NEUTRAL_TEXT);
+    ctx.fillText(label, pEntry.x + 2, yTop - 5);
 
-    // 6. Маркер TP (маленький зелёный кружок) если сработал
-    if (t.exit_reason === 'tp' && pTp) {
-      ctx.fillStyle = 'rgba(63, 185, 80, 0.9)';
-      ctx.beginPath();
-      ctx.arc(pTp.x, pTp.y, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // 7. Маркер SL (маленький красный кружок) если сработал
-    if (t.exit_reason === 'sl' && pSl) {
-      ctx.fillStyle = 'rgba(248, 81, 73, 0.9)';
-      ctx.beginPath();
-      ctx.arc(pSl.x, pSl.y, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    return true; // BLOCK-36-fix9: сделка нарисована
+    ctx.setLineDash([]);
+    return true;
   }
 }

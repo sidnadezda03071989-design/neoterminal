@@ -117,6 +117,34 @@ function _addMetric(box, label, value, cls) {
   box.appendChild(cell);
 }
 
+/* Expectancy — средний профит на сделку в % от цены входа (BLOCK-38/40).
+   Панель бэктеста раньше вообще не показывала это число, хотя бэкенд его
+   считал. Точность адаптивная (как в сканере): порядок expectancy — сотые
+   доли процента, фиксированные 2 знака давали бессмысленное '+0.00%'. */
+function _fmtExpectancy(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return '—';
+  const digits = Math.abs(n) >= 0.01 ? 2 : 3;
+  return (n >= 0 ? '+' : '') + n.toFixed(digits) + '%';
+}
+
+/* Соотношение среднего профита к среднему лоссу: '2.1 : 1'. Источник —
+   rr_ratio с бэкенда (avg_win_pct / avg_loss_pct); null — убыточных сделок
+   не было, соотношение не определено. */
+function _fmtWinLossRatio(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n) || n <= 0) return '—';
+  return n.toFixed(2) + ' : 1';
+}
+
+/* Profit factor — валовый профит / валовый убыток (BLOCK-40: считает бэкенд).
+   999 = убыточных сделок не было (кап бесконечности). */
+function _fmtProfitFactor(v) {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return '—';
+  return n >= 999 ? '999+' : n.toFixed(2);
+}
+
 function _renderMetrics(data, initialCash) {
   const box = $('bt-metrics');
   if (!box) return;
@@ -135,6 +163,18 @@ function _renderMetrics(data, initialCash) {
   _addMetric(box, 'Winrate',
     ((data.win_rate || 0) * 100).toFixed(1) + '%',
     (data.win_rate || 0) >= 0.5 ? 'up' : '');
+  /* BLOCK-40: expectancy — ГЛАВНАЯ метрика (средний профит одной сделки в %
+     от входа): winrate без неё врёт. Всегда числом, со знаком. */
+  const exp = data.expectancy;
+  _addMetric(box, 'Expectancy', _fmtExpectancy(exp),
+    Number(exp) >= 0 ? 'up' : 'down');
+  /* BLOCK-40: соотношение среднего профита к среднему лоссу (avg_win/avg_loss). */
+  _addMetric(box, 'Ср. профит / лосс', _fmtWinLossRatio(data.rr_ratio),
+    (data.rr_ratio || 0) >= 1 ? 'up' : 'down');
+  /* BLOCK-40: profit factor — валовый профит / валовый убыток. */
+  const pf = data.profit_factor;
+  _addMetric(box, 'Profit factor', _fmtProfitFactor(pf),
+    Number(pf) >= 1 ? 'up' : 'down');
   _addMetric(box, 'Сделок', String(data.total_trades || 0), '');
   _addMetric(box, 'Эквити', _fmtNum(finalEq),
     finalEq >= initialCash ? 'up' : 'down');

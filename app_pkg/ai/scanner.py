@@ -173,19 +173,19 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
     if ind_test is None:
         ind_test = compute_indicators(df_test)
 
-    # BLOCK-37: сканер оценивает стратегию С TP/SL (config.BACKTEST_TP_ATR =
-    # 2×ATR, config.BACKTEST_SL_ATR = 1×ATR от цены входа), а не по сигнальным
-    # выходам. Тот же самый прогон отдаёт /api/backtest/trades — поэтому число
-    # сделок в панели и число блоков на графике совпадают 1:1, а у каждой
-    # сделки есть tp_price/sl_price (IN/OUT/TP/SL на графике).
+        # BLOCK-42: сканер оценивает стратегию с ВЫХОДОМ ТОЛЬКО по линиям TP/SL
+        # (config.BACKTEST_SL_ATR × ATR для риска, config.BACKTEST_RR для R/R).
+        # Тот же самый прогон отдаёт /api/backtest/trades — поэтому число
+        # сделок в панели и число блоков на графике совпадают 1:1, а у каждой
+        # сделки есть tp_price/sl_price (IN/OUT/TP/SL на графике).
     res_train = run_backtest(symbol, tf, None, None, strategy_name, params,
                              df=df_train, ind=ind_train,
-                             tp_atr=config.BACKTEST_TP_ATR,
-                             sl_atr=config.BACKTEST_SL_ATR)
+                             sl_atr=config.BACKTEST_SL_ATR,
+                             rr=config.BACKTEST_RR)
     res_test = run_backtest(symbol, tf, None, None, strategy_name, params,
                             df=df_test, ind=ind_test,
-                            tp_atr=config.BACKTEST_TP_ATR,
-                            sl_atr=config.BACKTEST_SL_ATR)
+                            sl_atr=config.BACKTEST_SL_ATR,
+                            rr=config.BACKTEST_RR)
     if "error" in res_train or "error" in res_test:
         log.warning("scan %s %s %s: бэктест вернул ошибку",
                     symbol, strategy_name, params)
