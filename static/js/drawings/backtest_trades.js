@@ -5,6 +5,23 @@
 // убрана — она отбрасывала сделки с y вне canvas ("[viz] drew 1/97 trades"),
 // хотя lightweight-charts/canvas сами клипуют всё за пределами области.
 
+// BLOCK-39: подпись уровня позиции. Без цены и % от входа линия стопа ничего
+// не сообщает, а у сделок с выходом по стопу уровень SL совпадает с ценой
+// выхода — раньше подписи "OUT" и "SL" печатались в одну точку, и стоп
+// визуально пропадал.
+function _fmtPrice(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  return Math.abs(n) >= 10 ? n.toFixed(2) : n.toFixed(4);
+}
+
+function _levelPct(entry, level) {
+  const e = Number(entry), l = Number(level);
+  if (!isFinite(e) || !isFinite(l) || e === 0) return '';
+  const pct = ((l - e) / e) * 100;
+  return ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%)';
+}
+
 export class BacktestTradesRenderer {
   constructor(chart, series, container, candlesRef) {
     this.chart = chart;
@@ -215,8 +232,25 @@ class BacktestTradesRendererImpl {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
 
-    // 2. Линии уровней сделки (BLOCK-36-fix7). Метки IN/OUT/TP/SL — у правого
-    //    края линии; шрифт задаётся в блоке ENTRY и дальше переиспользуется.
+    // 1b. Зоны позиции (BLOCK-39): риск entry↔SL (красная) и профит entry↔TP
+    //     (зелёная). Именно красная зона отвечает на вопрос "где стоп": у
+    //     sl-выходов пунктир SL ложился ровно на сплошную линию OUT и
+    //     пропадал, а зона видна всегда.
+    if (pSlLine) {
+      ctx.fillStyle = 'rgba(248, 81, 73, 0.22)';
+      const yRisk = Math.min(pEntry.y, pSlLine.y);
+      ctx.fillRect(xEntry, yRisk, width, Math.abs(pSlLine.y - pEntry.y));
+    }
+    if (pTpLine) {
+      ctx.fillStyle = 'rgba(63, 185, 80, 0.22)';
+      const yReward = Math.min(pEntry.y, pTpLine.y);
+      ctx.fillRect(xEntry, yReward, width, Math.abs(pTpLine.y - pEntry.y));
+    }
+
+    // 2. Линии уровней сделки (BLOCK-36-fix7, метки — BLOCK-39). Метки IN/TP/SL
+    //    — у правого края линии, метка OUT — у левого (справа её накрывали
+    //    метки уровней, когда выход совпал с TP/SL); шрифт задаётся в блоке
+    //    ENTRY и дальше переиспользуется.
     //    Линия ENTRY — сплошная голубая (заменила белую пунктирную из fix6).
     ctx.strokeStyle = '#58a6ff';
     ctx.lineWidth = 2;
@@ -240,35 +274,46 @@ class BacktestTradesRendererImpl {
       ctx.lineTo(xEntry + width, pExit.y);
       ctx.stroke();
       ctx.fillStyle = exitColor;
-      ctx.fillText('OUT', xEntry + width + 3, pExit.y + 3);
+      // BLOCK-39: метка OUT — слева от блока (справа её перекрывали метки
+      // TP/SL, когда выход произошёл ровно по уровню).
+      ctx.textAlign = 'right';
+      ctx.fillText('OUT', xEntry - 4, pExit.y + 3);
+      ctx.textAlign = 'left';
     }
 
-    // Линия TP — пунктирная зелёная (только если у сделки есть tp_price).
+    // Линия TP — пунктирная зелёная + цена уровня и % от входа (BLOCK-39:
+    // 2px и длинный пунктир — уровень читается поверх сплошных линий).
     if (pTpLine) {
       ctx.strokeStyle = '#3fb950';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 3]);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 4]);
       ctx.beginPath();
       ctx.moveTo(xEntry, pTpLine.y);
       ctx.lineTo(xEntry + width, pTpLine.y);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = '#3fb950';
-      ctx.fillText('TP', xEntry + width + 3, pTpLine.y + 3);
+      ctx.fillText('TP ' + _fmtPrice(t.tp_price)
+        + _levelPct(t.entry_price, t.tp_price),
+        xEntry + width + 3, pTpLine.y + 3);
     }
 
-    // Линия SL — пунктирная красная (только если у сделки есть sl_price).
+    // Линия SL — пунктирная красная + цена стопа и % от входа. Рисуется
+    // последней из уровней: для sl-выходов она совпадает с линией OUT, и
+    // раньше уходила под неё (BLOCK-39).
     if (pSlLine) {
       ctx.strokeStyle = '#f85149';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 3]);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 4]);
       ctx.beginPath();
       ctx.moveTo(xEntry, pSlLine.y);
       ctx.lineTo(xEntry + width, pSlLine.y);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = '#f85149';
-      ctx.fillText('SL', xEntry + width + 3, pSlLine.y + 3);
+      ctx.fillText('SL ' + _fmtPrice(t.sl_price)
+        + _levelPct(t.entry_price, t.sl_price),
+        xEntry + width + 3, pSlLine.y + 3);
     }
 
     // 3. Точка входа (треугольник вверх/вниз, 12px высота / 14px ширина,
