@@ -537,7 +537,7 @@ def _isna(v):
 
 def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                  initial_cash=10000, replay_limit=None, df=None, ind=None,
-                 tp_atr=None, sl_atr=None):
+                 tp_atr=None, sl_atr=None, dataset="full"):
     """Запуск бэктеста; возвращает dict со статистикой и кривой эквити.
 
     df — опциональный готовый DataFrame (свечи): если передан, get_replay_df
@@ -555,10 +555,19 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     входа (например 2.0 = +2×ATR / -2×ATR). Если заданы, LONG-позиция
     закрывается по уровню в тот же бар (по high/low свечи), не дожидаясь
     сигнала SELL. В trades добавляется поле "exit_reason": tp/sl/signal.
+
+    dataset — "full" (вся история), "train" (первые SCAN_TRAIN_SPLIT=70%) или
+    "test" (последние 30%, out-of-sample). При train/test история делится на
+    train/test окна, бэктест гонится только на выбранной части; в ответ
+    добавляются train_range/test_range — временные диапазоны обоих окон
+    (BLOCK-33). Сканер по-прежнему зовёт df=... с dataset по умолчанию
+    "full" — его поведение не меняется.
     """
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if not strategy_cls:
         return {"error": f"Unknown strategy: {strategy_name}"}
+    if dataset not in ("full", "train", "test"):
+        return {"error": f"Unknown dataset: {dataset}"}
 
     if df is None:
         if config.BACKTEST_USE_FULL_HISTORY:
@@ -576,6 +585,32 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     # полноисторийный бэктест работает на 20k свечей.
     if len(df) > config.BACKTEST_MAX_CANDLES:
         df = df.iloc[-config.BACKTEST_MAX_CANDLES:].reset_index(drop=True)
+
+    # Сплит train/test (BLOCK-33): dataset != "full" — прогнать стратегию только
+    # на выбранной части истории. Сплит до расчёта индикаторов: если индикаторы
+    # были переданы под ПОЛНУЮ длину, проверка len(ind) != len(df) ниже
+    # пересчитает их на нарезанном df.
+    train_range = None
+    test_range = None
+    if dataset in ("train", "test"):
+        full_n = len(df)
+        split_idx = max(1, int(full_n * config.SCAN_TRAIN_SPLIT))
+        ts_full = utils.epoch_secs(df["timestamp"])
+        train_range = {
+            "from": int(ts_full[0]),
+            "to": int(ts_full[split_idx - 1]),
+        }
+        test_range = {
+            "from": int(ts_full[min(split_idx, full_n - 1)]),
+            "to": int(ts_full[full_n - 1]),
+        }
+        if dataset == "train":
+            df = df.iloc[:split_idx].reset_index(drop=True)
+        else:
+            df = df.iloc[split_idx:].reset_index(drop=True)
+        if len(df) < 50:
+            return {"error": "Недостаточно данных в выбранном dataset"}
+
     if ind is None or len(ind) != len(df):
         ind = compute_indicators(df)
     # df передаётся в конструктор: все rolling/ewm/RSI серии предрасчитываются
@@ -725,4 +760,9 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
         "candles_used": len(df),
         "bars_from": int(ts[0]),
         "bars_to": int(ts[-1]),
+        # BLOCK-33: выбранный dataset и временные диапазоны train/test окон
+        # (None при dataset="full" — сплита не было).
+        "dataset": dataset,
+        "train_range": train_range,
+        "test_range": test_range,
     }

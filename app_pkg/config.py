@@ -63,6 +63,10 @@ BACKTEST_MAX_CANDLES = 20000
 # 0 = без лимита: возвращать ВСЕ сделки в trades_full/trades
 # (НЕ последние 20 — иначе блоки на графике не совпадают со статистикой).
 BACKTEST_MAX_TRADES_RETURNED = 0
+# Dataset по умолчанию для /api/backtest/trades (кнопка «Показать на графике»):
+# train | test | full. По умолчанию test — out-of-sample (последние 30%),
+# цифра сделок совпадает с колонкой TEST Trades сканера (BLOCK-33).
+BACKTEST_DATASET_DEFAULT = "test"
 
 # --------------------------------------------- grid-search сканер стратегий
 # Лимит комбинаций параметров на один запуск сканера. Если декартово

@@ -788,6 +788,11 @@ function _renderResults(results) {
     row.dataset.timeframe = r.timeframe || '';
     row.dataset.strategy = r.strategy || '';
     row.dataset.params = JSON.stringify(r.params || {});
+    /* Счётчики сделок панели (BLOCK-33): по ним сверяем trades_full ответа
+       endpoints /api/backtest/trades с TEST/TRAIN/FULL цифрами строки. */
+    row.dataset.testTrades = test.trades != null ? String(test.trades) : '';
+    row.dataset.trainTrades = train.trades != null ? String(train.trades) : '';
+    row.dataset.fullTrades = r.total_trades != null ? String(r.total_trades) : '';
     const cells = [
       r.symbol || '—',
       r.timeframe || '—',
@@ -821,6 +826,22 @@ function _renderResults(results) {
        #scan-results, см. _showTradesForRow. */
     const actions = document.createElement('div');
     actions.className = 'scan-row-actions';
+    /* Переключатель dataset «Показать на графике» (BLOCK-33): TEST (30%) —
+       дефолт, TRAIN (70%), FULL. Радио общее на все строки (одно имя). */
+    const radioWrap = document.createElement('div');
+    radioWrap.className = 'scan-dataset-radio';
+    for (const [val, label] of [['test', 'TEST (30%)'],
+      ['train', 'TRAIN (70%)'], ['full', 'FULL']]) {
+      const lab = document.createElement('label');
+      const inp = document.createElement('input');
+      inp.type = 'radio';
+      inp.name = 'scan-dataset';
+      inp.value = val;
+      if (val === 'test') inp.checked = true;
+      lab.append(inp, document.createTextNode(' ' + label));
+      radioWrap.appendChild(lab);
+    }
+    actions.appendChild(radioWrap);
     const showBtn = document.createElement('button');
     showBtn.className = 'btn scan-show-trades-btn';
     showBtn.dataset.action = 'show-trades';
@@ -847,6 +868,16 @@ function _renderResults(results) {
 (function () {
   const box = $('scan-results');
   if (!box) return;
+  /* Радио dataset (BLOCK-33) встречается в каждой раскрытой панели с одним
+     name, но вне формы — браузер может не связывать их в группу. Гарантируем
+     единственный checked обработчиком change на контейнере. */
+  box.addEventListener('change', function (e) {
+    const t = e.target;
+    if (!t || t.type !== 'radio' || t.name !== 'scan-dataset') return;
+    document.querySelectorAll('input[name="scan-dataset"]').forEach((r) => {
+      r.checked = (r === t);
+    });
+  });
   box.addEventListener('click', function (e) {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
@@ -887,6 +918,12 @@ async function _showTradesForRow(row, btn) {
   btn.disabled = true;
   btn.textContent = '⏳ Загрузка...';
 
+  /* Dataset «Показать на графике» (BLOCK-33): radio в раскрытой панели,
+     дефолт — test (последние 30% истории, цифра = TEST Trades сканера). */
+  const datasetRadio = document.querySelector('input[name="scan-dataset"]:checked');
+  const dataset = datasetRadio ? datasetRadio.value : 'test';
+  console.log('[scan] request dataset=' + dataset);
+
   try {
     const symSel = document.getElementById('symbol-select');
     const tfSel = document.getElementById('timeframe-select');
@@ -913,7 +950,7 @@ async function _showTradesForRow(row, btn) {
       /* БЕЗ limit: визуализация идёт по ВСЕЙ истории сделок (backend берёт
          BACKTEST_MAX_CANDLES=20000). Хардкод limit:1000 резал сделки —
          видели 32 блока вместо 500+. */
-      body: JSON.stringify({ symbol, timeframe, strategy, params }),
+      body: JSON.stringify({ symbol, timeframe, strategy, params, dataset }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
@@ -923,9 +960,21 @@ async function _showTradesForRow(row, btn) {
     const totalTrades = metrics.total_trades != null ? metrics.total_trades : trades.length;
     console.log('trades received:', trades.length,
       'trades_used:', data.candles_used,
-      'range:', data.bars_from, '→', data.bars_to);
+      'range:', data.bars_from, '→', data.bars_to,
+      'dataset:', data.dataset || dataset);
     if (trades.length < totalTrades) {
       console.warn(`WARN: total_trades=${totalTrades} but trades_full.length=${trades.length}`);
+    }
+    /* Сверка с панелью (BLOCK-33): при dataset=test число сделок должно
+       совпадать с колонкой TEST Trades (96 на скрине), а не 322 (full). */
+    const panelCount = dataset === 'test' ? row.dataset.testTrades
+      : dataset === 'train' ? row.dataset.trainTrades : row.dataset.fullTrades;
+    if (panelCount) {
+      if (String(trades.length) === String(panelCount)) {
+        console.log(`[scan] OK: trades_full=${trades.length} == панель ${dataset.toUpperCase()} (${panelCount})`);
+      } else {
+        console.warn(`[scan] trades_full=${trades.length} != панель ${dataset.toUpperCase()}=${panelCount}`);
+      }
     }
 
     if (trades.length === 0) {
@@ -955,7 +1004,7 @@ async function _showTradesForRow(row, btn) {
       if (state.chart && first && last) {
         state.chart.timeScale().setVisibleRange({ from, to });
       }
-      console.log(`[scan] zoomed to last ${visible.length} of ${trades.length} trades`);
+      console.log(`[scan] zoomed to last ${visible.length} of ${trades.length} (dataset=${dataset}) trades`);
     } catch (e) { /* скролл не критичен */ }
 
     btn.textContent = '✓ ' + trades.length + ' сделок';

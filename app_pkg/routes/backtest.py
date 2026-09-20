@@ -64,14 +64,19 @@ def api_backtest_trades():
     """Прогнать backtest для конкретной комбинации и вернуть все сделки
     с TP/SL для отрисовки.
 
-    body: {symbol, timeframe, strategy, params, limit=20000}
-    Возвращает: {trades_full: [...], metrics: {...}, candles_used}
+    body: {symbol, timeframe, strategy, params, limit=20000, dataset=test}
+    dataset: "train" | "test" | "full" — какая часть истории гонится
+    (BLOCK-33). По умолчанию "test" (последние 30% — out-of-sample, цифра
+    совпадает с TEST Trades сканера).
+    Возвращает: {trades_full, metrics, candles_used, dataset, dataset_range,
+    bars_from, bars_to, train_range, test_range}
     """
     body = request.get_json(silent=True) or {}
     symbol = str(body.get("symbol", "BTCUSDT")).upper()
     timeframe = str(body.get("timeframe", "15m"))
     strategy = str(body.get("strategy", "sma_cross"))
     params = body.get("params") or {}
+    dataset = str(body.get("dataset", config.BACKTEST_DATASET_DEFAULT))
     try:
         limit = int(body.get("limit", config.BACKTEST_MAX_CANDLES))
     except (TypeError, ValueError):
@@ -86,6 +91,8 @@ def api_backtest_trades():
         return jsonify({"error": "Invalid timeframe"}), 400
     if strategy not in STRATEGY_MAP:
         return jsonify({"error": f"Unknown strategy: {strategy}"}), 400
+    if dataset not in ("train", "test", "full"):
+        return jsonify({"error": f"Invalid dataset: {dataset}"}), 400
 
     # Прогон на последних N свечах (limit)
     from_sec = int(time.time()) - limit * config.TF_SECONDS.get(timeframe, 60)
@@ -96,10 +103,13 @@ def api_backtest_trades():
         initial_cash=10000,
         replay_limit=limit,
         tp_atr=2.0, sl_atr=1.0,
+        dataset=dataset,
     )
     if "error" in result:
         return jsonify(result), 400
 
+    bars_from = result.get("bars_from")
+    bars_to = result.get("bars_to")
     return jsonify({
         "symbol": symbol,
         "timeframe": timeframe,
@@ -107,8 +117,12 @@ def api_backtest_trades():
         "params": params,
         "trades_full": result.get("trades_full", []),
         "candles_used": result.get("candles_used"),
-        "bars_from": result.get("bars_from"),
-        "bars_to": result.get("bars_to"),
+        "dataset": dataset,
+        "dataset_range": {"from": bars_from, "to": bars_to},
+        "bars_from": bars_from,
+        "bars_to": bars_to,
+        "train_range": result.get("train_range"),
+        "test_range": result.get("test_range"),
         "metrics": {
             "total_return": result.get("total_return"),
             "sharpe_ratio": result.get("sharpe_ratio"),
