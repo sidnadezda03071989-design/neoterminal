@@ -130,16 +130,28 @@ class BacktestTradesRendererImpl {
     const width = Math.max(8, xExit - xEntry);
     const isWin = t.pnl >= 0;
 
-    // 1. Прямоугольник сделки — от entry до TP (зелёный) или до SL (красный)
-    const rectColor = isWin ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)';
-    const borderColor = isWin ? 'rgba(63, 185, 80, 0.6)' : 'rgba(248, 81, 73, 0.6)';
-
+    // 1. Прямоугольник сделки — от TP до SL (если есть) или от entry до exit
+    let yTop = null, yBot = null, blockFill, blockBorder;
     if (pTpLine && pSlLine) {
-      const yTop = Math.min(pTpLine.y, pSlLine.y);
-      const yBot = Math.max(pTpLine.y, pSlLine.y);
-      ctx.fillStyle = rectColor;
+      // Вариант 1: есть TP/SL — прямоугольник от TP до SL
+      yTop = Math.min(pTpLine.y, pSlLine.y);
+      yBot = Math.max(pTpLine.y, pSlLine.y);
+      blockFill = isWin ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)';
+      blockBorder = isWin ? 'rgba(63, 185, 80, 0.6)' : 'rgba(248, 81, 73, 0.6)';
+    } else if (pEntry && pExit) {
+      // Вариант 2: нет TP/SL — блок от entry до exit
+      yTop = Math.min(pEntry.y, pExit.y);
+      yBot = Math.max(pEntry.y, pExit.y);
+      // Минимальная высота, чтобы блок был виден на плоских сделках
+      if (yBot - yTop < 4) { yTop -= 2; yBot += 2; }
+      blockFill = isWin ? 'rgba(63, 185, 80, 0.2)' : 'rgba(248, 81, 73, 0.2)';
+      blockBorder = isWin ? 'rgba(63, 185, 80, 0.7)' : 'rgba(248, 81, 73, 0.7)';
+    }
+
+    if (yTop != null && yBot != null) {
+      ctx.fillStyle = blockFill;
       ctx.fillRect(xEntry, yTop, width, yBot - yTop);
-      ctx.strokeStyle = borderColor;
+      ctx.strokeStyle = blockBorder;
       ctx.lineWidth = 1;
       ctx.strokeRect(xEntry, yTop, width, yBot - yTop);
     }
@@ -185,8 +197,8 @@ class BacktestTradesRendererImpl {
       ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
       const tw = ctx.measureText(label).width;
       const lx = xEntry + width / 2 - tw / 2;
-      const ly = (pTpLine && pSlLine)
-        ? (pTpLine.y + pSlLine.y) / 2
+      const ly = (yTop != null)
+        ? (yTop + yBot) / 2
         : pEntry.y - 10;
       ctx.fillText(label, lx, ly);
     }
