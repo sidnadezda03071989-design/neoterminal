@@ -26,15 +26,8 @@ def api_backtest():
         from_sec = int(from_sec) if from_sec else None
         to_sec = int(to_sec) if to_sec else None
         initial_cash = float(body.get("initial_cash", 10000))
-        tp_atr = float(body.get("tp_atr")) if body.get("tp_atr") else None
-        sl_atr = float(body.get("sl_atr")) if body.get("sl_atr") else None
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid numeric params"}), 400
-
-    if tp_atr is not None and tp_atr <= 0:
-        return jsonify({"error": "tp_atr must be > 0"}), 400
-    if sl_atr is not None and sl_atr <= 0:
-        return jsonify({"error": "sl_atr must be > 0"}), 400
 
     if symbol not in config.SYMBOLS:
         return jsonify({"error": "Invalid symbol"}), 400
@@ -46,7 +39,7 @@ def api_backtest():
     result = run_backtest(symbol, tf, from_sec, to_sec,
                           strategy, params, initial_cash,
                           replay_limit=None,  # полная история (BACKTEST_MAX_CANDLES)
-                          tp_atr=tp_atr, sl_atr=sl_atr)
+                          tp_atr=None, sl_atr=None)
     if "error" in result:
         return jsonify(result), 400
     return jsonify(result)
@@ -62,12 +55,18 @@ def api_backtest_strategies():
 @bp.route("/api/backtest/trades", methods=["POST"])
 def api_backtest_trades():
     """Прогнать backtest для конкретной комбинации и вернуть все сделки
-    с TP/SL для отрисовки.
+    для отрисовки.
 
     body: {symbol, timeframe, strategy, params, limit=20000, dataset=test}
     dataset: "train" | "test" | "full" — какая часть истории гонится
     (BLOCK-33). По умолчанию "test" (последние 30% — out-of-sample, цифра
     совпадает с TEST Trades сканера).
+
+    TP/SL НЕ применяются (BLOCK-36): сканер считает чистые сигнальные выходы,
+    и визуализация должна показывать РОВНО те сделки, что в панели сканера
+    (95 == 95, а не 95 vs 321). Сделки закрываются по сигналу или в конце
+    данных (exit_reason="end").
+
     Возвращает: {trades_full, metrics, candles_used, dataset, dataset_range,
     bars_from, bars_to, train_range, test_range}
     """
@@ -94,15 +93,20 @@ def api_backtest_trades():
     if dataset not in ("train", "test", "full"):
         return jsonify({"error": f"Invalid dataset: {dataset}"}), 400
 
-    # Прогон на последних N свечах (limit)
-    from_sec = int(time.time()) - limit * config.TF_SECONDS.get(timeframe, 60)
+    # Прогон на последних N свечах (limit). from_sec — за пределами окна:
+    # 365 дней (SCAN_PERIOD_DAYS), как сканер. НЕ limit × TF_SECONDS: при
+    # пропусках в данных (форекс) 20000 свечей занимают больше 208 дней, и
+    # по limit×tf_sec фетч вернул бы меньше свечей (14295), чем скан —
+    # окна разошлись бы, и сделки не совпали бы с панелью (BLOCK-36).
+    from_sec = int(time.time()) - config.SCAN_PERIOD_DAYS * 86400
     result = run_backtest(
         symbol, timeframe,
         from_sec=from_sec, to_sec=int(time.time()),
         strategy_name=strategy, params=params,
         initial_cash=10000,
         replay_limit=limit,
-        tp_atr=2.0, sl_atr=1.0,
+        # Без TP/SL (BLOCK-36): те же сигнальные выходы, что в сканере.
+        tp_atr=None, sl_atr=None,
         dataset=dataset,
     )
     if "error" in result:

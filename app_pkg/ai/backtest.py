@@ -555,6 +555,9 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     входа (например 2.0 = +2×ATR / -2×ATR). Если заданы, LONG-позиция
     закрывается по уровню в тот же бар (по high/low свечи), не дожидаясь
     сигнала SELL. В trades добавляется поле "exit_reason": tp/sl/signal.
+    Если оба не заданы — выходы только по сигналу стратегии либо в конце
+    данных (exit_reason="end"): незакрытую позицию фиксируем по последней
+    свече, чтобы число сделок на графике совпадало со статистикой (BLOCK-36).
 
     dataset — "full" (вся история), "train" (первые SCAN_TRAIN_SPLIT=70%) или
     "test" (последние 30%, out-of-sample). При train/test история делится на
@@ -717,6 +720,38 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
 
     if not equity_log:
         return {"error": "Пустая кривая эквити"}
+
+    # BLOCK-36: позиция, оставшаяся открытой до конца данных, закрывается по
+    # последней свече и ПОПАДАЕТ в сделки (exit_reason="end"). Раньше она
+    # терялась — панель и визуализация расходились на этой одной сделке.
+    # Идёт в дополнение к signal-выходам: когда TP/SL не заданы (сканирование,
+    # /api/backtest/trades), сделка всегда находит свой конец.
+    if position is not None:
+        i_last = len(df) - 1
+        tstamp_last = int(ts[i_last])
+        price_last = utils._clean(df["close"].iloc[i_last])
+        if price_last is not None:
+            entry_shares = position["shares"]
+            entry_price = position["entry"]
+            pnl_end = entry_shares * price_last - entry_shares * entry_price
+            trades.append({
+                "entry_time": int(ts[entry_bar]),
+                "exit_time": tstamp_last,
+                "entry_price": entry_price,
+                "exit_price": price_last,
+                "direction": "BUY",
+                "tp_price": None,
+                "sl_price": None,
+                "tp_time": None,
+                "sl_time": None,
+                "pnl": round(pnl_end, 2),
+                "pnl_pct": round(
+                    (pnl_end / (entry_shares * entry_price)) * 100, 4)
+                    if entry_shares and entry_price else 0,
+                "r_ratio": 0,
+                "exit_reason": "end",
+            })
+            position = None
 
     total_return = (equity_log[-1]["equity"] - initial_cash) / initial_cash
     daily_returns = []
