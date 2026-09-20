@@ -41,7 +41,9 @@ def _fake_run_backtest(train_sharpe=1.5, test_sharpe=0.8, trades=50,
     trades >= SCAN_MIN_TRADES по умолчанию, чтобы комбинации проходили отсев.
     """
     def fake(symbol, tf, from_sec, to_sec, strategy_name, params,
-             initial_cash=10000, replay_limit=None, df=None, ind=None):
+             initial_cash=10000, replay_limit=None, df=None, ind=None,
+             tp_atr=None, sl_atr=None):
+        """tp_atr/sl_atr — BLOCK-37: сканер всегда передаёт уровни из config."""
         if calls is not None:
             calls.append(len(df) if df is not None else -1)
         sharpe = train_sharpe if (df is not None and len(df) > 500) \

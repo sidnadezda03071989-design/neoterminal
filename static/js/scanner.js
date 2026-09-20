@@ -996,12 +996,11 @@ async function _showTradesForRow(row, btn) {
      дефолт — test (последние 30% истории, цифра = TEST Trades сканера). */
   const datasetRadio = document.querySelector('input[name="scan-dataset"]:checked');
   const dataset = datasetRadio ? datasetRadio.value : 'test';
-  /* BLOCK-36-fix7: чекбокс «TP/SL уровни» (templates/index.html). ВКЛ →
-     backend гонит бэктест с tp_atr=2.0/sl_atr=1.0 и на графике появляются
-     пунктирные TP/SL; числа сделок при этом могут отличаться от панели
-     сканера (панель считает БЕЗ TP/SL). */
-  const showTpSl = document.getElementById('scan-show-tpsl')?.checked || false;
-  console.log('[scan] request dataset=' + dataset + ' tp_sl=' + showTpSl);
+  /* BLOCK-37: TP/SL больше не опция — /api/backtest/trades считает ВСЕГДА с
+     уровнями config.BACKTEST_TP_ATR/SL_ATR (2×ATR / 1×ATR), ровно как сканер.
+     Поэтому trades на графике == Trades в панели (1:1), а чекбокс
+     «TP/SL уровни» из панели убран. */
+  console.log('[scan] request dataset=' + dataset);
 
   /* BLOCK-36: замораживаем pollLive на время fetch + render + zoom,
      чтобы фоновый полл не сбросил видимое окно посреди рендера сделок.
@@ -1044,7 +1043,6 @@ async function _showTradesForRow(row, btn) {
          видели 32 блока вместо 500+. */
       body: JSON.stringify({
         symbol, timeframe, strategy, params, dataset,
-        tp_sl: showTpSl,
       }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -1060,18 +1058,14 @@ async function _showTradesForRow(row, btn) {
     if (trades.length < totalTrades) {
       console.warn(`WARN: total_trades=${totalTrades} but trades_full.length=${trades.length}`);
     }
-    /* Сверка с панелью (BLOCK-33): при dataset=test число сделок должно
-       совпадать с колонкой TEST Trades (96 на скрине), а не 322 (full). */
+    /* Сверка с панелью (BLOCK-37): панель и этот эндпоинт считают ОДИН прогон
+       (TP/SL всегда включены), поэтому trades_full обязан совпадать с колонкой
+       TEST/TRAIN/FULL Trades. Любое расхождение — реальный баг. */
     const panelCount = dataset === 'test' ? row.dataset.testTrades
       : dataset === 'train' ? row.dataset.trainTrades : row.dataset.fullTrades;
     if (panelCount) {
       if (String(trades.length) === String(panelCount)) {
         console.log(`[scan] OK: trades_full=${trades.length} == панель ${dataset.toUpperCase()} (${panelCount})`);
-      } else if (showTpSl) {
-        /* BLOCK-36-fix7: панель считает БЕЗ TP/SL — при включённом чекбоксе
-           расхождение ожидаемо (часть сделок закрывается по стопу/профиту). */
-        console.log(`[scan] trades_full=${trades.length} != панель ` +
-          `${dataset.toUpperCase()}=${panelCount} — ожидаемо при tp_sl=on`);
       } else {
         console.warn(`[scan] trades_full=${trades.length} != панель ${dataset.toUpperCase()}=${panelCount}`);
       }
