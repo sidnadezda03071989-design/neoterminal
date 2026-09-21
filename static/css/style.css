@@ -439,6 +439,32 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   margin-bottom: 12px; }
 .bt-trades-title { font-size: 11px; text-transform: uppercase;
   letter-spacing: .5px; color: var(--text-muted); margin-bottom: 4px; }
+.aibt-progress { margin: 0 12px 10px; }
+.aibt-progress-track { height: 6px; background: var(--bg-hover);
+  border-radius: 3px; overflow: hidden; }
+.aibt-progress-bar { height: 100%; width: 0%;
+  background: linear-gradient(90deg, #26a69a, #ef5350); transition: width .3s; }
+.aibt-progress-text { margin-top: 4px; font-size: 11px;
+  color: var(--text-muted); text-align: right; }
+#ai-backtest-panel .btn.ai-btn { width: 100%; }
+/* Подпись режима: реплей (со временем среза) / реальное время. */
+.aibt-mode-hint { margin: 0 12px 10px; padding: 6px 8px; font-size: 11px;
+  color: var(--text-muted); background: var(--bg);
+  border: 1px solid var(--bg-hover); border-radius: 4px; }
+/* Список уровней вероятностей: +{diff} слева, {prob}% справа. */
+.aibt-levels-title { font-size: 11px; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--text-muted); margin-bottom: 6px; }
+.aibt-levels { display: flex; flex-direction: column; gap: 4px;
+  margin-bottom: 12px; max-height: 320px; overflow-y: auto; }
+.aibt-level-row { display: flex; justify-content: space-between;
+  align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px;
+  font-weight: 700; border: 1px solid var(--bg-hover); border-radius: 4px;
+  background: var(--bg); }
+.aibt-level-row.up { color: var(--up); border-left: 3px solid var(--up); }
+.aibt-level-row.down { color: var(--down); border-left: 3px solid var(--down); }
+.aibt-level-price { font-variant-numeric: tabular-nums; }
+.aibt-level-prob { color: var(--text); font-variant-numeric: tabular-nums; }
+.aibt-levels-empty { font-size: 11px; color: var(--text-muted); }
 .bt-trades { font-size: 11px; }
 .bt-trades-head, .bt-trade-row { display: grid;
   grid-template-columns: 1.1fr 1.1fr 1.6fr .9fr; gap: 6px;
@@ -602,6 +628,7 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 .backtest-panel[style*="block"],
 .scanner-panel[style*="block"],
 .notes-panel[style*="block"],
+.news-panel[style*="block"],
 .journal-panel[style*="block"] {
   animation: panelSlideIn var(--transition-slow) ease-out; }
 
@@ -697,6 +724,103 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 .journal-empty { padding:18px 12px; text-align:center;
   color:var(--text-muted); font-size:12px; }
 
+/* ---------- Новости по активу (Finnhub + CoinGecko) ---------- */
+.news-panel { position:fixed; right:12px; top:90px;
+  width:380px; max-height:75vh; z-index:50;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:0 8px 24px rgba(0,0,0,0.4);
+  display:flex; flex-direction:column; overflow:hidden; }
+.news-body { padding:8px; overflow-y:auto; flex:1;
+  display:flex; flex-direction:column; gap:8px; }
+.news-status { padding:2px 6px; font-size:11px; color:var(--text-muted); }
+.news-status.err { color:var(--down); }
+.news-item { display:flex; gap:10px; padding:8px;
+  border:1px solid var(--bg-hover); border-radius:8px;
+  background:var(--bg); text-decoration:none; color:inherit;
+  transition:border-color var(--transition-fast),
+              background var(--transition-fast); }
+.news-item:hover { border-color:var(--accent);
+  background:var(--bg-hover); text-decoration:none; }
+.news-thumb { width:72px; height:48px; object-fit:cover; flex:none;
+  border-radius:6px; background:var(--bg-hover); }
+.news-item-main { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.news-title { font-size:12px; font-weight:600; color:var(--text);
+  line-height:1.35; display:-webkit-box; -webkit-line-clamp:3;
+  -webkit-box-orient:vertical; overflow:hidden; }
+.news-meta { font-size:10px; color:var(--text-muted);
+  display:flex; gap:6px; flex-wrap:wrap; }
+.news-meta .src { color:var(--accent); }
+.news-summary { font-size:11px; color:var(--text-muted); line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:2;
+  -webkit-box-orient:vertical; overflow:hidden; }
+.news-empty { padding:18px 12px; text-align:center;
+  color:var(--text-muted); font-size:12px; }
+#news-list { display:flex; flex-direction:column; gap:8px; }
+
+/* ---------- Статистика стратегий (Scanner Edge) ---------- */
+.scan-edge-card { border:1px solid var(--bg-hover); border-radius:8px;
+  background:var(--bg); padding:10px 12px; display:flex;
+  flex-direction:column; gap:6px; }
+.scan-edge-head { font-size:11px; font-weight:700; color:var(--text);
+  text-transform:uppercase; letter-spacing:.4px; }
+.scan-edge-strategy { font-size:13px; font-weight:600; color:var(--accent); }
+.scan-edge-metrics { display:flex; gap:14px; flex-wrap:wrap; }
+.scan-edge-metric { display:flex; flex-direction:column; gap:1px; }
+.scan-edge-label { font-size:10px; color:var(--text-muted);
+  text-transform:uppercase; }
+.scan-edge-value { font-size:14px; font-weight:700; color:var(--text); }
+.scan-edge-value.scan-edge-good { color:var(--up); }
+.scan-edge-value.scan-edge-bad { color:var(--down); }
+.scan-edge-value.scan-edge-mid { color:var(--warning); }
+.scan-edge-explain { font-size:11px; line-height:1.4;
+  border-top:1px solid var(--bg-hover); padding-top:6px; }
+.scan-edge-explain.scan-edge-good { color:var(--up); }
+.scan-edge-explain.scan-edge-bad { color:var(--down); }
+.scan-edge-explain.scan-edge-mid { color:var(--warning); }
+.scan-edge-note { font-size:10px; color:var(--text-muted); }
+
+/* ---------- Вкладка «🧠 Данные для ИИ» (Raw Data + Editable Prompt) ---------- */
+.hidden { display:none !important; }
+.floating-panel { position:fixed; right:12px; top:90px;
+  width:min(820px, calc(100vw - 24px)); max-height:80vh;
+  z-index:55; background:var(--bg-elevated);
+  border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:0 12px 40px rgba(0,0,0,0.5);
+  display:flex; flex-direction:column; overflow:hidden; }
+.floating-panel:not(.hidden) {
+  animation: panelSlideIn var(--transition-slow) ease-out; }
+.floating-panel-header { display:flex; align-items:center; gap:8px;
+  padding:10px 12px;
+  border-bottom:1px solid var(--bg-hover); font-weight:600; color:#fff; }
+.floating-panel-sub { flex:1; font-size:11px; font-weight:400;
+  color:var(--text-muted); }
+/* Разделение панели: слева сырой JSON, справа промпт — ровно 50/50. */
+.ai-data-split { display:flex; flex:1; min-height:0; }
+.ai-data-column { flex:1 1 50%; width:50%; box-sizing:border-box;
+  display:flex; flex-direction:column; min-width:0; min-height:0;
+  border-right:1px solid var(--bg-hover); }
+.ai-data-column:last-child { border-right:none; }
+.ai-data-col-title { padding:8px 12px 6px; font-size:10px;
+  text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted);
+  border-bottom:1px solid var(--bg-hover); }
+.ai-data-json { flex:1; min-height:0; margin:0; padding:10px 12px;
+  overflow:auto; white-space:pre-wrap; word-break:break-word;
+  font-family:Consolas, "Courier New", monospace; font-size:11px;
+  line-height:1.45; color:var(--text); background:var(--bg); }
+.ai-data-prompt { flex:1; min-height:220px; width:100%; box-sizing:border-box;
+  resize:vertical; padding:10px 12px; border:none; outline:none;
+  background:var(--bg); color:var(--text);
+  font-family:Consolas, "Courier New", monospace; font-size:12px;
+  line-height:1.5; }
+.ai-data-status { min-height:16px; padding:2px 12px; font-size:11px;
+  color:var(--text-muted); }
+.ai-data-status.ok { color:var(--up); }
+.ai-data-status.err { color:var(--down); }
+.ai-data-footer { display:flex; justify-content:flex-end;
+  padding:8px 12px; border-top:1px solid var(--bg-hover); }
+
 /* ЧАСТЬ G — маленькие экраны: floating-панели на всю ширину */
 @media (max-width: 900px) {
   .watchlist-panel,
@@ -705,7 +829,9 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   .alerts-panel,
   .backtest-panel,
   .scanner-panel,
-  .notes-panel {
+  .notes-panel,
+  .news-panel,
+  .floating-panel {
     left: 12px; right: 12px; width: auto; }
   .journal-panel { width: calc(100vw - 24px); }
   .journal-head, .journal-row {

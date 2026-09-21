@@ -1,0 +1,10 @@
+Проект: NeoTerminal (Flask + SQLite + Vanilla JS + Lightweight Charts).
+Архитектура: 
+- Backend: app_pkg/ (routes, data, ai, db.py)
+- Frontend: static/js/ (ES модули), templates/index.html
+- База данных: SQLite (WAL mode), таблицы в app_pkg/db.py
+Правила:
+- Никогда не используй фреймворки на фронтенде (React/Vue), только чистый JS.
+- Для стилей используй CSS переменные из static/css/style.css (тема GitHub Dark).
+- Все долгие задачи (сканер, AI бэктест) запускать через threading + SSE прогресс.
+- При изменении БД обязательно обновлять init_db() в db.py.

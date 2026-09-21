@@ -22,6 +22,7 @@ export const state = {
     adx:false, cci:false, obv:false,
   },
   dm: null,
+  aiProbRenderer: null,
 };
 
 let _currentLayout = '1';

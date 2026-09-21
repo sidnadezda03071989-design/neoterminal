@@ -5,7 +5,8 @@ import { loadWatchlist } from './ui/watchlist.js';
 import { toggleCommandPalette } from './ui/command_palette.js';
 import { setTool } from './ui/toolbar.js';
 import { chart } from './chart/setup.js';
-import { initDrawingsManager, initBacktestRenderer, initUI } from './app_init.js';
+import { initDrawingsManager, initBacktestRenderer, initAiProbZonesRenderer,
+  initUI } from './app_init.js';
 import { showAlertToast } from './ui/alerts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   initDrawingsManager();
   initBacktestRenderer();
+  initAiProbZonesRenderer();
   initUI();
   loadLive(true).then(() => startLivePolling());
   loadWatchlist();

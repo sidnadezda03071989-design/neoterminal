@@ -9,6 +9,9 @@
   - все 403 -> None;
   - Qwen без ключа -> сразу Groq;
   - LLM_PROVIDER_ORDER=deepseek,qwen -> порядок соблюдён;
+  - HTTP 429 -> fallback к следующему (залимиченный Groq не блокирует
+    рабочий DeepSeek); 429 у ВСЕХ -> RuntimeError("rate limit"),
+    в т.ч. для vision (а не «vision unavailable»);
   - Vision: Qwen-vl 200 -> используется Qwen (qwen-vl-max);
   - Vision: Qwen-vl первым даже при порядке groq,deepseek; Qwen-vl 404 ->
     Groq-vision 200 -> используется Groq.
@@ -147,6 +150,59 @@ def test_all_providers_403_returns_none(monkeypatch):
 
     assert llm._llm_request("Отвечай json.",
                             [{"role": "user", "content": "hi"}]) is None
+    assert [c["host"] for c in calls] == ["qwen", "groq", "ds"]
+
+
+def test_qwen_429_falls_back_to_groq(monkeypatch, caplog):
+    """Qwen 429 (rate limit) -> Groq 200 -> ответ Groq, 429 не терминален."""
+    calls = []
+    monkeypatch.setattr(llm._LLM_SESSION, "post",
+                        _router({"qwen": 429, "groq": 200, "ds": 200}, calls))
+
+    with caplog.at_level(logging.WARNING, logger="app_pkg.ai.llm"):
+        result = llm._llm_request("Отвечай json.",
+                                  [{"role": "user", "content": "hi"}])
+
+    assert result == "OK"
+    assert [c["host"] for c in calls] == ["qwen", "groq"]
+    assert any("provider qwen rate limited (HTTP 429), fallback to groq"
+               in r.getMessage() for r in caplog.records)
+
+
+def test_groq_429_falls_back_to_deepseek(monkeypatch):
+    """Groq 429 не блокирует рабочий DeepSeek (раньше цепочка обрывалась)."""
+    calls = []
+    monkeypatch.setattr(llm._LLM_SESSION, "post",
+                        _router({"qwen": 403, "groq": 429, "ds": 200}, calls))
+
+    result = llm._llm_request("Отвечай json.",
+                              [{"role": "user", "content": "hi"}])
+
+    assert result == "OK"
+    assert [c["host"] for c in calls] == ["qwen", "groq", "ds"]
+    assert calls[2]["payload"]["model"] == "deepseek-v4-flash"
+
+
+def test_all_providers_429_raises_rate_limit(monkeypatch):
+    """429 у ВСЕХ -> RuntimeError('rate limit'), а не None."""
+    calls = []
+    monkeypatch.setattr(llm._LLM_SESSION, "post",
+                        _router({"qwen": 429, "groq": 429, "ds": 429}, calls))
+
+    with pytest.raises(RuntimeError, match="rate limit"):
+        llm._llm_request("Отвечай json.",
+                         [{"role": "user", "content": "hi"}])
+    assert [c["host"] for c in calls] == ["qwen", "groq", "ds"]
+
+
+def test_vision_all_429_raises_rate_limit(monkeypatch):
+    """Vision: 429 у всех -> RuntimeError('rate limit'), не 'vision unavail'."""
+    calls = []
+    monkeypatch.setattr(llm._LLM_SESSION, "post",
+                        _router({"qwen": 429, "groq": 429, "ds": 429}, calls))
+
+    with pytest.raises(RuntimeError, match="rate limit"):
+        llm._llm_vision_request("Верни json.", "BTCUSDT 1H", _PNG)
     assert [c["host"] for c in calls] == ["qwen", "groq", "ds"]
 
 

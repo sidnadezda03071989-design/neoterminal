@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
-from app_pkg import config, utils
+from app_pkg import config, db, utils
 from app_pkg.data.fetch import get_series_df
 from app_pkg.indicators import compute_indicators
 
@@ -189,6 +189,45 @@ def _compute_multi_tf_trends(symbol, main_tf, upto_sec=None):
     return out
 
 
+def format_scanner_stats(symbol, timeframe) -> str:
+    """Секция «=== Scanner stats ===» для промпта ИИ (symbol+timeframe).
+
+    Единая точка правды по статистике сканера для агентов: лучший результат
+    по combined_sharpe из scan_results + ЯВНАЯ вербальная рекомендация
+    (доверять / не доверять сигналам стратегии). Пустая строка, если скана
+    по этой паре ещё не было — секция просто не попадает в промпт.
+
+    Используется build_multi_tf_context (=> Харон, чат, AI Backtest).
+    """
+    s = db.db_get_best_scan_stats(symbol, timeframe)
+    if not s:
+        return ""
+    params = s.get("params") or {}
+    params_str = (", ".join(f"{k}={v}" for k, v in sorted(params.items()))
+                  if params else "default")
+    combined = utils._clean(s.get("combined_sharpe")) or 0.0
+    test_sharpe = utils._clean(s.get("sharpe")) or 0.0
+    winrate = utils._clean(s.get("winrate"))
+    if combined > 3:
+        advice = (f"Доверяй сигналам {s.get('strategy')} "
+                  f"(исторически очень надежная стратегия на этом активе).")
+    elif test_sharpe < 0:
+        advice = (f"НЕ доверяй сигналам {s.get('strategy')} — ищи уровень "
+                  f"поддержки/сопротивления (стратегия убыточна на истории).")
+    else:
+        advice = (f"Сигналы {s.get('strategy')} учитывай как второстепенные: "
+                  f"подтверждай структурой рынка.")
+    lines = [f"=== Scanner stats ({symbol} {timeframe}) ==="]
+    lines.append(
+        f"Статистика сканера для {symbol} {timeframe}: "
+        f"{s.get('strategy')} ({params_str}) даёт combined Sharpe "
+        f"{round(float(combined), 2)}")
+    if winrate is not None:
+        lines.append(f"out-of-sample winrate={round(float(winrate) * 100, 1)}%")
+    lines.append(advice)
+    return "\n".join(lines)
+
+
 def build_multi_tf_context(symbol, main_tf, upto_sec=None) -> str:
     """Собирает секции по всем таймфреймам, main помечает *** MAIN ***.
 
@@ -213,5 +252,13 @@ def build_multi_tf_context(symbol, main_tf, upto_sec=None) -> str:
                 f"{tf}: trend={t['trend']} last_price={t['last_price']} "
                 f"sma20={t['sma20']} sma50={t['sma50']} rsi14={t['rsi14']}")
         sections.append("\n".join(t_lines))
+
+    # Статистика сканера (лучший edge для symbol+main_tf): traders и ИИ
+    # должны видеть, какие стратегии реально работают на этом активе.
+    # Ровно те же данные, что в карточке «Статистика стратегий» во вкладке
+    # «Новости» (GET /api/scanner/stats).
+    scan_stats = format_scanner_stats(symbol, main_tf)
+    if scan_stats:
+        sections.append(scan_stats)
 
     return "\n\n".join(sections)

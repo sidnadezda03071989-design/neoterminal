@@ -8,7 +8,8 @@
   - HTTP 400 на обеих попытках -> warning с телом ответа + HTTPError;
   - HTTP 401/403 у DeepSeek и Groq -> warning'и + None (см. отдельный файл
     test_deepseek_fallback.py на сам fallback);
-  - HTTP 429 -> RuntimeError("rate limit").
+  - HTTP 429 -> fallback к следующему провайдеру; 429 у ВСЕХ ->
+    RuntimeError("rate limit").
 """
 
 import logging
@@ -138,8 +139,8 @@ def test_both_providers_forbidden_returns_none(monkeypatch, caplog):
                for r in caplog.records)
 
 
-def test_rate_limit_429(monkeypatch):
-    """HTTP 429 -> RuntimeError('rate limit') (без ретрая и fallback)."""
+def test_rate_limit_429_all_providers(monkeypatch):
+    """HTTP 429 у ВСЕХ провайдеров цепочки -> RuntimeError('rate limit')."""
     calls = []
 
     def fake_post(url, json=None, **kw):  # noqa: A002
@@ -150,7 +151,9 @@ def test_rate_limit_429(monkeypatch):
 
     with pytest.raises(RuntimeError, match="rate limit"):
         llm._llm_request("system", [{"role": "user", "content": "hi"}])
-    assert len(calls) == 1
+    # Цепочка deepseek -> groq: каждый опрошен ровно один раз (429 не
+    # ретраится с json-режимом повторно — это не HTTP 400).
+    assert len(calls) == 2
 
 
 def test_system_duplicates_removed(monkeypatch, caplog):

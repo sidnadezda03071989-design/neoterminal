@@ -112,6 +112,18 @@ def _init_db(conn) -> None:
             created_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_scan_run ON scan_results(run_id);
+        CREATE TABLE IF NOT EXISTS ai_backtest_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT,
+            symbol TEXT,
+            timeframe TEXT,
+            params_json TEXT,
+            metrics_json TEXT,
+            signals_json TEXT,
+            trades_json TEXT,
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_backtest_run ON ai_backtest_runs(run_id);
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -536,7 +548,11 @@ def _row_to_scan_result(row) -> dict:
 
 def db_save_scan_result(run_id, symbol, tf, strategy, params, train, test,
                         combined_sharpe, total_trades) -> int:
-    """Сохраняет результат одной комбинации grid-search сканера."""
+    """Сохраняет результат одной комбинации grid-search сканера.
+
+    Для пакетной вставки списка строк (напр. импорт CSV прогона) —
+    db_save_scan_results: executemany, одна транзакция на весь список.
+    """
     conn = _get_db()
     with _db_lock:
         cur = conn.execute(
@@ -553,6 +569,89 @@ def db_save_scan_result(run_id, symbol, tf, strategy, params, train, test,
         )
         conn.commit()
         return cur.lastrowid
+
+
+def _scan_float(value):
+    """float() без падений: None/пустая строка/мусор -> None.
+
+    Нужна при восстановлении train/test окон из плоских колонок
+    CSV-выгрузки (export.csv), где пустая ячейка = метрика отсутствует.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def db_save_scan_results(run_id, results_list) -> int:
+    """Сохраняет список результатов прогона ОДНОЙ транзакцией (executemany).
+
+    results_list — список словарей; минимально нужны symbol, strategy,
+    combined_sharpe. Остальные поля восстанавливаются:
+      - params: dict ИЛИ JSON-строка (как в колонке params CSV-выгрузки);
+      - train_sharpe/test_sharpe — скаляры из CSV-выгрузки -> заворачиваются
+        в train/test окна {"sharpe": ...};
+      - winrate/max_dd/profit_factor/trades — колонки test-окна CSV
+        (out-of-sample, формат export.csv); если в словаре передан полный
+        train/test dict (как из run_scan) — берётся он целиком;
+      - total_trades — иначе сумма trades по train+test (0, если нет).
+    Строки без symbol или strategy пропускаются (мусор/пустые строки CSV).
+    Возвращает число вставленных строк.
+    """
+    rows = []
+    now = utils.now_iso()
+    for raw in results_list or []:
+        if not isinstance(raw, dict):
+            continue
+        symbol = str(raw.get("symbol") or "").upper()
+        strategy = str(raw.get("strategy") or "")
+        if not symbol or not strategy:
+            continue
+        tf = str(raw.get("timeframe") or config.DEFAULT_TIMEFRAME)
+        params = raw.get("params")
+        if not isinstance(params, dict):
+            try:
+                params = json.loads(params) if params else {}
+            except (TypeError, ValueError):
+                params = {}
+        train = raw.get("train") if isinstance(raw.get("train"), dict) else {}
+        test = raw.get("test") if isinstance(raw.get("test"), dict) else {}
+        if not train:
+            train = {"sharpe": _scan_float(raw.get("train_sharpe"))}
+        if not test:
+            test = {
+                "sharpe": _scan_float(raw.get("test_sharpe")),
+                "winrate": _scan_float(raw.get("winrate")),
+                "max_dd": _scan_float(raw.get("max_dd")),
+                "profit_factor": _scan_float(raw.get("profit_factor")),
+                "trades": int(_scan_float(raw.get("trades")) or 0),
+            }
+        total_trades = raw.get("total_trades")
+        if total_trades is None:
+            total_trades = (int(_scan_float(train.get("trades")) or 0)
+                            + int(_scan_float(test.get("trades")) or 0))
+        rows.append((
+            run_id, symbol, tf, strategy,
+            json.dumps(params or {}, ensure_ascii=False),
+            json.dumps(train, ensure_ascii=False),
+            json.dumps(test, ensure_ascii=False),
+            _scan_float(raw.get("combined_sharpe")),
+            int(total_trades or 0), now,
+        ))
+    if not rows:
+        return 0
+    conn = _get_db()
+    with _db_lock:
+        cur = conn.executemany(
+            "INSERT INTO scan_results (run_id, symbol, timeframe, strategy, "
+            "params_json, train_json, test_json, combined_sharpe, "
+            "total_trades, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 def db_get_scan_results(run_id, limit=None) -> list:
@@ -579,3 +678,85 @@ def db_clear_scan_run(run_id) -> int:
         cur = conn.execute("DELETE FROM scan_results WHERE run_id=?", (run_id,))
         conn.commit()
         return cur.rowcount
+
+
+# ------------------------------------------------------------- AI backtest
+def db_get_best_scan_stats(symbol, tf):
+    """Лучшая комбинация сканера для symbol+tf (combined_sharpe DESC).
+
+    Возвращает {strategy, params, combined_sharpe, winrate, sharpe} —
+    out-of-sample (test) значения; None, если скана ещё не было.
+    """
+    conn = _get_db()
+    with _db_lock:
+        row = conn.execute(
+            "SELECT * FROM scan_results WHERE symbol=? AND timeframe=? "
+            "ORDER BY combined_sharpe DESC, id ASC LIMIT 1",
+            (symbol, tf),
+        ).fetchone()
+    if row is None:
+        return None
+    r = _row_to_scan_result(row)
+    test = r.get("test") or {}
+    return {
+        "run_id": r.get("run_id"),
+        "symbol": r.get("symbol"),
+        "timeframe": r.get("timeframe"),
+        "strategy": r.get("strategy"),
+        "params": r.get("params") or {},
+        # train/test окна целиком (аддитивно): карточке «Статистика стратегий»
+        # и ИИ-контексту нужны train_sharpe/test_sharpe для оценки overfit.
+        "train": r.get("train") or {},
+        "test": r.get("test") or {},
+        "combined_sharpe": r.get("combined_sharpe"),
+        "winrate": test.get("winrate"),
+        "sharpe": test.get("sharpe"),
+    }
+
+
+def db_save_ai_backtest(run_id, symbol, tf, params, metrics, signals, trades) -> int:
+    """Сохраняет завершённый прогон AI Backtest в БД.
+
+    signals — уровни вероятностей ({"side","price","probability","diff",...});
+    metrics/trades панель больше не показывает (уровни — помощник
+    вероятностей, а не стратегия), но колонки схемы остаются для совместимости.
+    """
+    conn = _get_db()
+    with _db_lock:
+        cur = conn.execute(
+            "INSERT INTO ai_backtest_runs (run_id, symbol, timeframe, "
+            "params_json, metrics_json, signals_json, trades_json, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                run_id, symbol, tf,
+                json.dumps(params or {}, ensure_ascii=False),
+                json.dumps(metrics or {}, ensure_ascii=False),
+                json.dumps(signals or [], ensure_ascii=False),
+                json.dumps(trades or [], ensure_ascii=False),
+                utils.now_iso(),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def db_get_ai_backtest(run_id):
+    """Результат прогона AI Backtest из БД; None, если прогона не было."""
+    conn = _get_db()
+    with _db_lock:
+        row = conn.execute(
+            "SELECT * FROM ai_backtest_runs WHERE run_id=? ORDER BY id DESC "
+            "LIMIT 1", (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["params"] = json.loads(d.pop("params_json") or "{}")
+    d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+    d["signals_log"] = json.loads(d.pop("signals_json") or "[]")
+    d["trades"] = json.loads(d.pop("trades_json") or "[]")
+    # Уровни вероятностей лежат в signals_json (пишем в run_ai_backtest).
+    # Отдаём и как "levels" — новая схема ответа (панель рисует только их).
+    d["levels"] = d["signals_log"] if isinstance(d["signals_log"], list) else []
+    d.setdefault("status", "finished")
+    return d

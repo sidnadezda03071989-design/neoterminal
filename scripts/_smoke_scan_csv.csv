@@ -1,0 +1,4 @@
+symbol,timeframe,strategy,params,train_sharpe,test_sharpe,combined_sharpe,winrate,max_dd,profit_factor,trades
+GBPUSD,15m,rsi_reversal,"{""period"": 21, ""oversold"": 35, ""overbought"": 75}",5.33,3.42,3.42,0.3962,0.0049,1.41,53
+GBPUSD,15m,rsi_reversal,"{""period"": 21, ""oversold"": 40, ""overbought"": 70}",4.12,3.24,3.24,0.4167,0.0039,1.55,48
+EURUSD,15m,ema_cross,"{""fast"": 5, ""slow"": 20}",2.0,1.1,1.1,,,,

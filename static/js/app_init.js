@@ -4,7 +4,7 @@ import { loadLive } from './data/live.js';
 import { loadReplay, playReplay, pauseReplay, resetReplay,
   replayStepBack, replayStepForward, applyReplayPreset,
   stopReplay, replaySetData, refreshIndicatorsUpto,
-  initReplayBarrierDrag } from './data/replay.js';
+  initReplayBarrierDrag, setReplayBarrierHandler } from './data/replay.js';
 import { runAIAnalysis, updateAiDrawingsUI } from './ai/analysis.js';
 import { openChat, closeChat, sendChatMessage } from './ai/chat.js';
 import { setTool, toggleMagnet, syncToolbarUI, setSymbolChangeHandler,
@@ -15,11 +15,19 @@ import { bindHotkeys } from './ui/hotkeys.js';
 import { indMap, toggleIndicator } from './ui/indicators.js';
 import { openAlerts, closeAlerts, showAlertToast, createAlert } from './ui/alerts.js';
 import { toggleNotes, openNotes, closeNotes, initNotesUI, onSymbolChanged } from './ui/notes.js';
+import { openNews, closeNews, loadNews, initNewsUI,
+  onSymbolChanged as onNewsSymbolChanged } from './ui/news.js';
 import { openJournal, closeJournal, initJournalUI } from './ui/journal.js';
 import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
+import { openAiBacktest, closeAiBacktest, runAiBacktest, updateAiBacktestProgress,
+  initAiBacktestSymbols, hideAiProbZones, setAiProbZonesRenderer,
+  onReplayBarrierChanged, resetAiProbZones }
+  from './ui/ai_backtest.js';
 import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
   copySummaryReport } from './scanner.js';
+import { openAiDataPanel, closeAiDataPanel, onSymbolTfChanged,
+  initAiDataUI } from './ui/ai_data_panel.js';
 import { chart, candleSeries, container, setReplayBarrier } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
@@ -48,9 +56,12 @@ function _syncPanelButtons() {
     ['chat-toggle-btn', 'chat-panel'],
     ['alerts-toggle-btn', 'alerts-panel'],
     ['backtest-btn', 'backtest-panel'],
+    ['ai-backtest-btn', 'ai-backtest-panel'],
     ['scanner-btn', 'scanner-panel'],
     ['notes-btn', 'notes-panel'],
+    ['news-btn', 'news-panel'],
     ['journal-btn', 'journal-panel'],
+    ['ai-data-toggle-btn', 'ai-data-panel'],
   ];
   for (const [btnId, panelId] of map) {
     const btn = $(btnId);
@@ -65,9 +76,12 @@ function _closeAllRightPanels() {
   closeChat();
   closeAlerts();
   closeBacktest();
+  closeAiBacktest();
   closeScanner();
   closeNotes();
+  closeNews();
   closeJournal();
+  closeAiDataPanel();
 }
 
 function toggleWatchlistPanel() {
@@ -104,6 +118,12 @@ function toggleBacktestPanel() {
   openBacktest();
 }
 
+function toggleAiBacktestPanel() {
+  if (_isOpen('ai-backtest-panel')) { closeAiBacktest(); return; }
+  _closeAllRightPanels();
+  openAiBacktest();
+}
+
 function toggleScannerPanel() {
   if (_isOpen('scanner-panel')) { closeScanner(); return; }
   _closeAllRightPanels();
@@ -116,10 +136,29 @@ function toggleNotesPanel() {
   openNotes();
 }
 
+function toggleNewsPanel() {
+  if (_isOpen('news-panel')) { closeNews(); return; }
+  _closeAllRightPanels();
+  openNews();
+}
+
 function toggleJournalPanel() {
   if (_isOpen('journal-panel')) { closeJournal(); return; }
   _closeAllRightPanels();
   openJournal();
+}
+
+function toggleAiDataPanel() {
+  if (aiDataPanelIsOpen()) { closeAiDataPanel(); return; }
+  _closeAllRightPanels();
+  openAiDataPanel();
+}
+
+/* Панель «Данные для ИИ» использует классы .floating-panel/.hidden, поэтому
+   _isOpen (style.display) для неё не работает — проверяем класс напрямую. */
+function aiDataPanelIsOpen() {
+  const el = $('ai-data-panel');
+  return !!el && !el.classList.contains('hidden');
 }
 
 export function initDrawingsManager() {
@@ -139,6 +178,12 @@ export function initBacktestRenderer() {
   );
   state.backtestRenderer = renderer;
   return renderer;
+}
+
+export function initAiProbZonesRenderer() {
+  if (!chart || !candleSeries) return null;
+  setAiProbZonesRenderer(chart, candleSeries, container);
+  return state.aiProbRenderer;
 }
 
 export function onSymbolOrTfChange() {
@@ -164,7 +209,10 @@ export function onSymbolOrTfChange() {
   highlightActiveWatchlist(state.symbol);
   state.candles = [];
   state.ind = null;
+  resetAiProbZones();
   onSymbolChanged(newSym);
+  onNewsSymbolChanged(newSym);
+  onSymbolTfChanged();
   if (state.dm && state.dm.setCurrentContext) {
     state.dm.setCurrentContext(state.symbol, state.timeframe);
   }
@@ -178,6 +226,7 @@ export function initUI() {
   /* SSE-прогресс сканера: integration/sse.js дергает window.__scanProgress
      (формат события scan_progress: {run_id, done, total, current}). */
   window.__scanProgress = updateScanProgress;
+  window.__aiBacktestProgress = updateAiBacktestProgress;
   // Пока данные графика догружаются фоном, кнопка «🔍 Сканер → Запустить»
   // заблокирована (state.progressiveLoaded ставится в live.js).
   setInterval(() => {
@@ -199,6 +248,7 @@ export function initUI() {
       b.addEventListener('click', () => {
         state.mode = b.dataset.mode;
         syncToolbarUI();
+        resetAiProbZones();  // срез сменился (live <-> replay) — зоны устарели
         if (state.mode === 'live') { setReplayBarrier(null); loadLive(true); }
         else { stopReplay(); loadReplay(); }
       });
@@ -288,6 +338,15 @@ export function initUI() {
   if (btClose) btClose.addEventListener('click', closeBacktest);
   const btRun = $('bt-run-btn');
   if (btRun) btRun.addEventListener('click', runBacktest);
+  initAiBacktestSymbols();
+  const aibtBtn = $('ai-backtest-btn');
+  if (aibtBtn) aibtBtn.addEventListener('click', toggleAiBacktestPanel);
+  const aibtClose = $('aibt-close-btn');
+  if (aibtClose) aibtClose.addEventListener('click', closeAiBacktest);
+  const aibtRun = $('aibt-run-btn');
+  if (aibtRun) aibtRun.addEventListener('click', runAiBacktest);
+  const aibtHide = $('aibt-hide-zones-btn');
+  if (aibtHide) aibtHide.addEventListener('click', hideAiProbZones);
   const scBtn = $('scanner-btn');
   if (scBtn) scBtn.addEventListener('click', toggleScannerPanel);
   const scClose = $('scanner-close-btn');
@@ -314,6 +373,14 @@ export function initUI() {
   if (ntBtn) ntBtn.addEventListener('click', toggleNotesPanel);
   const ntClose = $('notes-close-btn');
   if (ntClose) ntClose.addEventListener('click', closeNotes);
+  const nwBtn = $('news-btn');
+  if (nwBtn) nwBtn.addEventListener('click', toggleNewsPanel);
+  const nwClose = $('news-close-btn');
+  if (nwClose) nwClose.addEventListener('click', closeNews);
+  const nwRefresh = $('news-refresh-btn');
+  if (nwRefresh) nwRefresh.addEventListener('click', () => loadNews(true));
+  const aiddBtn = $('ai-data-toggle-btn');
+  if (aiddBtn) aiddBtn.addEventListener('click', toggleAiDataPanel);
   const jrClose = $('journal-close-btn');
   if (jrClose) jrClose.addEventListener('click', closeJournal);
   const jrBtn = $('journal-btn');
@@ -348,8 +415,9 @@ export function initUI() {
      (покрывает и command palette, и ✕-кнопки внутри панелей). */
   const panelObserver = new MutationObserver(_syncPanelButtons);
   for (const id of ['watchlist-panel', 'ai-panel', 'chat-panel',
-                    'alerts-panel', 'backtest-panel', 'scanner-panel',
-                    'notes-panel', 'journal-panel']) {
+                    'alerts-panel', 'backtest-panel', 'ai-backtest-panel',
+                    'scanner-panel', 'notes-panel', 'news-panel',
+                    'journal-panel']) {
     const p = $(id);
     if (p) panelObserver.observe(p, { attributes: true, attributeFilter: ['style'] });
   }
@@ -358,8 +426,13 @@ export function initUI() {
   setSwitchSymbolHandler(switchSymbol);
   bindHotkeys();
   initNotesUI();
+  initNewsUI();
   initJournalUI();
+  initAiDataUI();
   initReplayBarrierDrag();
+  // Сдвиг барьера реплея -> авто-пересчёт уровней вероятностей AI Backtest
+  // (срез данных = до барьера; работает и в live — там коллбэк ничего не делает).
+  setReplayBarrierHandler(onReplayBarrierChanged);
   setTool('cursor');
   syncToolbarUI();
 }

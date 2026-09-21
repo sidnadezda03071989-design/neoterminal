@@ -117,6 +117,11 @@ SCAN_RR_STEP = 0.1
 SCAN_MAX_COMBINATIONS = 50000
 # Число потоков ThreadPoolExecutor для параллельного прогона бэктестов.
 SCAN_WORKERS = 8
+# BATCH: сколько результатов сканера копить в буфере перед пакетной записью
+# в scan_results (db_save_scan_results, executemany — одна транзакция на
+# батч вместо отдельных INSERT на комбинацию). Флаш по заполнении буфера
+# и в конце каждой стратегии (см. run_scan в app_pkg/ai/scanner.py).
+SCAN_SAVE_BATCH = 200
 # --- оценка длительности прогона (ответ POST /api/scan, подсказка в UI) ---
 # Средняя длительность одного бэктеста комбинации (сек) и фетча данных на
 # один символ (сек). Оценка: combos × sec_combo / SCAN_WORKERS + symbols × 15.
@@ -311,6 +316,12 @@ SCAN_DEFAULT_TIMEFRAMES = ["15m", "1H"]
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "data.db"
+# Конфигурационные файлы проекта (переопределяемые пользователем промпты).
+CONFIG_DIR = Path(os.getenv("CONFIG_DIR", str(BASE_DIR / "config"))).resolve()
+# Системный промпт «Псевдо-Харона»: редактируется во вкладке «🧠 Данные для
+# ИИ», читается AI Backtest при каждом запуске. Создаётся с дефолтом, если
+# файла ещё нет (см. app_pkg.ai.prompts.charon_prompt_text).
+CHARON_PROMPT_FILE = CONFIG_DIR / "charon_prompt.txt"
 DRAWINGS_FILE = DATA_DIR / "drawings.json"  # legacy: файловое хранилище (не используется)
 CHAT_FILE = DATA_DIR / "chat.json"          # legacy: файловое хранилище (не используется)
 
@@ -366,6 +377,20 @@ MT5_START_TIMEOUT = float(os.getenv("MT5_START_TIMEOUT", "30"))
 FOREX_CALENDAR_PADDING = 1.5
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 DEFAULT_REQUEST_TIMEOUT = 120.0
+# ------------------------------------------------------------ новости активов
+# Вкладка «Новости»: Finnhub — основной провайдер (категориальные ленты
+# crypto/forex/general покрывают все символы терминала), CoinGecko —
+# вторичный (доступен только на Pro-плане, поэтому деградирует молча).
+# Проверено живьём: GET finnhub.io/api/v1/news?category=crypto -> HTTP 200;
+# GET api.coingecko.com/api/v3/ping?x_cg_demo_api_key=... -> 200 (gecko_says).
+NEWS_CACHE_TTL = float(os.getenv("NEWS_CACHE_TTL", "180"))
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") or ""
+FINNHUB_BASE_URL = os.getenv("FINNHUB_BASE_URL", "https://finnhub.io/api/v1")
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY") or ""
+COINGECKO_BASE_URL = os.getenv("COINGECKO_BASE_URL",
+                               "https://api.coingecko.com/api/v3")
+
+
 
 # ------------------------------------------------------------ DeepSeek
 # Основной LLM-провайдер: DeepSeek через aitunnel.ru (OpenAI-совместимый

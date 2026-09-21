@@ -42,6 +42,7 @@
       <button id="ai-analysis-btn" class="btn ai-btn">🧠 AI Analysis</button>
       <button id="watchlist-toggle-btn" class="btn">📋 Watchlist</button>
       <button id="ai-toggle-btn" class="btn">🧠 AI</button>
+      <button id="ai-data-toggle-btn" class="btn">🧠 Данные для ИИ</button>
       <button id="chat-toggle-btn" class="btn">💬 Чат</button>
       <button id="alerts-toggle-btn" class="btn">🔔 Алерты</button>
       <button id="cmd-palette-btn" class="btn ghost-btn">⌘ K</button>
@@ -82,8 +83,10 @@
     </div>
   </div>
   <button class="btn" id="backtest-btn">📊 Бэктест</button>
+  <button class="btn" id="ai-backtest-btn">🤖 AI Backtest</button>
   <button class="btn" id="scanner-btn">🔍 Сканер</button>
   <button class="btn" id="notes-btn" title="Заметки по активу">📝 Заметки</button>
+  <button class="btn" id="news-btn" title="Новости по активу">📰 Новости</button>
   <button class="btn" id="journal-btn" title="Торговый журнал">📖 Журнал</button>
   <span class="hint" id="tool-hint">Курсор</span>
 </div>
@@ -219,6 +222,36 @@
         <div class="bt-trades" id="bt-trades"></div>
       </div>
     </aside>
+    <aside class="backtest-panel ai-backtest-panel" id="ai-backtest-panel" style="display:none">
+      <div class="backtest-panel-header">
+        <span>🤖 AI Backtest · уровни вероятностей</span>
+        <button id="aibt-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="aibt-mode-hint" id="aibt-mode-hint">Режим: реальное время</div>
+      <div class="bt-form">
+        <label for="aibt-symbol">Символ</label>
+        <select id="aibt-symbol"></select>
+        <label for="aibt-timeframe">Таймфрейм</label>
+        <select id="aibt-timeframe"></select>
+        <label for="aibt-model">Модель</label>
+        <input type="text" id="aibt-model" placeholder="(по умолчанию)">
+        <div class="bt-run-row">
+          <button id="aibt-run-btn" class="btn ai-btn">▶️ Запустить</button>
+        </div>
+      </div>
+      <div class="aibt-progress" id="aibt-progress" style="display:none">
+        <div class="aibt-progress-track"><div class="aibt-progress-bar" id="aibt-progress-bar"></div></div>
+        <div class="aibt-progress-text" id="aibt-progress-text">Считаю уровни…</div>
+      </div>
+      <div class="bt-error" id="aibt-error" style="display:none"></div>
+      <div class="bt-results" id="aibt-results">
+        <div class="aibt-levels-title">Уровни и вероятность достижения</div>
+        <div class="aibt-levels" id="aibt-levels"></div>
+        <div class="bt-run-row">
+          <button id="aibt-hide-zones-btn" class="btn">✕ Скрыть зоны</button>
+        </div>
+      </div>
+    </aside>
     <aside class="scanner-panel" id="scanner-panel" style="display:none">
       <div class="scanner-panel-header">
         <span>🔍 Сканер стратегий</span>
@@ -336,6 +369,19 @@
         </div>
       </div>
     </aside>
+    <aside class="news-panel" id="news-panel" style="display:none">
+      <div class="notes-panel-header">
+        <span id="news-symbol-label">📰 Новости</span>
+        <div>
+          <button id="news-refresh-btn" class="mini-btn" title="Обновить">⟳</button>
+          <button id="news-close-btn" class="mini-btn">✕</button>
+        </div>
+      </div>
+      <div class="news-body" id="news-body">
+        <div class="scan-edge-card" id="scan-edge-card" style="display:none"></div>
+        <div id="news-list"></div>
+      </div>
+    </aside>
     <div class="journal-panel" id="journal-panel" style="display:none">
       <div class="journal-panel-header">
         <span>📖 Торговый журнал</span>
@@ -369,6 +415,29 @@
     </div>
   </div>
 
+  <div id="ai-data-panel" class="floating-panel hidden">
+    <div class="floating-panel-header">
+      <span>🧠 Данные для ИИ</span>
+      <span class="floating-panel-sub" id="ai-data-panel-sub">BTCUSDT · 1H</span>
+      <button id="ai-data-close-btn" class="mini-btn">✕</button>
+    </div>
+    <div class="ai-data-split">
+      <div class="ai-data-column">
+        <div class="ai-data-col-title">Raw Data · Market Snapshot (JSON)</div>
+        <pre class="ai-data-json" id="ai-data-json"><code>—</code></pre>
+      </div>
+      <div class="ai-data-column">
+        <div class="ai-data-col-title">Системный промпт</div>
+        <textarea class="ai-data-prompt" id="ai-data-prompt" spellcheck="false"
+                  placeholder="Правила для ИИ…"></textarea>
+        <div class="ai-data-status" id="ai-data-status"></div>
+        <div class="ai-data-footer">
+          <button id="ai-data-save-btn" class="btn ai-btn">💾 Сохранить промпт</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="replay-bar" id="replay-bar" style="display:none">
     <label>От</label><input type="date" id="from-date">
     <label>До</label><input type="date" id="to-date">
@@ -397,7 +466,7 @@
 <div id="alert-toasts"></div>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/static/js/main.js?v=9"></script>
+<script type="module" src="/static/js/main.js?v=10"></script>
 </body>
 </html>
 

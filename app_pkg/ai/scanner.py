@@ -311,8 +311,9 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
     Для каждой пары (symbol, tf): get_replay_df за SCAN_PERIOD_DAYS — ОДИН
     запрос на пару (df переиспользуется всеми комбинациями через df=), сплит
     70/30 по времени, далее ThreadPoolExecutor(SCAN_WORKERS) -> _run_single
-    параллельно; прошедшие отсев результаты -> db_save_scan_result (пишется
-    tf). Прогресс в SSE: {event: "scan_progress", data: {run_id, done, total,
+    параллельно; прошедшие отсев результаты копятся в буфер и пакетно
+    пишутся в SQLite (db_save_scan_results, executemany; tf пишется).
+    Прогресс в SSE: {event: "scan_progress", data: {run_id, done, total,
     current, tf_index, tf_total, current_tf, current_symbol}}; раз в
     SCAN_ETA_PUSH_EVERY комбинаций в событие добавляется eta_seconds
     (остаток прогона, сек). Возвращает run_id.
@@ -337,6 +338,13 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                          "finished": False, "tf_index": 0,
                          "tf_total": len(tfs), "current_tf": None,
                          "current_symbol": None}
+
+    # BATCH: результаты комбинаций копятся в буфер и пишутся в scan_results
+    # пакетно (db_save_scan_results, executemany — одна транзакция на батч
+    # вместо отдельного INSERT на комбинацию). Флаш: по заполнении буфера
+    # (SCAN_SAVE_BATCH) и в конце каждой стратегии (finally ниже).
+    results_buffer = []
+    saved_total = 0
 
     df = None
     df_key = None  # (symbol, tf) текущего df
@@ -441,10 +449,33 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                         if res:
                             kept += 1
                             strategy_kept += 1
-                            db.db_save_scan_result(
-                                run_id, symbol, tf, strategy,
-                                res["params"], res["train"], res["test"],
-                                res["combined_sharpe"], res["total_trades"])
+                            # Строка в формате CSV-выгрузки (export.csv):
+                            # скаляры train/test + params dict. Полные окна
+                            # train/test тоже кладём — db_save_scan_results
+                            # предпочитает их скалярам.
+                            results_buffer.append({
+                                "symbol": symbol,
+                                "timeframe": tf,
+                                "strategy": strategy,
+                                "params": res["params"],
+                                "train_sharpe":
+                                    (res.get("train") or {}).get("sharpe"),
+                                "test_sharpe":
+                                    (res.get("test") or {}).get("sharpe"),
+                                "combined_sharpe": res.get("combined_sharpe"),
+                                "total_trades": res.get("total_trades"),
+                                "train": res.get("train"),
+                                "test": res.get("test"),
+                            })
+                            if len(results_buffer) >= config.SCAN_SAVE_BATCH:
+                                try:
+                                    saved_total += db.db_save_scan_results(
+                                        run_id, results_buffer)
+                                except Exception:  # noqa: BLE001 — не валим скан
+                                    log.exception(
+                                        "scan: batch save failed (%d rows)",
+                                        len(results_buffer))
+                                results_buffer.clear()
                         eta = None
                         if config.SCAN_ETA_PUSH_EVERY \
                                 and done % config.SCAN_ETA_PUSH_EVERY == 0:
@@ -471,6 +502,17 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                     # уходит сразу, а дописывающиеся результаты сохраняются
                     # в фоне.
                     executor.shutdown(wait=False, cancel_futures=True)
+                    # BATCH: хвост буфера стратегии — в БД одной транзакцией
+                    # (и в нормальном завершении, и при отмене/таймауте).
+                    if results_buffer:
+                        try:
+                            saved_total += db.db_save_scan_results(
+                                run_id, results_buffer)
+                        except Exception:  # noqa: BLE001 — не валим скан
+                            log.exception(
+                                "scan: batch flush failed (%d rows)",
+                                len(results_buffer))
+                        results_buffer.clear()
                 log.info("scan: %s/%s strategy=%s done (%d saved)",
                          symbol, tf, strategy, strategy_kept)
         except Exception as exc:  # noqa: BLE001 — не валим весь скан
@@ -501,4 +543,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
     RUN_STATS[run_id] = stats
     _prune_run_stats()
     _CANCELLED.discard(run_id)  # прогон завершён — флаг отмены больше не нужен
+    if kept or saved_total:
+        log.info("scan: %s finished: kept=%d/%d, saved=%d rows to scan_results",
+                 run_id, kept, total, saved_total)
     return run_id

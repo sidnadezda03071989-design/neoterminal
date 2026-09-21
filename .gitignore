@@ -11,3 +11,4 @@ _tmp_*
 _scan*.txt
 pytest_out.txt
 test_orchestrator.txt
+_backup_recovery/

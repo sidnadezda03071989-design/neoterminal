@@ -7,6 +7,7 @@ GET  /api/scan/<run_id>          — топ SCAN_TOP_N + verdict по каждо
 POST /api/scan/<run_id>/cancel   — остановить прогон (кнопка «Отменить»)
 GET  /api/scan/<run_id>/summary  — человекочитаемая сводка + рекомендации
 GET  /api/scan/<run_id>/export.csv — CSV со всеми результатами прогона
+GET  /api/scanner/stats          — лучшая стратегия symbol+tf (панель новостей)
 """
 
 import csv
@@ -485,6 +486,46 @@ def api_scan_summary(run_id):
         "by_verdict": by_verdict,
         "best_by_symbol": best_by_symbol,
         "recommendations": recommendations,
+    })
+
+
+@bp.route("/api/scanner/stats", methods=["GET"])
+def api_scanner_stats():
+    """Статистика лучшей стратегии сканера для symbol+timeframe.
+
+    ?symbol=BTCUSDT&timeframe=15m -> лучший результат по combined_sharpe из
+    scan_results (SQLite, общий регистр сканов: каждый прогоночный CSV
+    scan_<run_id>.csv — просто выгрузка тех же строк). {} если скана по этой
+    паре ещё не было (200, а не 404: пустая карточка — нормальное состояние).
+
+    Каждая строка train/test: winrate/max_dd/profit_factor/trades —
+    out-of-sample окно (test) и train-окно соответственно.
+    """
+    symbol = str(request.args.get("symbol") or "").upper()
+    tf = str(request.args.get("timeframe") or "").strip()
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    if symbol not in config.SYMBOLS:
+        return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+    best = db.db_get_best_scan_stats(symbol, tf)
+    if not best:
+        return jsonify({})
+    annotated = _annotate(best)
+    train = best.get("train") or {}
+    test = best.get("test") or {}
+    return jsonify({
+        "symbol": best.get("symbol"),
+        "timeframe": best.get("timeframe"),
+        "strategy": best.get("strategy"),
+        "strategy_label": annotated["strategy_label"],
+        "params": best.get("params") or {},
+        "train_sharpe": train.get("sharpe"),
+        "test_sharpe": test.get("sharpe"),
+        "combined_sharpe": best.get("combined_sharpe"),
+        "winrate": test.get("winrate"),
+        "max_dd": test.get("max_dd"),
+        "verdict": annotated["verdict"],
+        "verdict_text": annotated["verdict_text"],
     })
 
 

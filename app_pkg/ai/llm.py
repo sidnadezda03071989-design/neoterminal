@@ -16,7 +16,10 @@ config.LLM_PROVIDER_ORDER (env LLM_PROVIDER_ORDER, по умолчанию
       HTTP 400 (модель не поддерживает json-режим) -> попытка 2 без
       response_format, но с явным «Отвечай строго валидным JSON» в system;
       HTTP 400 в текстовом режиме — терминально (raise_for_status);
-      HTTP 429 -> RuntimeError("rate limit") — в fallback НЕ уходим;
+      HTTP 429 (_RateLimitError) — состояние КОНКРЕТНОГО провайдера:
+      запрос уходит к следующему в цепочке (иначе один залимиченный Groq
+      блокировал рабочий DeepSeek); если 429 у ВСЕХ доступных —
+      наружу RuntimeError("rate limit");
       сетевая ошибка (ConnectionError/Timeout/ConnectionResetError) ->
       "provider X failed (network: ...), fallback to Y";
       все провайдеры упали -> None (текст) / RuntimeError (vision);
@@ -69,15 +72,17 @@ _QWEN_SESSION = _LLM_SESSION
 
 
 def _extract_json(text):
-    """Извлекает первый сбалансированный JSON-объект {...} из текста.
+    """Извлекает JSON-объект {...} из текста.
 
-    Убирает markdown-обёртку ```json ... ```. Возвращает распарсенный
-    объект или None.
+    Убирает markdown-обёртку ```json ... ```; при неудаче — ленивый парс
+    (_extract_json_loose): типографские кавычки/дефисы, хвостовые запятые и
+    перебор сбалансированных {...} (модель может вставить мусор до/после или
+    сгенерить два объекта — берём первый валидный). Возвращает объект или None.
     """
     if not text:
         return None
     text = text.strip()
-    if text.startswith("{"):
+    if text.startswith("{") or text.startswith("["):
         try:
             return json.loads(text)
         except (json.JSONDecodeError, ValueError):
@@ -88,8 +93,25 @@ def _extract_json(text):
             return json.loads(m.group(1))
         except (json.JSONDecodeError, ValueError):
             pass
-    start = text.find("{")
-    if start >= 0:
+    return _extract_json_loose(text)
+
+
+def _extract_json_loose(raw):
+    """Ленивый парс нестрогого вывода LLM: кавычки-фигурки, хвостовые и
+    задвоенные запятые (json их запрещает), затем каждый сбалансированный
+    {...} по очереди — первый верный объект и есть ответ."""
+    text = (raw.replace("\u201c", '"').replace("\u201d", '"')
+                .replace("\u2018", "'").replace("\u2019", "'")
+                .replace("\u2013", "-").replace("\u2014", "-"))
+    # Запятая перед }/] в JSON всегда невалидна — безопасно вырезать;
+    # отдельные "," между элементами не трогаем.
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    text = re.sub(r",{2,}", ",", text)
+    start = 0
+    while True:
+        start = text.find("{", start)
+        if start < 0:
+            return None
         depth = 0
         for i in range(start, len(text)):
             if text[i] == "{":
@@ -100,8 +122,11 @@ def _extract_json(text):
                     try:
                         return json.loads(text[start:i + 1])
                     except (json.JSONDecodeError, ValueError):
+                        # Первый кандидат битый — пробуем следующий {...}.
+                        start = i + 1
                         break
-    return None
+        else:
+            return None
 
 
 def _fmt_ai_num(x):
@@ -147,16 +172,43 @@ def _strip_system_duplicates(messages):
     return clean
 
 
+class _RateLimitError(RuntimeError):
+    """HTTP 429 у конкретного провайдера (ловится в _call_with_fallback).
+
+    Отдельный класс, а не голый RuntimeError: так цикл не спутает его с
+    «vision unavailable», который тоже RuntimeError, но поднимается после
+    цикла. Наружу (если лимит у всех) уходит именно RuntimeError("rate
+    limit") — на это завязаны тесты и _llm_error_hint в ai_backtest.
+    """
+
+
+def _log_safe(text):
+    """ASCII-only строка для лога: тела ошибок провайдеров содержат символы
+    вне кодировки консоли Windows (cp1251) — например китайские скобки \uff08
+    в ответе Qwen. Без этого StreamHandler падает с UnicodeEncodeError,
+    лог-запись глотается целиком (--- Logging error ---) и причина падения
+    провайдера не видна в логе вообще.
+    """
+    return str(text).encode("ascii", "backslashreplace").decode("ascii")
+
+
 def _post_chat(url, headers, payload, timeout, model):
-    """POST /chat/completions; 429 -> RuntimeError('rate limit')."""
+    """POST /chat/completions; 429 -> _RateLimitError('rate limit').
+
+    Исключение ловит _call_with_fallback: 429 — состояние КОНКРЕТНОГО
+    провайдера, поэтому запрос уходит к следующему в цепочке (иначе один
+    залимиченный Groq блокировал рабочий DeepSeek). Если залимичены ВСЕ —
+    наружу уходит RuntimeError('rate limit').
+    """
     resp = _QWEN_SESSION.post(url, json=payload, headers=headers,
                               timeout=timeout)
     if resp.status_code == 429:
-        raise RuntimeError("rate limit")
+        log.warning("LLM %s HTTP 429 (rate limit)", model)
+        raise _RateLimitError("rate limit")
     if resp.status_code >= 400:
         # Тело ошибки критично для диагностики (модель, квоты, json-режим).
         log.warning("LLM %s HTTP %d: %s", model, resp.status_code,
-                    resp.text[:500])
+                    _log_safe(resp.text[:500]))
     return resp
 
 
@@ -280,13 +332,25 @@ def _chain_providers(vision=False, api_key=None, base_url=None, model=None,
 
 
 def _completion_content(resp):
-    """content (или reasoning_content) первого choice; None, если пусто."""
+    """content (или reasoning_content/reasoning) первого choice; None, если пусто.
+
+    Часть моделей (напр. openai/gpt-oss-120b на Groq) отвечает HTTP 200 с
+    ПУСТЫМ message.content, а текст кладёт в message.reasoning (не
+    reasoning_content) — читаем и его. Если текста нет нигде — None, и
+    _call_with_fallback уходит к следующему провайдеру цепочки (иначе пустой
+    200 «съедал» ответ: DeepSeek не вызывался, панель получала пустоту).
+    """
     data = resp.json()
     choices = data.get("choices") or []
     if not choices:
         return None
     message = choices[0].get("message") or {}
-    return message.get("content") or message.get("reasoning_content")
+    content = (message.get("content")
+               or message.get("reasoning_content")
+               or message.get("reasoning"))
+    if isinstance(content, str):
+        content = content.strip()
+    return content or None
 
 
 def _purpose_max_tokens(purpose):
@@ -320,8 +384,9 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
         images) -> "provider X failed (...), fallback to Y" и следующий;
       * HTTP 400 в текстовом режиме — терминально (raise_for_status):
         _attempt_chat уже перепробовал запрос без response_format;
-      * HTTP 429 -> RuntimeError("rate limit") из _post_chat (терминально,
-        в fallback НЕ уходим);
+      * HTTP 429 (_RateLimitError из _post_chat) — состояние конкретного
+        провайдера: fallback к следующему; если 429 у ВСЕХ доступных —
+        RuntimeError("rate limit") наружу (текст и vision);
       * все провайдеры упали -> None (текст) / RuntimeError (vision).
     """
     if not vision:
@@ -336,6 +401,7 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
 
     chain = _chain_providers(vision=vision, api_key=api_key,
                              base_url=base_url, model=model, timeout=timeout)
+    rate_limited = []
     for idx, cfg in enumerate(chain):
         name = cfg["name"]
         nxt = chain[idx + 1]["name"] if idx + 1 < len(chain) else "nothing"
@@ -367,6 +433,14 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
             log.warning("provider %s failed (network: %s), fallback to %s",
                         name, exc, nxt)
             continue
+        except _RateLimitError:
+            # 429 — лимит/квота конкретного провайдера, а не ошибка запроса:
+            # пробуем следующего (иначе один залимиченный Groq блокировал
+            # бы рабочий DeepSeek).
+            log.warning("provider %s rate limited (HTTP 429), fallback to %s",
+                        name, nxt)
+            rate_limited.append(name)
+            continue
 
         fallback_needed = resp.status_code in _CHAIN_FALLBACK_STATUSES
         if vision and resp.status_code == 400:
@@ -379,8 +453,22 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
             continue
 
         resp.raise_for_status()
-        return _completion_content(resp)
+        content = _completion_content(resp)
+        if content:
+            return content
+        # HTTP 200 с пустым текстом (модель вернула только reasoning/ничего):
+        # не «съедаем» ответ — пробуем следующего провайдера цепочки.
+        log.warning("provider %s returned empty content, fallback to %s",
+                    name, nxt)
+        continue
 
+    if rate_limited:
+        # Цикл дошёл до конца без контента и хотя бы один провайдер был
+        # именно 429 — наружу уходит rate limit (иначе он терялся бы за
+        # безликим None / «vision unavailable»).
+        log.warning("LLM: HTTP 429 у %d провайдера(ов) цепочки — "
+                    "RuntimeError('rate limit')", len(rate_limited))
+        raise RuntimeError("rate limit")
     if vision:
         log.warning("LLM-VL: все провайдеры цепочки недоступны "
                     "— vision unavailable")
@@ -414,8 +502,9 @@ def _llm_request(system, messages, api_key=None, base_url=None,
     Порядок — config.LLM_PROVIDER_ORDER. Явные креда (api_key/base_url/
     model/timeout) включают legacy-режим «один провайдер» (agents.py).
     purpose ("analysis"|"chat") задаёт max_tokens (токен-диета: 800/400).
-    Прочие ошибки: 429 -> RuntimeError("rate limit"); HTTP 400 после двух
-    попыток (json-режим) -> HTTPError; иные >= 400 -> HTTPError.
+    Прочие ошибки: 429 -> fallback к следующему, при 429 у ВСЕХ —
+    RuntimeError("rate limit"); HTTP 400 после двух попыток (json-режим)
+    -> HTTPError; иные >= 400 -> HTTPError.
     Возвращает content (или reasoning_content) модели, либо None.
 
     Кеш (токен-диета): analysis-запросы без явных креда кешируются на
