@@ -116,7 +116,6 @@ export function fitChartToData(candles) {
 export function setAllData(candles, ind) {
   if (!Array.isArray(candles) || candles.length === 0) return;
   if (!ind || typeof ind !== 'object') ind = {};
-  try { chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 }); } catch (e) {}
   safeSetData(candleSeries, candles);
   safeSetData(volumeSeries, state.indicators.volume ? toVolumeData(candles) : []);
   safeSetData(smaSeries, state.indicators.sma ? toLineData(ind.sma20) : []);

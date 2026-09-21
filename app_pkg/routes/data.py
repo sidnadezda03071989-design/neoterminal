@@ -109,6 +109,21 @@ def api_replay_data():
         return jsonify({"error": "Invalid timeframe"}), 400
 
     df = get_replay_df(symbol, tf, from_sec, to_sec, limit=limit)
+    # upto_sec (replay): индикаторы считаются ТОЛЬКО до барьера replay_time.
+    # Свечи остаются полными (df не режется), а indicators получаются по
+    # префиксу <= upto_sec — окна (SMA/EMA/BB/RSI...) не «видят» будущее.
+    upto_sec = request.args.get("upto_sec")
+    if upto_sec:
+        try:
+            upto_sec = int(float(upto_sec))
+        except (TypeError, ValueError):
+            upto_sec = None
+        if upto_sec is not None and df is not None and not df.empty:
+            ts_arr = utils.epoch_secs(df["timestamp"])
+            if (ts_arr <= upto_sec).any():
+                df = df.iloc[ts_arr <= upto_sec]
+            else:
+                df = df.iloc[:0]
     candles, indicators, last_price = df_to_payload(df)
     return jsonify({
         "symbol": symbol,

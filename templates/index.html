@@ -30,7 +30,7 @@
       </select>
       <div class="segmented" id="mode-toggle">
         <button data-mode="live" class="active">Live</button>
-        <button data-mode="replay">Replay</button>
+        <button data-mode="replay">🎥 Replay</button>
       </div>
       <span class="status" id="connection-status">
         <span class="pulse-dot" id="pulse-dot"></span>
@@ -83,6 +83,8 @@
   </div>
   <button class="btn" id="backtest-btn">📊 Бэктест</button>
   <button class="btn" id="scanner-btn">🔍 Сканер</button>
+  <button class="btn" id="notes-btn" title="Заметки по активу">📝 Заметки</button>
+  <button class="btn" id="journal-btn" title="Торговый журнал">📖 Журнал</button>
   <span class="hint" id="tool-hint">Курсор</span>
 </div>
 
@@ -314,6 +316,57 @@
         <div class="scan-results" id="scan-results"></div>
       </div>
     </aside>
+    <aside class="notes-panel" id="notes-panel" style="display:none">
+      <div class="notes-panel-header">
+        <span id="notes-symbol-label">📝 Заметки</span>
+        <button id="notes-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="notes-body">
+        <textarea id="notes-textarea" class="notes-textarea"
+                  placeholder="Идеи, план, наблюдения, выводы по активу…"></textarea>
+        <div class="notes-status" id="notes-status"></div>
+        <div class="notes-dropzone" id="notes-dropzone"
+             title="Перетащите файлы и скриншоты или кликните для выбора">
+          📎 Перетащите файлы и скриншоты сюда
+        </div>
+        <input type="file" id="notes-file" hidden multiple accept="image/*">
+        <div class="notes-screenshots" id="notes-screenshots"></div>
+        <div class="notes-footer">
+          <button id="notes-save-btn" class="btn ai-btn">💾 Сохранить</button>
+        </div>
+      </div>
+    </aside>
+    <div class="journal-panel" id="journal-panel" style="display:none">
+      <div class="journal-panel-header">
+        <span>📖 Торговый журнал</span>
+        <span class="journal-view-btns">
+          <button id="journal-notepad-btn" class="mini-btn" title="Блокнот">✏️</button>
+          <button id="journal-list-btn" class="mini-btn" title="Все заметки">📋</button>
+        </span>
+        <button id="journal-close-btn" class="mini-btn">✕</button>
+      </div>
+      <div class="journal-view journal-notepad-view" id="journal-notepad-view">
+        <textarea id="journal-textarea" class="notes-textarea"
+                  placeholder="Свободный текстовый блокнот: мысли, план, итоги дня…"></textarea>
+        <div class="notes-status" id="journal-status"></div>
+        <div class="notes-dropzone" id="journal-dropzone"
+             title="Перетащите файлы и скриншоты или кликните для выбора">
+          📎 Перетащите файлы и скриншоты сюда
+        </div>
+        <input type="file" id="journal-file" hidden multiple>
+        <div class="notes-screenshots" id="journal-screenshots"></div>
+        <div class="notes-footer">
+          <button id="journal-save-btn" class="btn ai-btn">💾 Сохранить</button>
+        </div>
+      </div>
+      <div class="journal-view journal-list-view" id="journal-list-view" style="display:none">
+        <div class="journal-head">
+          <span>Символ</span><span>Обновлено</span><span>Текст</span><span>📎</span>
+        </div>
+        <div class="journal-list" id="journal-list"></div>
+        <div class="journal-empty" id="journal-empty">Заметок пока нет.</div>
+      </div>
+    </div>
   </div>
 
   <div class="replay-bar" id="replay-bar" style="display:none">
@@ -332,15 +385,19 @@
     <button class="btn" id="step-back-btn">⏪</button>
     <button class="btn" id="step-forward-btn">⏩</button>
     <input type="range" id="speed-control" min="0.5" max="20" step="0.5" value="2">
+    <button class="btn speed-btn" data-speed="1">1x</button>
+    <button class="btn speed-btn" data-speed="2">2x</button>
+    <button class="btn speed-btn" data-speed="5">5x</button>
     <input type="range" id="progress-slider" min="0" max="100" value="0">
     <span id="replay-pos-text">0 / 0</span>
+    <span id="replay-time-text"></span>
   </div>
 </div>
 
 <div id="alert-toasts"></div>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/static/js/main.js"></script>
+<script type="module" src="/static/js/main.js?v=9"></script>
 </body>
 </html>
 

@@ -116,6 +116,20 @@ def _init_db(conn) -> None:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS asset_notes (
+            symbol TEXT PRIMARY KEY,
+            content TEXT,
+            screenshots_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS journal (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            content TEXT,
+            screenshots_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
         """
     )
     conn.commit()
@@ -403,6 +417,112 @@ def db_commit() -> None:
     conn = _get_db()
     with _db_lock:
         conn.commit()
+
+
+# ------------------------------------------------------------------ заметки
+def _norm_attachments(raw) -> list:
+    """Вложения в единый вид [{name, type, data}].
+
+    Старые записи хранят dataURL-строки (скриншоты) — переводим в объекты.
+    """
+    out = []
+    for it in raw or []:
+        if isinstance(it, str):
+            out.append({"name": "screenshot.png", "type": "image/png", "data": it})
+        elif isinstance(it, dict) and isinstance(it.get("data"), str):
+            out.append({
+                "name": it.get("name") or "file",
+                "type": it.get("type") or "application/octet-stream",
+                "data": it["data"],
+            })
+    return out
+
+
+def db_get_note(symbol: str):
+    """Заметка по активу {symbol, content, screenshots(list), updated_at}
+    или None, если заметки ещё нет."""
+    conn = _get_db()
+    with _db_lock:
+        row = conn.execute(
+            "SELECT * FROM asset_notes WHERE symbol=?", (symbol,)
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["screenshots"] = _norm_attachments(json.loads(d.get("screenshots_json") or "[]"))
+    d.pop("screenshots_json", None)
+    return d
+
+
+def db_save_note(symbol: str, content: str, screenshots: list) -> None:
+    """Сохранить/обновить заметку по активу (UPSERT по symbol)."""
+    ts = utils.now_iso()
+    conn = _get_db()
+    with _db_lock:
+        with conn:
+            conn.execute(
+                "INSERT INTO asset_notes (symbol, content, screenshots_json, "
+                "created_at, updated_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(symbol) DO UPDATE SET content=excluded.content, "
+                "screenshots_json=excluded.screenshots_json, "
+                "updated_at=excluded.updated_at",
+                (symbol, content, json.dumps(screenshots or [], ensure_ascii=False),
+                 ts, ts),
+            )
+
+
+def db_list_notes() -> list:
+    """Все заметки, свежие сверху: [{symbol, content_preview,
+    screenshots_count, updated_at}]."""
+    conn = _get_db()
+    with _db_lock:
+        rows = conn.execute(
+            "SELECT symbol, content, screenshots_json, updated_at "
+            "FROM asset_notes ORDER BY updated_at DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        shots = _norm_attachments(json.loads(r["screenshots_json"] or "[]"))
+        text = (r["content"] or "").strip().replace("\n", " ")
+        preview = text[:50] + ("…" if len(text) > 50 else "")
+        out.append({
+            "symbol": r["symbol"],
+            "content_preview": preview,
+            "screenshots_count": len(shots),
+            "updated_at": r["updated_at"],
+        })
+    return out
+
+
+def db_get_journal():
+    """Одна глобальная запись журнала {content, screenshots, updated_at}
+    или None."""
+    conn = _get_db()
+    with _db_lock:
+        row = conn.execute("SELECT * FROM journal WHERE id=1").fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["screenshots"] = _norm_attachments(json.loads(d.get("screenshots_json") or "[]"))
+    d.pop("screenshots_json", None)
+    return d
+
+
+def db_save_journal(content: str, screenshots: list) -> None:
+    """Сохранить/обновить журнал (единственная запись id=1)."""
+    ts = utils.now_iso()
+    conn = _get_db()
+    with _db_lock:
+        with conn:
+            conn.execute(
+                "INSERT INTO journal (id, content, screenshots_json, "
+                "created_at, updated_at) VALUES (1,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET content=excluded.content, "
+                "screenshots_json=excluded.screenshots_json, "
+                "updated_at=excluded.updated_at",
+                (content, json.dumps(screenshots or [], ensure_ascii=False),
+                 ts, ts),
+            )
 
 
 # ------------------------------------------------------------------ scan

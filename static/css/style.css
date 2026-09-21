@@ -252,6 +252,11 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   border-top:1px solid var(--bg-hover); flex-wrap:wrap; }
 .replay-bar input[type="range"] { accent-color:var(--accent); }
 .replay-bar #progress-slider { flex:1; min-width:140px; }
+.replay-bar .speed-btn { min-width:34px; padding:4px 8px; font-size:11px; }
+.replay-bar .speed-btn.active { background:var(--accent); color:#fff;
+  border-color:var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.replay-bar #replay-time-text { font-size:11px; color:var(--text-muted);
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
 
 .indicators-dropdown { position:relative; display:inline-block; }
 .indicators-menu { display:none; position:absolute; top:100%;
@@ -595,8 +600,102 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 .chat-panel[style*="flex"],
 .alerts-panel[style*="block"],
 .backtest-panel[style*="block"],
-.scanner-panel[style*="block"] {
+.scanner-panel[style*="block"],
+.notes-panel[style*="block"],
+.journal-panel[style*="block"] {
   animation: panelSlideIn var(--transition-slow) ease-out; }
+
+/* ---------- Заметки по активу (ЧАСТЬ H) ---------- */
+.notes-panel { position:fixed; right:12px; top:90px;
+  width:360px; max-height:70vh; z-index:50;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:0 8px 24px rgba(0,0,0,0.4);
+  display:flex; flex-direction:column; overflow:hidden;
+  transition: opacity var(--transition-slow),
+              transform var(--transition-slow); }
+.notes-panel-header { display:flex; justify-content:space-between;
+  align-items:center; padding:10px 12px;
+  border-bottom:1px solid var(--bg-hover); font-weight:600; color:#fff; }
+.notes-body { padding:10px; display:flex; flex-direction:column;
+  gap:8px; overflow-y:auto; }
+.notes-textarea { width:100%; box-sizing:border-box; min-height:120px;
+  resize:vertical; background:var(--bg); color:var(--text);
+  border:1px solid var(--border); border-radius:4px;
+  padding:8px 10px; font-size:12px; line-height:1.45;
+  outline:none; font-family:inherit;
+  transition: border-color var(--transition-fast),
+              box-shadow var(--transition-fast); }
+.notes-textarea:focus { border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-soft); }
+.notes-status { min-height:14px; font-size:11px; }
+.notes-status.ok { color:var(--up); }
+.notes-status.err { color:var(--down); }
+.notes-dropzone { border:1px dashed var(--border); border-radius:6px;
+  padding:14px 10px; text-align:center; font-size:12px;
+  color:var(--text-muted); cursor:pointer;
+  transition: background var(--transition),
+              border-color var(--transition); }
+.notes-dropzone.over { background:var(--accent-soft);
+  border-color:var(--accent); color:var(--accent); }
+.notes-screenshots { display:flex; flex-wrap:wrap; gap:6px; }
+.notes-thumb { position:relative; width:72px; height:72px;
+  border:1px solid var(--border); border-radius:4px;
+  overflow:hidden; background:var(--bg); }
+.notes-thumb img { width:100%; height:100%; object-fit:cover;
+  display:block; }
+.notes-thumb-del { position:absolute; top:2px; right:2px;
+  width:18px; height:18px; line-height:16px; text-align:center;
+  background:rgba(0,0,0,0.6); color:#fff; border:1px solid var(--border);
+  border-radius:3px; cursor:pointer; font-size:10px; padding:0; }
+.notes-file-chip { width:auto; min-width:96px; max-width:150px;
+  height:auto; padding:6px; display:flex; flex-direction:column;
+  gap:4px; align-items:center; justify-content:center; position:relative; }
+.notes-file-chip .notes-file-link { font-size:20px; text-decoration:none; }
+.notes-file-name { font-size:10px; color:var(--text-muted);
+  max-width:120px; overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; }
+.notes-footer { display:flex; justify-content:flex-end; }
+
+/* ---------- Торговый журнал (ЧАСТЬ H) ---------- */
+.journal-panel { position:fixed; left:50%; top:50%;
+  transform:translate(-50%,-50%);
+  width:min(520px, calc(100vw - 40px)); max-height:75vh;
+  z-index:60; background:var(--bg-elevated);
+  border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:0 12px 40px rgba(0,0,0,0.5);
+  display:flex; flex-direction:column; overflow:hidden;
+  transition: opacity var(--transition-slow),
+              transform var(--transition-slow); }
+.journal-panel-header { display:flex; align-items:center; gap:6px;
+  padding:10px 12px;
+  border-bottom:1px solid var(--bg-hover); font-weight:600; color:#fff; }
+.journal-panel-header > span:first-child { flex:1; }
+.journal-view-btns { display:flex; gap:4px; align-items:center;
+  margin-right:2px; }
+.journal-view { flex:1; min-height:0; display:flex; flex-direction:column;
+  padding:10px; gap:8px; overflow-y:auto; }
+.journal-notepad-view textarea { flex:1; min-height:220px; }
+.journal-list-view { display:block; padding:0; }
+.journal-head { display:grid;
+  grid-template-columns:110px 150px 1fr 44px;
+  gap:6px; padding:6px 12px; font-size:10px;
+  text-transform:uppercase; letter-spacing:.5px;
+  color:var(--text-muted); border-bottom:1px solid var(--bg-hover); }
+.journal-list { overflow-y:auto; }
+.journal-row { display:grid; grid-template-columns:110px 150px 1fr 44px;
+  gap:6px; padding:8px 12px; font-size:12px; align-items:center;
+  border-bottom:1px solid var(--bg-hover); cursor:pointer;
+  transition: background var(--transition); }
+.journal-row:hover { background:var(--bg-hover); }
+.jr-symbol { font-weight:600; color:var(--accent); }
+.jr-date { color:var(--text-muted); font-size:11px; }
+.jr-text { color:var(--text); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.jr-shots { color:var(--text-muted); text-align:right; }
+.journal-empty { padding:18px 12px; text-align:center;
+  color:var(--text-muted); font-size:12px; }
 
 /* ЧАСТЬ G — маленькие экраны: floating-панели на всю ширину */
 @media (max-width: 900px) {
@@ -605,6 +704,10 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   .chat-panel,
   .alerts-panel,
   .backtest-panel,
-  .scanner-panel {
+  .scanner-panel,
+  .notes-panel {
     left: 12px; right: 12px; width: auto; }
+  .journal-panel { width: calc(100vw - 24px); }
+  .journal-head, .journal-row {
+    grid-template-columns: 80px 110px 1fr 40px; }
 }

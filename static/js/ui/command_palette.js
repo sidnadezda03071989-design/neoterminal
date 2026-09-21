@@ -8,6 +8,7 @@ import { runAIAnalysis } from '../ai/analysis.js';
 import { openChat, closeChat } from '../ai/chat.js';
 import { loadLive } from '../data/live.js';
 import { loadReplay } from '../data/replay.js';
+import { openJournal } from './journal.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -181,6 +182,9 @@ const COMMANDS = [
       if (state.mode === 'live') loadLive(true);
       else loadReplay();
     } },
+  { id: 'journal', label: '📖 Открыть журнал', category: 'action',
+    keywords: ['журнал', 'journal', 'лого', 'заметки', 'notes', 'log'],
+    hint: 'Все заметки по активам', run: () => { openJournal(); } },
 ];
 
 // ------------------------------------------------------------ fuzzy-поиск

@@ -27,6 +27,9 @@ def create_app():
         static_folder=str(base / "static"),
     )
     app.config["TEMPLATES_AUTO_RELOAD"] = True
+    # Статика всегда перепроверяется (300/not-modified), чтобы браузер не
+    # держал старые ES-модули после правок JS (кнопки/панели «не нажимались»).
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     from app_pkg.routes import register_routes
     register_routes(app)

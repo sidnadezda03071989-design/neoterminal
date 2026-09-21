@@ -3,7 +3,8 @@ import { state } from './state.js';
 import { loadLive } from './data/live.js';
 import { loadReplay, playReplay, pauseReplay, resetReplay,
   replayStepBack, replayStepForward, applyReplayPreset,
-  stopReplay, replaySetData } from './data/replay.js';
+  stopReplay, replaySetData, refreshIndicatorsUpto,
+  initReplayBarrierDrag } from './data/replay.js';
 import { runAIAnalysis, updateAiDrawingsUI } from './ai/analysis.js';
 import { openChat, closeChat, sendChatMessage } from './ai/chat.js';
 import { setTool, toggleMagnet, syncToolbarUI, setSymbolChangeHandler,
@@ -13,6 +14,8 @@ import { toggleCommandPalette } from './ui/command_palette.js';
 import { bindHotkeys } from './ui/hotkeys.js';
 import { indMap, toggleIndicator } from './ui/indicators.js';
 import { openAlerts, closeAlerts, showAlertToast, createAlert } from './ui/alerts.js';
+import { toggleNotes, openNotes, closeNotes, initNotesUI, onSymbolChanged } from './ui/notes.js';
+import { openJournal, closeJournal, initJournalUI } from './ui/journal.js';
 import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
 import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
@@ -22,6 +25,14 @@ import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
 
 const $ = (id) => document.getElementById(id);
+
+/* Подсветка активного пресета скорости реплея (1x/2x/5x). */
+function _syncSpeedBtns(v) {
+  document.querySelectorAll('.speed-btn').forEach((btn) => {
+    const bv = parseFloat(btn.dataset.speed) || 0;
+    btn.classList.toggle('active', Math.abs(bv - v) < 0.01);
+  });
+}
 
 /* ---------- Floating-панели (ЧАСТЬ C/D): открыта одна правая панель ---------- */
 function _isOpen(id) {
@@ -38,6 +49,8 @@ function _syncPanelButtons() {
     ['alerts-toggle-btn', 'alerts-panel'],
     ['backtest-btn', 'backtest-panel'],
     ['scanner-btn', 'scanner-panel'],
+    ['notes-btn', 'notes-panel'],
+    ['journal-btn', 'journal-panel'],
   ];
   for (const [btnId, panelId] of map) {
     const btn = $(btnId);
@@ -53,6 +66,8 @@ function _closeAllRightPanels() {
   closeAlerts();
   closeBacktest();
   closeScanner();
+  closeNotes();
+  closeJournal();
 }
 
 function toggleWatchlistPanel() {
@@ -93,6 +108,18 @@ function toggleScannerPanel() {
   if (_isOpen('scanner-panel')) { closeScanner(); return; }
   _closeAllRightPanels();
   openScanner();
+}
+
+function toggleNotesPanel() {
+  if (_isOpen('notes-panel')) { closeNotes(); return; }
+  _closeAllRightPanels();
+  openNotes();
+}
+
+function toggleJournalPanel() {
+  if (_isOpen('journal-panel')) { closeJournal(); return; }
+  _closeAllRightPanels();
+  openJournal();
 }
 
 export function initDrawingsManager() {
@@ -137,13 +164,14 @@ export function onSymbolOrTfChange() {
   highlightActiveWatchlist(state.symbol);
   state.candles = [];
   state.ind = null;
+  onSymbolChanged(newSym);
   if (state.dm && state.dm.setCurrentContext) {
     state.dm.setCurrentContext(state.symbol, state.timeframe);
   }
   // BLOCK-34: смена symbol/tf — разовый fit после загрузки, дальше график
   // реагирует только на действия пользователя.
   if (state.mode === 'live') { state.chartNeedsFit = true; loadLive(true); }
-  else { state.chartNeedsFit = true; loadReplay(); }
+  else { state.chartNeedsFit = true; loadReplay(true); }  // preserveTime: барьер остаётся на прежнем времени
 }
 
 export function initUI() {
@@ -194,14 +222,30 @@ export function initUI() {
     stopReplay();
     state.replay.index = Number(e.target.value);
     replaySetData(state.replay.index);
+    refreshIndicatorsUpto();
   });
   const speed = $('speed-control');
   if (speed) speed.addEventListener('input', (e) => {
     const wasPlaying = state.replay.playing;
     if (wasPlaying) pauseReplay();  // перезапуск таймера уже с новой скоростью
     state.replay.speed = parseFloat(e.target.value) || 2;
+    _syncSpeedBtns(state.replay.speed);
     if (wasPlaying) playReplay();
   });
+  // Пресеты скорости 1x/2x/5x — дублируют слайдер speed-control.
+  document.querySelectorAll('.speed-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = parseFloat(btn.dataset.speed) || 1;
+      const sp = $('speed-control');
+      if (sp) sp.value = String(v);
+      const wasPlaying = state.replay.playing;
+      if (wasPlaying) pauseReplay();
+      state.replay.speed = v;
+      _syncSpeedBtns(v);
+      if (wasPlaying) playReplay();
+    });
+  });
+  _syncSpeedBtns(state.replay.speed);
   const indBtn = $('indicators-btn');
   const indDd = $('indicators-dropdown');
   if (indBtn && indDd) {
@@ -266,6 +310,14 @@ export function initUI() {
   if (scAll) scAll.addEventListener('change', toggleAllStrategies);
   const scCopy = $('scan-copy-btn');
   if (scCopy) scCopy.addEventListener('click', copySummaryReport);
+  const ntBtn = $('notes-btn');
+  if (ntBtn) ntBtn.addEventListener('click', toggleNotesPanel);
+  const ntClose = $('notes-close-btn');
+  if (ntClose) ntClose.addEventListener('click', closeNotes);
+  const jrClose = $('journal-close-btn');
+  if (jrClose) jrClose.addEventListener('click', closeJournal);
+  const jrBtn = $('journal-btn');
+  if (jrBtn) jrBtn.addEventListener('click', toggleJournalPanel);
   const clr = $('clear-btn');
   if (clr) clr.addEventListener('click', () => {
     if (state.dm && confirmedDanger('Удалить все рисунки?')) state.dm.clearAll();
@@ -296,7 +348,8 @@ export function initUI() {
      (покрывает и command palette, и ✕-кнопки внутри панелей). */
   const panelObserver = new MutationObserver(_syncPanelButtons);
   for (const id of ['watchlist-panel', 'ai-panel', 'chat-panel',
-                    'alerts-panel', 'backtest-panel', 'scanner-panel']) {
+                    'alerts-panel', 'backtest-panel', 'scanner-panel',
+                    'notes-panel', 'journal-panel']) {
     const p = $(id);
     if (p) panelObserver.observe(p, { attributes: true, attributeFilter: ['style'] });
   }
@@ -304,6 +357,9 @@ export function initUI() {
   setSymbolChangeHandler(onSymbolOrTfChange);
   setSwitchSymbolHandler(switchSymbol);
   bindHotkeys();
+  initNotesUI();
+  initJournalUI();
+  initReplayBarrierDrag();
   setTool('cursor');
   syncToolbarUI();
 }

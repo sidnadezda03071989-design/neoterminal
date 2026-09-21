@@ -119,6 +119,137 @@ try {
   macdHistSeries.createPriceLine({ price:0, color:'#363a45', lineWidth:1, lineStyle:2, axisLabelVisible:false });
 } catch (e) { /* noop */ }
 
+// Replay-барьер: красная пунктирная вертикаль на время replay_time.
+// IPrimitive (paneViews/attached/detach/updateAllViews) — паттерн как в
+// BacktestTradesPrimitive: рисуется поверх свечей на всю высоту панели 0.
+class ReplayBarrierPrimitive {
+  constructor() {
+    this._time = null;    // точное время барьера (сек) — режим `time`
+    this._px = null;      // отрисованный X линии (режим `pixel`) — 1:1 с мышью при драге
+    this._mode = 'time';  // 'time' | 'pixel'
+    this._req = null;
+    this._raf = null;
+  }
+
+  attached(param) {
+    if (param && typeof param.requestUpdate === 'function') {
+      this._req = param.requestUpdate.bind(param);
+    }
+  }
+
+  detached() {
+    this._cancelAnim();
+    this._req = null;
+  }
+
+  _cancelAnim() {
+    if (this._raf != null) {
+      cancelAnimationFrame(this._raf);
+      this._raf = null;
+    }
+  }
+
+  // Пиксельный режим (драг): линия ставится напрямую по X без анимации —
+  // движение в точности = движение мыши (крюк), без «полёта» и исчезания.
+  setPixel(px) {
+    this._cancelAnim();
+    this._mode = 'pixel';
+    this._px = (px == null) ? null : px;
+    if (this._req) this._req();
+  }
+
+  // Точное время барьера → X на шкале (null, если вне загруженных свечей).
+  _coord(t) {
+    try { return chart.timeScale().timeToCoordinate(t); } catch (e) { return null; }
+  }
+
+  // X линии, как она реально нарисована сейчас (для захвата «крюком»):
+  // режим time → по времени; pixel → по пикселю.
+  _drawnPx() {
+    if (this._mode === 'time') {
+      if (this._time != null) return this._coord(this._time);
+      return null;
+    }
+    return this._px;
+  }
+
+  // Мгновенная установка барьера по времени БЕЗ анимации/инерции:
+  // линия ставится сразу на свечу и не скользит (требование из UX).
+  setTime(t) {
+    this._cancelAnim();
+    this._mode = 'time';
+    this._time = (t == null) ? null : t;
+    this._px = null;
+    if (this._req) this._req();
+  }
+
+  updateAllViews() {}
+
+  paneViews() {
+    const self = this;
+    return [{
+      zOrder: () => 'top',
+      renderer: () => ({
+        draw: (target) => self._draw(target),
+      }),
+    }];
+  }
+
+  _draw(target) {
+    // Пиксельный режим рисуется по явному X (драг 1:1). Режим time — по
+    // времени бара: линия приклеена к бару и следует за зумом/скроллом;
+    // timeToCoordinate бара всегда даёт число (без гэпов).
+    let x;
+    if (this._mode === 'pixel') {
+      x = this._px;
+    } else {
+      const t = this._time;
+      if (t == null) return;
+      x = this._coord(t);
+      if (x == null) return; // барьер вне загруженных свечей — вне viewport
+    }
+    if (x == null) return;
+    target.useMediaCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const h = scope.mediaSize.height;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(239, 83, 80, 0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      // Ручка-«наконечник» сверху — как реплика TradingView.
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ef5350';
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x - 5, 8);
+      ctx.lineTo(x + 5, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    });
+  }
+}
+
+export const replayBarrier = new ReplayBarrierPrimitive();
+try { candleSeries.attachPrimitive(replayBarrier); } catch (e) { console.warn('replay barrier attach failed:', e); }
+
+// t = время барьера (сек) или null — скрыть.
+export function setReplayBarrier(t) { replayBarrier.setTime(t); }
+
+// px = позиция линии в пикселях (драг-режим, «крюк» за мышью, без анимации).
+export function setReplayBarrierPixel(px) { replayBarrier.setPixel(px); }
+
+// Текущее ТОЧНОЕ время барьера (logical-шкалы) — для логики, не для захвата.
+export function getReplayBarrierTime() { return replayBarrier ? replayBarrier._time : null; }
+
+// Текущий ОТРИСОВАННЫЙ X линии (реальный, как на экране) — по нему «крюк»
+// захвата всегда совпадает с видимой линией.
+export function getReplayBarrierPixel() { return replayBarrier ? replayBarrier._drawnPx() : null; }
+
 // Скриншот видимой части графика для Vision-анализа (base64 PNG без data:-префикса).
 export function captureChartScreenshot() {
   try {
