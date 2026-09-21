@@ -20,7 +20,7 @@ import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
 import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
   copySummaryReport } from './scanner.js';
-import { chart, candleSeries, container } from './chart/setup.js';
+import { chart, candleSeries, container, setReplayBarrier } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
 
@@ -170,7 +170,7 @@ export function onSymbolOrTfChange() {
   }
   // BLOCK-34: смена symbol/tf — разовый fit после загрузки, дальше график
   // реагирует только на действия пользователя.
-  if (state.mode === 'live') { state.chartNeedsFit = true; loadLive(true); }
+  if (state.mode === 'live') { setReplayBarrier(null); state.chartNeedsFit = true; loadLive(true); }
   else { state.chartNeedsFit = true; loadReplay(true); }  // preserveTime: барьер остаётся на прежнем времени
 }
 
@@ -199,7 +199,7 @@ export function initUI() {
       b.addEventListener('click', () => {
         state.mode = b.dataset.mode;
         syncToolbarUI();
-        if (state.mode === 'live') { loadLive(true); }
+        if (state.mode === 'live') { setReplayBarrier(null); loadLive(true); }
         else { stopReplay(); loadReplay(); }
       });
     });

@@ -10,9 +10,10 @@ export const indMap = {
 
 export function toggleIndicator(name, visible) {
   state.indicators[name] = visible;
-  // Активное окно: в live activeCandles === candles, в replay — обрезанный
-  // массив. Иначе в replay включение индикатора рисует всю историю («будущее»).
-  const candles = state.activeCandles || state.candles;
+  // Всегда рисуем ПОЛНЫЙ массив: в replay «будущее» правее линии скрывает
+  // шторка (ReplayBarrierPrimitive), поэтому пере-рендер среза не нужен и
+  // сломал бы график (ось сжалась бы до активного окна).
+  const candles = state.candles;
   if (!candles || !candles.length || !state.ind) return;
   const n = candles.length;
   const ind = {};

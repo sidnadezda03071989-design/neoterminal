@@ -1,6 +1,14 @@
 import { COLORS } from '../config.js';
 import { state } from '../state.js';
 
+// '#rrggbb' → [r, g, b].
+function _hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return [19, 23, 34];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
 export const $ = (id) => document.getElementById(id);
 export const container = $('chart-container');
 
@@ -119,16 +127,33 @@ try {
   macdHistSeries.createPriceLine({ price:0, color:'#363a45', lineWidth:1, lineStyle:2, axisLabelVisible:false });
 } catch (e) { /* noop */ }
 
-// Replay-барьер: красная пунктирная вертикаль на время replay_time.
-// IPrimitive (paneViews/attached/detach/updateAllViews) — паттерн как в
-// BacktestTradesPrimitive: рисуется поверх свечей на всю высоту панели 0.
+// Replay-барьер + «шторка» будущего. Вертикальная пунктирная линия на всё
+// дерево панелей + НЕПРОЗРАЧНАЯ заливка справа от линии (цвет фона панели),
+// скрывающая ещё не сыгранные свечи и индикаторы. Данные при драге/плее
+// НЕ режутся и не перекладываются — прячется только рисунок справа от линии,
+// поэтому график не «улетает» и не «следует» за вновь открываемыми барами.
+//
+// ВАЖНО: координаты считаем ТОЛЬКО через timeToCoordinate. lightweight-charts
+// v5 (5.2.1) для дробного логического индекса возвращает 0 ( 250.5 → 0,
+// 998.5 → 0), поэтому logicalToCoordinate(x.5) использовать нельзя — линия
+// «прилипала» к левому краю и закрывала весь график шторкой.
 class ReplayBarrierPrimitive {
   constructor() {
     this._time = null;    // точное время барьера (сек) — режим `time`
     this._px = null;      // отрисованный X линии (режим `pixel`) — 1:1 с мышью при драге
     this._mode = 'time';  // 'time' | 'pixel'
+    this._coverAll = false; // idx=0 (сброс): шторка на всю панель, линии нет
+    this._none = false;     // live / всё раскрыто: маску и линию не рисуем
+    this._boundary = null;  // время ГРАНИЦЫ (середина между последней видимой и первой скрытой)
     this._req = null;
     this._raf = null;
+    // Кеш сетки BASE-канваса панели: чтобы фон справа от линии выглядел ТАК ЖЕ,
+    // как слева (сетка не «пропадает»), мы сэмплируем реальную сетку панели и
+    // рисуем её поверх шторки. _gridSig — признак «вид не изменился».
+    this._gridSig = null;
+    this._gridAt = 0;
+    this._gridV = [];  // media-x вертикальных линий сетки
+    this._gridH = [];  // media-y горизонтальных линий сетки
   }
 
   attached(param) {
@@ -149,8 +174,106 @@ class ReplayBarrierPrimitive {
     }
   }
 
-  // Пиксельный режим (драг): линия ставится напрямую по X без анимации —
-  // движение в точности = движение мыши (крюк), без «полёта» и исчезания.
+  // // Сетка «шторки»: фон справа от линии должен выглядеть так же, как слева.
+  // Базовый канвас панели (под overlay) всё ещё содержит настоящую сетку lwc по
+  // всей ширине — сэмплируем её и повторяем на замаскированной области. Чтобы
+  // не читать пиксели каждый кадр, кешируем по признаку видимого диапазона.
+  _drawMaskGrid(scope, w, h, xc) {
+    try {
+      const now = performance.now();
+      const ts = chart.timeScale();
+      let R = null;
+      try { R = ts.getVisibleLogicalRange(); } catch (e) {}
+      const px = scope.horizontalPixelRatio || 1;
+      const py = scope.verticalPixelRatio || 1;
+      const sig = [w, h, px, py,
+        R ? R.from.toFixed(2) + '|' + R.to.toFixed(2) : '',
+        h > 500 ? 'main' : 'sub'].join('/');
+      if (this._gridSig !== sig || now - this._gridAt > 1500) {
+        this._gridSig = sig;
+        this._gridAt = now;
+        this._hydrateGrid(scope, w, h, xc, px, py);
+      }
+      const ctx = scope.context;
+      if (this._gridV.length || this._gridH.length) {
+        ctx.strokeStyle = COLORS.grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const mx of this._gridV) {
+          if (mx >= xc - 0.5 && mx <= w + 0.5) {
+            ctx.moveTo(mx + 0.5, 0);
+            ctx.lineTo(mx + 0.5, h);
+          }
+        }
+        for (const my of this._gridH) {
+          ctx.moveTo(xc, my + 0.5);
+          ctx.lineTo(w, my + 0.5);
+        }
+        ctx.stroke();
+      }
+    } catch (e) {
+      // Сетка — косметика: сбой ни в коем случае не должен ломать шторку/линию.
+    }
+  }
+
+  // Сэмплирование реальной сетки: пунктир вертикалей по верхней строке базовой
+  // канвасы (свечи её почти не перекрывают), горизонтали — по обилию цвета сетки
+  // в строке (в обычной строке «сетка» бывает только на вертикальных линиях).
+  _hydrateGrid(scope, w, h, xc, px, py) {
+    this._gridV = [];
+    this._gridH = [];
+    try {
+      const gw = Math.max(1, Math.round(w * px));
+      const gh = Math.max(1, Math.round(h * py));
+      let base = null;
+      for (const c of container.querySelectorAll('canvas')) {
+        if (Math.abs(c.width - gw) <= 2 && Math.abs(c.height - gh) <= 2) { base = c; break; }
+      }
+      if (!base) return;
+      const ctx = base.getContext('2d');
+      const img = ctx.getImageData(0, 0, base.width, base.height).data;
+      const [gr, gg, gb] = _hexToRgb(COLORS.grid);
+      const tol = 9;
+      const bw = base.width, bh = base.height;
+      // Вертикали сетки: строка чуть ниже верхней кромки панели.
+      const Y = Math.min(bh - 1, Math.max(0, Math.round(3 * py + 0.5)));
+      const vs = [];
+      for (let X = 0; X < bw; X++) {
+        const i = (Y * bw + X) * 4;
+        if (Math.abs(img[i] - gr) <= tol && Math.abs(img[i + 1] - gg) <= tol && Math.abs(img[i + 2] - gb) <= tol) {
+          vs.push(X);
+        }
+      }
+      // Группируем соседние колонки (1px-линия может захватить 2 пикселя DPR).
+      const cols = [];
+      for (let k = 0; k < vs.length; k++) {
+        if (!cols.length || vs[k] - cols[cols.length - 1] > 2) cols.push(vs[k]);
+      }
+      this._gridV = cols.map((X) => X / px);
+      // Горизонтали сетки: строка, где цвета сетки много (>8% ширины) —
+      // в обычной строке сетка встречается лишь на редких вертикалях.
+      const threshold = Math.max(4, Math.floor(bw * 0.08));
+      const runs = [];
+      for (let Y2 = 0; Y2 < bh; Y2++) {
+        let cnt = 0;
+        for (let X = 0; X < bw; X += 2) {
+          const i = (Y2 * bw + X) * 4;
+          if (Math.abs(img[i] - gr) <= tol && Math.abs(img[i + 1] - gg) <= tol && Math.abs(img[i + 2] - gb) <= tol) cnt++;
+        }
+        if (cnt >= threshold) {
+          if (!runs.length || Y2 - runs[runs.length - 1].end > 3) runs.push({ start: Y2, end: Y2 });
+          else runs[runs.length - 1].end = Y2;
+        }
+      }
+      this._gridH = runs.map((r) => Math.round((r.start + r.end) / 2) / py);
+    } catch (e) {
+      this._gridV = [];
+      this._gridH = [];
+    }
+  }
+
+  // Пиксельный режим (драг/плей): линия+шторка ставятся напрямую по X без
+  // анимации — движение в точности = движение мыши (крюк).
   setPixel(px) {
     this._cancelAnim();
     this._mode = 'pixel';
@@ -163,23 +286,57 @@ class ReplayBarrierPrimitive {
     try { return chart.timeScale().timeToCoordinate(t); } catch (e) { return null; }
   }
 
+  // X стыка между последней видимой и первой скрытой свечой. В v5
+  // timeToCoordinate(midpoint) возвращает null — время между барами не мапится,
+  // поэтому X берём как СРЕДНЕЕ реальных координат двух соседних баров.
+  // Если первая скрытая свеча виртуальна (idx>=total: всё раскрыто) — линия
+  // у правого края последней реальной свечи (x0 + barSpacing/2).
+  _boundaryX() {
+    if (this._mode !== 'time' || this._time == null || this._tNext == null) return null;
+    try {
+      const ts = chart.timeScale();
+      const x0 = ts.timeToCoordinate(this._time);
+      if (x0 != null) {
+        const x1 = ts.timeToCoordinate(this._tNext);
+        if (x1 != null) return x0 + (x1 - x0) / 2;
+        try { return x0 + (ts.options().barSpacing || 6) / 2; } catch (e) { return x0; }
+      }
+    } catch (e) {}
+    return null;
+  }
+
   // X линии, как она реально нарисована сейчас (для захвата «крюком»):
-  // режим time → по времени; pixel → по пикселю.
+  // режим time → стык свечей (граница); pixel → по пикселю.
   _drawnPx() {
     if (this._mode === 'time') {
-      if (this._time != null) return this._coord(this._time);
-      return null;
+      return (this._boundary != null) ? this._boundaryX() : null;
     }
     return this._px;
   }
 
-  // Мгновенная установка барьера по времени БЕЗ анимации/инерции:
-  // линия ставится сразу на свечу и не скользит (требование из UX).
-  setTime(t) {
+  // Мгновенная установка барьера БЕЗ анимации/инерции. Линия+маска ставятся
+  // СТРОГО на границу между свечами (середина между центрами cand(idx-1) и
+  // cand(idx)), поэтому видимая свеча — всегда ЦЕЛАЯ, никогда не «половина».
+  // tNext = время первой скрытой свечи; null при idx>=total (всё раскрыто:
+  // линия на правом краю последней свечи, маска пустая); idx===0 → шторка
+  // на всю панель (сброс реплея). t==null + idx==0 → полная шторка; иначе
+  // t==null (live) → ничего не рисуем.
+  setTime(t, idx, tNext) {
     this._cancelAnim();
     this._mode = 'time';
     this._time = (t == null) ? null : t;
+    this._tNext = (tNext == null) ? null : tNext;
     this._px = null;
+    this._coverAll = (idx === 0);
+    this._none = false;
+    if (this._coverAll) {
+      this._boundary = null;
+    } else if (t != null && tNext != null) {
+      this._boundary = (t + tNext) / 2;
+    } else {
+      this._none = true; // live или всё раскрыто: маску и линию не рисуем
+      this._boundary = null;
+    }
     if (this._req) this._req();
   }
 
@@ -196,59 +353,98 @@ class ReplayBarrierPrimitive {
   }
 
   _draw(target) {
-    // Пиксельный режим рисуется по явному X (драг 1:1). Режим time — по
-    // времени бара: линия приклеена к бару и следует за зумом/скроллом;
-    // timeToCoordinate бара всегда даёт число (без гэпов).
     let x;
     if (this._mode === 'pixel') {
       x = this._px;
+    } else if (this._coverAll) {
+      x = 0;
+    } else if (this._none) {
+      return;
+    } else if (this._boundary != null) {
+      x = this._boundaryX();
     } else {
-      const t = this._time;
-      if (t == null) return;
-      x = this._coord(t);
-      if (x == null) return; // барьер вне загруженных свечей — вне viewport
+      return;
     }
-    if (x == null) return;
+    if (x == null || !isFinite(x)) return;
     target.useMediaCoordinateSpace((scope) => {
       const ctx = scope.context;
+      const w = scope.mediaSize.width;
       const h = scope.mediaSize.height;
+      const xc = Math.max(0, Math.min(x, w));
       ctx.save();
-      ctx.strokeStyle = 'rgba(239, 83, 80, 0.95)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
-      ctx.stroke();
-      // Ручка-«наконечник» сверху — как реплика TradingView.
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#ef5350';
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x - 5, 8);
-      ctx.lineTo(x + 5, 8);
-      ctx.closePath();
-      ctx.fill();
+      // «Шторка» будущего: скрываем всё правее линии цветом фона панели,
+      // поэтому свечи впереди не показываются и не «вылезают» при драге.
+      if (xc < w) {
+        ctx.fillStyle = COLORS.bg;
+        ctx.fillRect(xc, 0, w - xc, h);
+        // Фон справа — поверх заливки рисуем ту же сетку, что и слева
+        // (иначе замаскированная область выглядит «дырой» без сетки).
+        this._drawMaskGrid(scope, w, h, xc);
+      }
+      // Линия барьера — только если она в пределах панели (и не «сброс»).
+      if (!this._coverAll && x >= 0 && x <= w) {
+        ctx.strokeStyle = 'rgba(239, 83, 80, 0.95)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        // Ручка-«наконечник» сверху — как реплика TradingView.
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ef5350';
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x - 5, 8);
+        ctx.lineTo(x + 5, 8);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
     });
   }
 }
 
-export const replayBarrier = new ReplayBarrierPrimitive();
-try { candleSeries.attachPrimitive(replayBarrier); } catch (e) { console.warn('replay barrier attach failed:', e); }
+// Один инстанс на панель: каждый рисует линию+шторку на высоту своей панели,
+// чтобы «будущее» скрывалось и у свечей, и у объёма/RSI/MACD.
+const replayMasks = [];
+function _attachReplayMask(series) {
+  if (!series) return;
+  const m = new ReplayBarrierPrimitive();
+  replayMasks.push(m);
+  try { series.attachPrimitive(m); } catch (e) { console.warn('replay mask attach failed:', e); }
+}
+_attachReplayMask(candleSeries);
+_attachReplayMask(volumeSeries);
+_attachReplayMask(rsiSeries);
+_attachReplayMask(macdHistSeries);
 
-// t = время барьера (сек) или null — скрыть.
-export function setReplayBarrier(t) { replayBarrier.setTime(t); }
+// t = время последней видимой свечи (сек); idx — кол-во видимых свечей;
+// tNext — время первой скрытой (idx>=total — ничего скрытого, маска пустая).
+// Линия/шторка паркуются на ГРАНИЦЕ между свечами: свечи всегда целые.
+export function setReplayBarrier(t, idx, tNext) {
+  replayMasks.forEach((m) => m.setTime(t, idx, tNext));
+}
 
-// px = позиция линии в пикселях (драг-режим, «крюк» за мышью, без анимации).
-export function setReplayBarrierPixel(px) { replayBarrier.setPixel(px); }
+// px = позиция линии в пикселях (драг/плей-режим, «крюк» за мышью).
+export function setReplayBarrierPixel(px) {
+  replayMasks.forEach((m) => m.setPixel(px));
+}
 
-// Текущее ТОЧНОЕ время барьера (logical-шкалы) — для логики, не для захвата.
-export function getReplayBarrierTime() { return replayBarrier ? replayBarrier._time : null; }
+// Текущее ТОЧНОЕ время барьера — для логики, не для захвата.
+export function getReplayBarrierTime() {
+  return replayMasks.length ? replayMasks[0]._time : null;
+}
 
 // Текущий ОТРИСОВАННЫЙ X линии (реальный, как на экране) — по нему «крюк»
 // захвата всегда совпадает с видимой линией.
-export function getReplayBarrierPixel() { return replayBarrier ? replayBarrier._drawnPx() : null; }
+export function getReplayBarrierPixel() {
+  for (const m of replayMasks) {
+    const p = m._drawnPx();
+    if (p != null) return p;
+  }
+  return null;
+}
 
 // Скриншот видимой части графика для Vision-анализа (base64 PNG без data:-префикса).
 export function captureChartScreenshot() {

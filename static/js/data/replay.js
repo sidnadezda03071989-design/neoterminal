@@ -21,19 +21,21 @@ function _dateInputEpoch(id, endOfDay = false) {
 
 export function replaySetData(index, skipBarrier) {
   const idx = Math.max(0, Math.min(index, state.candles.length));
-  const candles = state.candles.slice(0, idx);
-  const ind = {};
-  for (const k of Object.keys(state.ind || {})) {
-    ind[k] = Array.isArray(state.ind[k]) ? state.ind[k].slice(0, idx) : [];
-  }
-  state.activeCandles = candles;
-  setAllData(candles, ind);
-  // Время барьера = время последней видимой свечи; правее — скрыто.
+  // Данные на графике НЕ режем: всегда полный набор, «будущее» правее линии
+  // скрывает шторка (ReplayBarrierPrimitive). Меняем только логику/барьер/тексты,
+  // поэтому вьюпорт и ось не трогаются ни при драге, ни при плее — график не
+  // «улетает» и не «следует» за вновь открываемыми барами.
+  state.activeCandles = state.candles.slice(0, idx);
+  // Время барьера = время последней видимой свечи; правее — скрыто шторкой.
   const prev = idx > 0 ? state.candles[idx - 1] : null;
   state.replay.time = prev ? prev.time : null;
-  // skipBarrier: только пересчёт индикаторов (refreshIndicatorsUpto) —
-  // не трогать барьер, иначе во время драга линия «отвалится» от мыши.
-  if (!skipBarrier) setReplayBarrier(state.replay.time);
+  // skipBarrier: только пересчёт логики (refreshIndicatorsUpto) — не трогать
+  // барьер, иначе во время драга линия «отвалится» от мыши.
+  // idx как якорь правого края: парковка линии совпадает со стартом Play-глиссады.
+  if (!skipBarrier) {
+    const b = _barrierBoundary(idx);
+    setReplayBarrier(b.time, idx, b.tNext);
+  }
   const timeTxt = $('replay-time-text');
   if (timeTxt) {
     timeTxt.textContent = state.replay.time
@@ -41,6 +43,7 @@ export function replaySetData(index, skipBarrier) {
       : '';
   }
   updateReplayPos(idx);
+  _followBarrier();
 }
 
 export function updateReplayPos(idx) {
@@ -75,13 +78,79 @@ function _nearestIndexLE(candles, t) {
   return ans;
 }
 
+// Граница «между свечами» для барьера: { time(last visible), tNext(first
+// covered) }. Шторка/линия встают на СТЫКЕ (середина между центрами), поэтому
+// видимая свеча ВСЕГДА целая. idx===0 → полная шторка; idx>=total → всё
+// раскрыто (виртуальная граница справа от последней свечи, маска пустая).
+function _barrierBoundary(idx) {
+  const n = state.candles.length;
+  if (idx <= 0 || n === 0) return { time: null, tNext: null };
+  const t = state.candles[idx - 1].time;
+  if (idx < n) return { time: t, tNext: state.candles[idx].time };
+  const step = n >= 2 ? state.candles[n - 1].time - state.candles[n - 2].time : 60;
+  return { time: t, tNext: t + step };
+}
+
+// X между временами двух свечей, линейная интерполяция по frac (0..1).
+// ТОЛЬКО timeToCoordinate: в lightweight-charts v5 дробный логический индекс
+// (x.5) даёт 0, а не координату между центрами баров.
+function _timeInterpX(t0, t1, frac) {
+  try {
+    const ts = chart.timeScale();
+    const x0 = ts.timeToCoordinate(t0);
+    const x1 = ts.timeToCoordinate(t1);
+    if (x0 == null || x1 == null || !isFinite(x0) || !isFinite(x1)) return null;
+    return x0 + (x1 - x0) * frac;
+  } catch (e) { return null; }
+}
+
+// Авто-follow вьюпорта за барьером. Реплей живёт «шторкой»: окно во время Play
+// СТОИТ на месте, маска скользит внутри окна и открывает свечи слева направо,
+// а view пододвигается ТОЛЬКО когда барьер вышел за ПРАВУЮ кромку (иначе
+// скрытое «будущее» оказалось бы видимым). Левый выход при Play НЕ трогаем —
+// иначе пан/скролл мышью «дергается и возвращается». force=true — разовый
+// показ барьера из любого места (старт Play с начала сессии, скраб/шаги).
+function _setBarrierView(force) {
+  if (_grab) return;
+  try {
+    const ts = chart.timeScale();
+    const R = ts.getVisibleLogicalRange();
+    if (!R || !isFinite(R.from) || !isFinite(R.to)) return;
+    const width = Math.max(1, R.to - R.from);
+    const n = state.candles.length;
+    const ti = Math.max(0, Math.min(n - 1, state.replay.index - 1));
+    if (ti > R.to + 1) {
+      // Барьер вышел за правую кромку окна: «перелистнуть» страницу целиком —
+      // новый экран начинается с текущей свечи (барьер у ЛЕВОГО края, как при
+      // старте), маска снова скрывает остальное. Между перелистами окно стоит
+      // НЕПОДВИЖНО, поэтому экран не «едет за графиком» и не дерётся с мышью.
+      const from = ti;
+      const to = Math.min(n - 1, ti + width);
+      ts.setVisibleLogicalRange({ from, to });
+    } else if (force || !state.replay.playing) {
+      // Не-плей: явная смена индекса (скраб/шаг/старт) — показать окно от барьера.
+      if (ti < R.from - 2) {
+        ts.setVisibleLogicalRange({ from: ti, to: Math.min(n - 1, ti + width) });
+      }
+    }
+  } catch (e) {}
+}
+
+function _followBarrier() { _setBarrierView(false); }
+function _forceBarrierView() { _setBarrierView(true); }
+
 export async function loadReplay(preserveTime) {
   stopReplay();
   showChartLoading();
   const from = _dateInputEpoch('from-date');
   const to = _dateInputEpoch('to-date', true);
   const fullLimit = HISTORY_LIMIT[state.timeframe] || FULL_CANDLES;
-  const initialLimit = Math.min(INITIAL_CANDLES, fullLimit);
+  // Реплей живёт на ВСЮ длину уже загруженного графика: если данные уже
+  // догружены (live прогрессив докачал, а мы входим в реплей), стартуем сразу
+  // с полного окна, а не режем до INITIAL_CANDLES. Свежий/пустой путь остаётся
+  // прогрессивным (1000 → fullLimit фоном).
+  const loaded = state.candles && state.candles.length > 0 ? state.candles.length : 0;
+  const initialLimit = Math.max(INITIAL_CANDLES, Math.min(fullLimit, loaded));
   _loadSeq++;
   const seq = _loadSeq;
   // Запрос «с нуля» (пресет/Загрузить/включение режима): старт с середины.
@@ -126,6 +195,10 @@ export async function loadReplay(preserveTime) {
       slider.max = String(Math.max(1, state.replay.total - 1));
       slider.value = String(state.replay.index);
     }
+    // Самый важный шаг: рисуем ПОЛНЫЙ набор свечей и индикаторов ОДИН раз.
+    // Дальше ничего не режется (реплей живёт шторкой), поэтому на оси ничего
+    // не съезжает при драге/плее.
+    setAllData(state.candles, state.ind);
     replaySetData(state.replay.index);
     // Смена symbol/tf (preserveTime): линия остаётся на прежнем времени.
     // Центрируем вьюпорт на барьере, чтобы линия не «уезжала» за экран
@@ -160,7 +233,7 @@ async function _loadReplayFullInBackground(seq, from, to, fullLimit) {
     for (
       let target = Math.min(Math.max(INITIAL_CANDLES, currentLen) + PROGRESSIVE_STEP, fullLimit);
       target <= fullLimit;
-      target += PROGRESSIVE_STEP
+      target = Math.min(target + PROGRESSIVE_STEP, fullLimit)
     ) {
       // Гонка: replay уже перезагрузили с другими параметрами — фон устарел.
       if (seq !== _loadSeq) return;
@@ -184,8 +257,13 @@ async function _loadReplayFullInBackground(seq, from, to, fullLimit) {
       state.replay.index = Math.min(state.replay.index + offset, state.replay.total - 1);
       const slider = $('progress-slider');
       if (slider) slider.max = String(Math.max(1, state.replay.total - 1));
-      // Подмена без потери зума/скролла (добавленные бары лежат слева).
-      withPreservedView(() => { replaySetData(state.replay.index); }, offset);
+      // Подмена полных данных без потери зума/скролла (добавленные бары лежат
+      // слева): распаковка новых баров в шкалу и НЕзависимая от них логика.
+      // Шторка (барьер) при этом заново паркуется на правый край текущего бара.
+      withPreservedView(() => {
+        setAllData(state.candles, state.ind);
+        replaySetData(state.replay.index);
+      }, offset);
       currentLen = data.candles.length;
       console.debug('progressive(replay): ' + currentLen + '/' + fullLimit);
       // Чанк применён; если источник отдал меньше target (потолок истории),
@@ -194,6 +272,10 @@ async function _loadReplayFullInBackground(seq, from, to, fullLimit) {
         console.debug('progressive(replay): stop at ' + currentLen + ' (source limit)');
         break;
       }
+      // Дошли до полного объёма (fullLimit): это последний чанк. Без break
+      // инкремент (см. for: Math.min(target+step, fullLimit)) зациклился бы
+      // на fullLimit и гонял бы один и тот же запрос бесконечно.
+      if (target >= fullLimit) break;
       await new Promise((r) => setTimeout(r, PROGRESSIVE_STEP_DELAY_MS));
     }
   } catch (e) {
@@ -211,9 +293,9 @@ export function stopReplay() {
 }
 
 // Воспроизведение: playhead-ВРЕМЯ движется непрерывно (startT + elapsed×speed×tf),
-// а линия глиссирует по пикселям от бара к бару через logicalToCoordinate —
-// никаких ступенек setInterval. Нарезка данных происходит, только когда playhead
-// пересёк границу свечи; барьер в это время живёт в px-режиме и не дёргается.
+// а линия глиссирует по пикселям от бара к бару через timeToCoordinate —
+// никаких ступенек setInterval. Данные при плее НЕ нарезаются и не перекладываются:
+// будущее скрыто шторкой, линия просто «отодвигает» её вправо по мере открытия баров.
 export function playReplay() {
   if (state.replay.playing) return;
   if (state.replay.total <= 0 || !state.candles.length) return;
@@ -222,37 +304,49 @@ export function playReplay() {
   const btn = $('play-btn'); if (btn) btn.classList.add('active');
   const tfSec = state.candles.length > 1
     ? (state.candles[1].time - state.candles[0].time) : 60;
+  // Сброс индекса на 0 ДО расчёта startT: иначе Play с последней свечи
+  // стартует с начального времени конца и мгновенно «доигрывает» до конца.
+  if (state.replay.index === 0) {
+    state.replay.index = 1;
+    replaySetData(1); // первый бар открыт: шторка паркуется на центре бара 0
+    _forceBarrierView(); // разовый показ старта (вьюпорт мог быть на другом краю)
+  }
   const startT = (state.replay.time != null)
     ? state.replay.time
     : (state.candles[0] ? state.candles[0].time : 0);
-  if (state.replay.index === 0) {
-    state.replay.index = 1;
-    replaySetData(1, true); // первый бар перед стартом (барьер — через px ниже)
-  }
   const t0 = performance.now();
   let lastCut = state.replay.index;
   const tick = (now) => {
     if (!state.replay.playing) return;
-    // Непрерывное время playhead: между барами → линия скользит, а не шагает.
+    // Непрерывное время playhead: скорость в свечах/сек, но визуально свечи
+    // открываются СТРОГО ЦЕЛЫМИ — линия стоит на границе, а не скользит.
     const t = startT + ((now - t0) / 1000) * state.replay.speed * tfSec;
     const last = state.candles.length - 1;
     if (t >= state.candles[last].time) {
+      // Вся история раскрыта: линия на правом краю последней свечи, маска
+      // пустая — НИКАКОЙ «половинки» свечи. stopReplay без pauseReplay,
+      // чтобы не перепарковать и не делать лишнего пересчёта индикаторов.
       state.replay.index = state.replay.total - 1;
-      replaySetData(state.replay.index);
-      pauseReplay();
+      replaySetData(state.replay.index, true);
+      const b = _barrierBoundary(state.replay.total);
+      setReplayBarrier(b.time, state.replay.total, b.tNext);
+      const btn = $('play-btn'); if (btn) btn.classList.remove('active');
+      stopReplay();
       return;
     }
-    // cut = первый бар, открытый после t: линия стоит между барами (cut-1) и cut.
+    // cut = первый бар после t: видны [0 .. cut-1] ЦЕЛЫМИ, линия на границе
+    // cand(cut-1)/cand(cut). Частичные свечи исключены.
     const kk = Math.max(1, _nearestIndexLE(state.candles, t) + 1);
     if (kk !== lastCut) {
       lastCut = kk;
       state.replay.index = kk;
-      replaySetData(kk, true); // нарезка строго на границе; барьер не трогаем
+      replaySetData(kk, true); // обновляем логику на границе; шторку трогаем ниже
     }
-    // Глиссада: правый край бара (kk-1) → правый край бара kk на интервале.
-    const frac = Math.max(0, Math.min(1, (t - state.candles[kk - 1].time) / tfSec));
-    const c = chart.timeScale().logicalToCoordinate((kk - 1) + 0.5 + frac);
+    // Граница между последней видимой и первой скрытой (середина центров).
+    const b = _barrierBoundary(kk);
+    const c = b.tNext != null ? _timeInterpX(b.time, b.tNext, 0.5) : null;
     if (c != null && isFinite(c)) setReplayBarrierPixel(c);
+    else setReplayBarrier(b.time, kk, b.tNext);
     state.replay.timer = requestAnimationFrame(tick);
   };
   state.replay.timer = requestAnimationFrame(tick);
@@ -265,7 +359,10 @@ export function pauseReplay() {
   // Пауза = момент «разбора»: линия из px-глиссады паркуется точно на границе
   // последнего видимого бара, индикаторы пересчитываются ровно до барьера.
   if (wasPlaying) {
-    if (state.replay.time != null) setReplayBarrier(state.replay.time);
+    if (state.replay.time != null) {
+      const b = _barrierBoundary(state.replay.index);
+      setReplayBarrier(b.time, state.replay.index, b.tNext);
+    }
     refreshIndicatorsUpto();
   }
 }
@@ -342,8 +439,9 @@ export function applyReplayPreset(preset) {
    «Крюк»: линия привязана к логическому индексу под курсором и рисуется в
    пиксельном режиме (setReplayBarrierPixel) СТРОГО по X мыши — движение 1:1,
    без анимации, ускорения и интерполяции по времени (из-за гэпов выходных
-   линия раньше улетала за мышью и пропадала). Данные и индикаторы режутся
-   только когда курсор пересёк границу свечи. */
+   линия раньше улетала за мышью и пропадала). Данные НЕ режутся и НЕ
+   перекладываются: будущее скрыто шторкой, поэтому вьюпорт не прыгает и
+   свечи правее линии не могут вылезти. */
 
 const GRAB_PX = 8;
 
@@ -363,10 +461,50 @@ function _barrierX() {
 
 let _grab = null;  // { baseIdx, basePx, mousePx } — точка «крюка»
 
-// Драг-«крюк»: X линии = X мыши напрямую (1 px : 1 px, без анимации и привязки
-// к барам). Нарезка данных (replaySetData) происходит, только когда курсор
-// пересёк границу свечи. За пределами данных линия прижимается к краю панели.
-// isFinal — финальная парковка на границе свечи.
+// X границы между свечами R-1 и R (R = число видимых свечей): по нему линия
+// при драге открывает/закрывает свечи ЦЕЛЫМИ — как при воспроизведении, где
+// шторка стоит на стыке баров, а не «режет» свечу под курсором пополам.
+// Сначала — точный стык через timeToCoordinate (середина между центрами двух
+// соседних баров; тот же расчёт, что у playReplay). Вне экрана/загруженных
+// данных — оценка логическим индексом с клампом по кромкам: слева всё скрыто
+// (полная шторка), справа — всё раскрыто (маска пустая).
+function _boundaryPixelFor(R) {
+  const n = state.candles.length;
+  if (n === 0) return 0;
+  const W = container.clientWidth || 0;
+  if (R <= 0) return 0;                 // сброс: шторка на всю панель
+  let t0, t1;
+  if (R < n) {
+    t0 = state.candles[R - 1].time;
+    t1 = state.candles[R].time;
+  } else {
+    t0 = state.candles[n - 1].time;     // всё раскрыто: правый край последней
+    const step = n >= 2 ? state.candles[n - 1].time - state.candles[n - 2].time : 60;
+    t1 = t0 + step;
+  }
+  const x = _timeInterpX(t0, t1, 0.5);
+  if (x != null) return x;
+  try {
+    const ts = chart.timeScale();
+    const c = ts.logicalToCoordinate(R); // центр cand(R) → граница на полбара левее
+    if (c != null && isFinite(c)) return c - (ts.options().barSpacing || 6) / 2;
+  } catch (e) {}
+  try {
+    const Rv = chart.timeScale().getVisibleLogicalRange();
+    if (Rv) {
+      if (R <= Rv.from + 0.5) return 0;  // граница ушла влево за экран: всё скрыто
+      if (R >= Rv.to) return W;          // правее экрана: всё раскрыто
+    }
+  } catch (e) {}
+  return W;
+}
+
+// Драг-«крюк»: свечи при перетаскивании появляются/исчезают СТРОГО ЦЕЛЫМИ —
+// линия привязывается к ГРАНИЦЕ между барами R-1 и R (как при Play), а не к
+// X мыши (иначе шторка резала бы свечу под курсором «по половинке»). Данные
+// на графике НЕ режутся и не перекладываются — шторка просто «щелкает» по
+// стыкам за мышью, поэтому вьюпорт не «улетает» и свечи правее не вылезают.
+// isFinal — финальная парковка на границе свечи (time-режим, как в pauseReplay).
 function _moveBarrierToPx(px, isFinal) {
   if (!_grab) return;
   let F = _grab.baseIdx;
@@ -388,19 +526,19 @@ function _moveBarrierToPx(px, isFinal) {
   const R = Math.max(1, Math.min(Math.round(F), n));
   if (R !== state.replay.index) {
     state.replay.index = R;
-    // Нарезка через withPreservedView: диапазон данных меняется (растёт при
-    // драге вправо, ужимается влево), но видимое логическое окно остаётся
-    // прежним — график НЕ «улетает» от мыши во время перетаскивания.
-    withPreservedView(() => replaySetData(R, true));  // барьером управляем через px ниже
+    replaySetData(R, true); // обновляем логику/тексты; шторкой управляем через px ниже
   }
-  // X линии — СТРОГО X мыши, без привязки к свечам: движение 1 px : 1 px.
+  // X линии — граница между барами (целые свечи), кламп по ширине панели.
   const W = container.clientWidth || 0;
-  const x = W > 0 ? Math.max(0, Math.min(px, W)) : px;
+  const bx = _boundaryPixelFor(R);
   if (isFinal) {
-    const finT = R > 0 && state.candles[R - 1] ? state.candles[R - 1].time : null;
-    if (finT != null) setReplayBarrier(finT);  // паркуем на границе свечи
+    const b = _barrierBoundary(R);
+    if (b.time != null) setReplayBarrier(b.time, R, b.tNext);  // паркуемся на границе
   } else {
-    setReplayBarrierPixel(x);  // крюк: линия строго под мышью, не пропадает
+    const x = (bx != null && isFinite(bx))
+      ? (W > 0 ? Math.max(0, Math.min(bx, W)) : bx)
+      : (W > 0 ? Math.max(0, Math.min(px, W)) : px);
+    setReplayBarrierPixel(x);  // шторка на стыке свечей: «щелкает» по барам, не режет
   }
 }
 

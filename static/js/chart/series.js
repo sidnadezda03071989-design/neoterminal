@@ -76,21 +76,24 @@ export function withPreservedView(fn, offset = 0) {
 export function toLineData(arr) {
   const out = [];
   for (const it of arr || []) {
-    if (it && it.value != null) out.push({ time: it.time, value: it.value });
+    if (it && _isFiniteNumber(it.value)) out.push({ time: it.time, value: it.value });
   }
   return out;
 }
 
 export function toVolumeData(candles) {
+  // Null/NaN объём (гэпы источника) → 0: Histogram бросает «Value is null» на
+  // null-value, а выкидывать бары нельзя (сдвинет оси относительно свечей).
   return (candles || []).map((c) => ({
-    time: c.time, value: c.volume,
+    time: c.time,
+    value: _isFiniteNumber(c.volume) ? c.volume : 0,
     color: c.close >= c.open ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)',
   }));
 }
 
 export function toMacdHist(arr) {
   return (arr || [])
-    .filter(it => it.value != null)
+    .filter(it => it && _isFiniteNumber(it.value))
     .map(it => ({ time: it.time, value: it.value,
       color: it.value >= 0 ? 'rgba(66,165,245,0.55)' : 'rgba(239,83,80,0.55)' }));
 }

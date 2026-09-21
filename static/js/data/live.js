@@ -42,6 +42,7 @@ function _setLoadStatus(show, len, total) {
 }
 
 export async function loadLive(fit) {
+  if (state.mode !== 'live') return;  // фон не должен переписать данные реплея
   setStatus(true, 'загрузка…');
   const fullLimit = HISTORY_LIMIT[state.timeframe] || FULL_CANDLES;
   /* BLOCK-33: fit=true — это первый load / смена symbol или TF: рисуем
@@ -120,13 +121,16 @@ async function _loadFullInBackground(seq, key, fullLimit) {
   console.log(`[progressive] starting 0 → ${fullLimit} in ${chunks} chunks`);
   try {
     for (let target = step; target <= fullLimit; target += step) {
-      // Гонка: символ/tf сменили или уже стартовала новая загрузка — фон устарел.
-      if (seq !== _bgSeq || key !== _liveKey) return;
+      // Гонка: символ/tf сменили, ушёл в replay/live-режим или уже стартовала
+      // новая загрузка — фон устарел. Особенно важно не догружать чанки в
+      // REPLAY-режиме: live-подмена переписывала state.candles на полный объём
+      // и «топила» барьер реплея за экраном (view уезжала к концу данных).
+      if (seq !== _bgSeq || key !== _liveKey || state.mode !== 'live') return;
       const url = `/api/data?symbol=${encodeURIComponent(state.symbol)}&timeframe=${encodeURIComponent(state.timeframe)}&limit=${target}`;
       const resp = await fetch(url);
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
-      if (seq !== _bgSeq || key !== _liveKey) return;
+      if (seq !== _bgSeq || key !== _liveKey || state.mode !== 'live') return;
       if (!data.candles || !data.candles.length) break;
       // Нет прироста относительно уже нарисованного — дальше смысла нет
       // (покрывает и случай length === currentLen).
@@ -201,6 +205,7 @@ export async function pollLive() {
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
+    if (state.mode !== 'live') return;  // ушли в реплей — ответ живого полла не применяем
     const bar = data && data.candle;
     if (!bar) return;
 
