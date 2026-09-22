@@ -26,13 +26,212 @@ const DOWN_PILL = '#ef5350';
 const PILL_TEXT = '#ffffff';
 
 const MIN_WIDTH = 20;    // мин ширина зоны, px
-const MIN_PROB = 0.10;   // уровни с вероятностью ниже — не рисуем
+export const MIN_PROB = 0.10;   // уровни с вероятностью ниже — не рисуем
+export const PER_SIDE_MIN = 2;  // минимум уровней на сторону: UP и DOWN
 
 // Прозрачность полосы уровня: ближний (самый вероятный) — насыщеннее.
 // baseAlpha × (1 - 0.55 × index/maxIndex).
 function _bandAlpha(baseAlpha, index, count) {
   if (count <= 1) return baseAlpha;
   return baseAlpha * (1 - 0.55 * (index / (count - 1)));
+}
+
+/* Уровни для отображения (общий для панели и графика, чтобы счётчики
+   совпадали): валидация price/prob + гарантия минимума PER_SIDE_MIN уровней
+   на сторону. Сначала — уровни prob >= MIN_PROB (шум LLM отсекаем), потом,
+   если на стороне осталось меньше PER_SIDE_MIN, добираем недостающие из
+   остальных по убыванию вероятности — порог не «съедает» последний уровень.
+   Если на стороне физически нет нужного числа уровней (например, LLM дала
+   3 сверху и 1 снизу), такую сторону добираем резервным синтетическим
+   уровнем рядом с якорем (anchorPrice) — гарантия «минимум 2 снизу и сверху». */
+export function filterLevelsForDisplay(levels, anchorPrice) {
+  const valid = [];
+  for (const lv of (Array.isArray(levels) ? levels : [])) {
+    if (!lv || !Number.isFinite(Number(lv.price))) continue;
+    const prob = Number(lv.probability);
+    if (!Number.isFinite(prob)) continue;
+    valid.push({
+      ...lv,
+      side: String(lv.side || '').toUpperCase() === 'DOWN' ? 'DOWN' : 'UP',
+      price: Number(lv.price),
+      probability: prob,
+    });
+  }
+  const anchor = Number.isFinite(Number(anchorPrice)) ? Number(anchorPrice)
+    : _refPrice(valid);
+  const ups = valid.filter((l) => l.side === 'UP');
+  const downs = valid.filter((l) => l.side === 'DOWN');
+  return _capTo100(
+    _ensureSideMin(ups, anchor, 'UP').concat(_ensureSideMin(downs, anchor, 'DOWN'))
+  );
+}
+
+/* Средняя цена уровней — fallback-якорь для резервных уровней (панель
+   вызывается без якоря, в отличие от графика). */
+function _refPrice(levels) {
+  const ps = levels.map((l) => l.price).filter(Number.isFinite);
+  if (!ps.length) return null;
+  return ps.reduce((a, b) => a + b, 0) / ps.length;
+}
+
+function _synthLevel(side, ref) {
+  const price = side === 'UP' ? ref * 1.01 : ref * 0.99;
+  return {
+    id: 'filler_' + side + '_' + Date.now().toString(36),
+    price,
+    probability: 0.02,
+    side,
+  };
+}
+
+function _ensureSideMin(list, anchor, side) {
+  const good = list.filter((l) => l.probability >= MIN_PROB);
+  if (good.length >= PER_SIDE_MIN) return good;
+  const rest = list
+    .filter((l) => l.probability < MIN_PROB)
+    .sort((a, b) => b.probability - a.probability);
+  const out = good.concat(rest.slice(0, PER_SIDE_MIN - good.length));
+  if (out.length < PER_SIDE_MIN) {
+    // Синтетический добор до гарантированного минимума на сторону.
+    const sidePrices = list.map((l) => l.price).filter(Number.isFinite);
+    const ref = anchor != null ? anchor
+      : (side === 'UP' ? Math.max(...sidePrices) : Math.min(...sidePrices));
+    if (ref != null && Number.isFinite(ref)) {
+      for (let i = out.length; i < PER_SIDE_MIN; i++) {
+        out.push(_synthLevel(side, ref));
+      }
+    }
+  }
+  return out;
+}
+
+/* Сумма показанных вероятностей не должна выходить за 100%: каждая
+   вероятность — независимая, но панель/пилюли читаются как распределение,
+   поэтому при сумме > 1 нормируем отображаемый набор на 100%. */
+function _capTo100(list) {
+  const total = list.reduce((sum, l) => sum + l.probability, 0);
+  if (!(total > 1.0)) return list;
+  const k = 1.0 / total;
+  return list.map((l) => ({
+    ...l,
+    probability: Math.round(l.probability * k * 10000) / 10000,
+  }));
+}
+
+/* ATR(period) в ценах актива по свечам ДО uptoTime включительно (Wilder).
+   При нехватке баров или нечисловых данных — null. Нужен, чтобы потенциальные
+   TP/SL не липли к цене: позиция не должна быть «мелочью» в 0.1·ATR. */
+export function atrOf(candles, uptoTime, period) {
+  period = period || 14;
+  const hs = [], ls = [], cs = [];
+  for (const c of (Array.isArray(candles) ? candles : [])) {
+    if (uptoTime != null && Number(c.time) > uptoTime) break;
+    hs.push(Number(c.high));
+    ls.push(Number(c.low));
+    cs.push(Number(c.close));
+  }
+  const n = hs.length;
+  if (n < period + 1) return null;
+  let atr = null;
+  let sum = 0;
+  let prevC = null;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const h = hs[i], l = ls[i], c = cs[i];
+    if (![h, l, c].every((v) => Number.isFinite(v))) { count = 0; prevC = null; continue; }
+    if (prevC == null) { prevC = c; continue; }
+    const tr = Math.max(h - l, Math.abs(h - prevC), Math.abs(l - prevC));
+    prevC = c;
+    if (count < period) {
+      sum += tr;
+      count += 1;
+      if (count === period) atr = sum / period;
+    } else if (atr != null) {
+      atr = (atr * (period - 1) + tr) / period;
+    }
+  }
+  return atr;
+}
+
+/* Минимальный разрыв между соседними линиями одного направления в долях ATR:
+   вторая линия (TP/SL) не должна липнуть к первой. */
+const MIN_GAP_ATR = 0.4;
+
+/* Дистанция «фиксированного» ближнего уровня от цены в долях ATR. */
+const NEAR_ATR = 1.0;
+
+/* Фиксация ближних уровней и гарантия разрывов. Проблема: первые (самые
+   вероятные) уровни из структуры стоят «почти вплотную» к цене / друг к
+   другу, и самая насыщенная полоса вырождается. Шаги на каждую сторону:
+   1. ближайший уровень (первая линия) СТРОГО ставится ровно на NEAR_ATR·ATR
+      от цены (выше/ниже) — независимо от того, где реальная структура;
+   2. остальные линии жадным проходом: каждая следующая не ближе
+      MIN_GAP_ATR·ATR к предыдущей, иначе выносится точно на этот разрыв
+      (упорядоченность стороны и «не меньше» гарантируются для всех пар).
+   Идемпотентно: повторный проход уже выровненного списка ничего не меняет. */
+export function pinNearLevels(levels, refPrice, atr) {
+  if (!Array.isArray(levels) || !levels.length) return levels;
+  if (!(atr > 0)) return levels;
+  const ref = Number.isFinite(Number(refPrice)) ? Number(refPrice) : null;
+  if (ref == null) return levels;
+  const near = atr * NEAR_ATR;
+  const gap = atr * MIN_GAP_ATR;
+  const ups = levels.filter((l) => l.side === 'UP')
+    .sort((a, b) => a.price - b.price);          // ближний → дальний
+  const downs = levels.filter((l) => l.side === 'DOWN')
+    .sort((a, b) => b.price - a.price);
+  _pinSide(ups, ref, near, gap, 1);     // UP: следующие выше
+  _pinSide(downs, ref, near, gap, -1);  // DOWN: следующие ниже
+  return levels;
+}
+
+function _pinSide(side, ref, near, gap, dir) {
+  const n = side.length;
+  if (!n) return;
+  const first = side[0];
+  // Строго: первая линия ровно на NEAR_ATR·ATR от цены (выше/ниже), всегда.
+  first.price = ref + dir * near;
+  first.diff = first.price - ref;
+  let prev = first.price;
+  for (let i = 1; i < n; i++) {
+    const want = prev + dir * gap;
+    if ((dir > 0 && side[i].price < want) || (dir < 0 && side[i].price > want)) {
+      side[i].price = want;
+      side[i].diff = side[i].price - ref;
+    }
+    prev = side[i].price;
+  }
+}
+
+/* Потенциальные TP/SL с выбором направления по вероятности:
+   • сравниваются вероятности ПЕРВЫХ линий (обе закреплены на 1·ATR): куда
+     выше вероятность дойти — туда и цель;
+   • ЛОНГ (UP вероятнее): TP = вторая линия UP, SL = вторая линия DOWN;
+   • ШОРТ (DOWN вероятнее): TP = вторая линия DOWN, SL = вторая линия UP.
+   После pinNearLevels вторая линия отнесена от первой минимум на
+   MIN_GAP_ATR·ATR, дальше — сколько реально, главное не ближе.
+   При нехватке линий — первая; null, если направлений нет. */
+export function pickTpsl(levels, refPrice, atr) {
+  const ups = levels.filter((l) => l.side === 'UP')
+    .sort((a, b) => a.price - b.price);          // ближний → дальний
+  const downs = levels.filter((l) => l.side === 'DOWN')
+    .sort((a, b) => b.price - a.price);
+  const upLine = ups[0] || null;
+  const dnLine = downs[0] || null;
+  const upProb = upLine ? Number(upLine.probability) : -Infinity;
+  const dnProb = dnLine ? Number(dnLine.probability) : -Infinity;
+  let side, tp, sl;
+  if (upProb >= dnProb) {
+    side = 'long';
+    tp = ups[1] || upLine;
+    sl = downs[1] || dnLine;
+  } else {
+    side = 'short';
+    tp = downs[1] || dnLine;
+    sl = ups[1] || upLine;
+  }
+  if (!tp && !sl) return null;
+  return { side, tp, sl };
 }
 
 export class AIProbZonesRenderer {
@@ -44,6 +243,19 @@ export class AIProbZonesRenderer {
     this.levels = [];
     this.anchor = null;
     this.primitive = null;
+    this.tpsl = null;
+    this.enableTpsl = false;
+  }
+
+  /* Вкл/выкл TP/SL поверх уровней: перерисовывает текущие зоны без нового
+     запроса (настройка в панели AI Backtest). */
+  setTpsl(enabled) {
+    this.enableTpsl = !!enabled;
+    if (this.levels.length && this.anchor) {
+      const levels = [...this.levels];
+      const anchor = this.anchor;
+      this.render(levels, anchor);
+    }
   }
 
   /* render(result | levels, anchorOverride)
@@ -52,30 +264,25 @@ export class AIProbZonesRenderer {
      барьер), иначе якорь берётся из полного ряда свечей. */
   render(result, anchorOverride) {
     this.clear();
-    const levels = this._extractLevels(result);
+    const anchor = anchorOverride || this._anchor();
+    if (!anchor) return;
+    const atr = atrOf(this.candlesRef(), anchor.time);
+    const levels = pinNearLevels(
+      this._extractLevels(result, anchor), anchor.price, atr);
     if (!levels.length) return;
     this.levels = levels;
-    this.anchor = anchorOverride || this._anchor();
-    if (!this.anchor) return;
-    this.primitive = new AIProbZonesPrimitive(this.levels, this.anchor, this);
+    this.anchor = anchor;
+    this.tpsl = this.enableTpsl ? pickTpsl(levels, anchor.price, atr) : null;
+    this.primitive = new AIProbZonesPrimitive(
+      this.levels, this.anchor, this.tpsl, this);
     this.series.attachPrimitive(this.primitive);
   }
 
-  _extractLevels(result) {
+  _extractLevels(result, anchor) {
     const raw = Array.isArray(result) ? result
       : (result && Array.isArray(result.levels)) ? result.levels : [];
-    const out = [];
-    for (const lv of raw) {
-      if (!lv || !Number.isFinite(Number(lv.price))) continue;
-      const prob = Number(lv.probability);
-      if (!Number.isFinite(prob) || prob < MIN_PROB) continue;
-      out.push({
-        side: String(lv.side || '').toUpperCase() === 'DOWN' ? 'DOWN' : 'UP',
-        price: Number(lv.price),
-        probability: prob,
-      });
-    }
-    return out;
+    return filterLevelsForDisplay(raw, anchor && Number.isFinite(Number(anchor.price))
+      ? Number(anchor.price) : null);
   }
 
   clear() {
@@ -85,6 +292,7 @@ export class AIProbZonesRenderer {
     }
     this.levels = [];
     this.anchor = null;
+    this.tpsl = null;
   }
 
   /* Якорь зоны: последняя свеча ПЕРЕДАННОГО якоря (replay-барьер ставится
@@ -126,9 +334,10 @@ export class AIProbZonesRenderer {
 }
 
 class AIProbZonesPrimitive {
-  constructor(levels, anchor, manager) {
+  constructor(levels, anchor, tpsl, manager) {
     this.levels = levels;
     this.anchor = anchor;
+    this.tpsl = tpsl || null;
     this.manager = manager;
     this._requestUpdate = null;
   }
@@ -147,15 +356,16 @@ class AIProbZonesPrimitive {
     return [{
       zOrder: () => 'top',
       renderer: () => new AIProbZonesRendererImpl(
-        this.levels, this.anchor, this.manager),
+        this.levels, this.anchor, this.tpsl, this.manager),
     }];
   }
 }
 
 class AIProbZonesRendererImpl {
-  constructor(levels, anchor, manager) {
+  constructor(levels, anchor, tpsl, manager) {
     this.levels = levels;
     this.anchor = anchor;
+    this.tpsl = tpsl || null;
     this.manager = manager;
   }
 
@@ -196,6 +406,7 @@ class AIProbZonesRendererImpl {
 
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, ups, true);
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, downs, false);
+    this._drawTpsl(ctx, x0, x1, size);
   }
 
   /* Полосы одной стороны: от текущей цены до ПЕРВОГО уровня, затем между
@@ -230,6 +441,60 @@ class AIProbZonesRendererImpl {
       this._drawLevelLine(ctx, x0, x1, yLevel);
       this._drawPill(ctx, x1, lv.price - anchorPrice, lv.probability,
         isUp ? UP_PILL : DOWN_PILL, yLevel, top, bot, size);
+    }
+  }
+
+  /* TP/SL по уровням (сверх зон): цель = ближайший UP, стоп = ближайший
+     DOWN. Пунктирные линии по всей зоне + метка у левой кромки, чтобы не
+     путать с пилюлями вероятностей у правой кромки. */
+  _drawTpsl(ctx, x0, x1, size) {
+    const tpsl = this.tpsl;
+    if (!tpsl) return;
+    const series = this.manager.series;
+    // Метка направления у левой кромки: цель на стороне большей вероятности.
+    const dir = tpsl.side === 'short' ? 'ШОРТ' : 'ЛОНГ';
+    ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
+    const dw = ctx.measureText(dir).width + 10;
+    const dh = 15;
+    const dx = Math.max(1, Math.min(x0 + 4, size.width - dw - 2));
+    const dy = Math.max(2, Math.min(size.height - dh - 2, 2));
+    ctx.fillStyle = tpsl.side === 'short' ? DOWN_PILL : UP_PILL;
+    this._roundRect(ctx, dx, dy, dw, dh, 4);
+    ctx.fill();
+    ctx.fillStyle = PILL_TEXT;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(dir, dx + 5, dy + dh / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
+
+    const pairs = [['TP', tpsl.tp], ['SL', tpsl.sl]];
+    for (const [kind, lv] of pairs) {
+      if (!lv || !Number.isFinite(Number(lv.price))) continue;
+      const y = series.priceToCoordinate(Number(lv.price));
+      if (y == null) continue;
+      const color = kind === 'TP' ? UP_PILL : DOWN_PILL;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const label = kind + ' ' + this._fmtPrice(lv.price);
+      ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
+      const w = ctx.measureText(label).width + 10;
+      const h = 15;
+      const lx = Math.max(1, Math.min(x0 + 4, size.width - w - 2));
+      let ly = y - h / 2;
+      ly = Math.max(2, Math.min(size.height - h - 2, ly));
+      ctx.fillStyle = color;
+      this._roundRect(ctx, lx, ly, w, h, 4);
+      ctx.fill();
+      ctx.fillStyle = PILL_TEXT;
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, lx + 5, ly + h / 2 + 0.5);
+      ctx.textBaseline = 'alphabetic';
     }
   }
 

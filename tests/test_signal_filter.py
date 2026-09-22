@@ -265,6 +265,7 @@ def test_levels_for_slice_applies_filter(monkeypatch):
         ]})
 
     monkeypatch.setattr(aibt, "_llm_request", fake_llm)
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "charon_prompt_text", lambda: "SYS")
     monkeypatch.setattr(aibt, "compact_snapshot",

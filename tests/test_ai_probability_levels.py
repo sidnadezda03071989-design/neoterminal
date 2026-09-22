@@ -160,6 +160,7 @@ def test_run_ai_backtest_one_llm_call_and_levels_only(monkeypatch):
     monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
     monkeypatch.setattr(aibt, "compact_snapshot",
                         lambda *a, **k: {"t": {"close": 100.0}})
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
     monkeypatch.setattr(aibt.db, "db_save_ai_backtest",
                         lambda *a, **k: 1)
 
@@ -284,6 +285,8 @@ def test_levels_for_slice_hybrid_messages(monkeypatch):
         ]})
 
     monkeypatch.setattr(aibt, "_llm_request", fake_llm)
+    monkeypatch.setattr(aibt, "_structure_levels",
+                        lambda *a, **k: [])
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "charon_prompt_text", lambda: "RULES-FROM-FILE")
     monkeypatch.setattr(aibt, "compact_snapshot",
@@ -471,6 +474,7 @@ def test_route_sync_end_to_end_pill_labels(monkeypatch):
             {"side": "DOWN", "price": 98.7, "probability": 0.556},
         ],
     }))
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
     monkeypatch.setattr(aibt.db, "db_save_ai_backtest", lambda *a, **k: 1)
 
     app = create_app()
@@ -489,3 +493,82 @@ def test_route_sync_end_to_end_pill_labels(monkeypatch):
     assert ups[1]["probability"] == pytest.approx(0.613)
     assert downs[0]["diff"] == pytest.approx(-1.3)
     assert downs[0]["probability"] == pytest.approx(0.556)
+
+
+# -------------------------------------- структурная база уровней (логика)
+def _mk_struct(cp):
+    """Структурные уровни как у structure_levels_from_df (формат парсера)."""
+    return [
+        {"side": "UP", "price": 102.3, "probability": 0.35,
+         "diff": 2.3, "diff_pct": 2.3},
+        {"side": "UP", "price": 107.8, "probability": 0.22,
+         "diff": 7.8, "diff_pct": 7.8},
+        {"side": "DOWN", "price": 95.1, "probability": 0.33,
+         "diff": -4.9, "diff_pct": -4.9},
+        {"side": "DOWN", "price": 90.4, "probability": 0.21,
+         "diff": -9.6, "diff_pct": -9.6},
+    ]
+
+
+def test_levels_for_slice_grounds_fake_grid_by_structure(monkeypatch):
+    """Формульная сетка LLM (равный шаг) НЕ рисуется: цены — из структуры.
+
+    Регрессия жалобы «уровни одинаковые для каждого теста»: модель при T=0
+    возвращает равномерную сетку (шаг ~ATR, линейный спад вероятности) без
+    связи с реальными экстремумами. Структурная база задаёт цены; LLM-уровень,
+    совпавший со структурой по цене, лишь подтверждает её (+0.02 к шансу).
+    """
+    calls = {}
+
+    def fake_llm(system, messages, **kwargs):
+        calls["n"] = calls.get("n", 0) + 1
+        return json.dumps({"targets": [
+            # равномерная сетка: шаг 4, никак не связана со структурой.
+            {"side": "UP", "price": 104.0, "probability": 0.33},
+            {"side": "UP", "price": 108.0, "probability": 0.27},
+            {"side": "UP", "price": 112.0, "probability": 0.20},
+            {"side": "DOWN", "price": 96.0, "probability": 0.31},
+            {"side": "DOWN", "price": 92.0, "probability": 0.24},
+            {"side": "DOWN", "price": 88.0, "probability": 0.18},
+        ]})
+
+    monkeypatch.setattr(aibt, "_llm_request", fake_llm)
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: _mk_struct(100.0))
+    monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
+    monkeypatch.setattr(aibt, "charon_prompt_text", lambda: "RULES")
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
+
+    levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H")
+    assert err is None and price == pytest.approx(100.0)
+    ups = [lv for lv in levels if lv["side"] == "UP"]
+    downs = [lv for lv in levels if lv["side"] == "DOWN"]
+    # Цены — из структуры, а не из сетки LLM (104/112/96/92/88 не попали).
+    assert [lv["price"] for lv in ups] == pytest.approx([102.3, 107.8])
+    assert [lv["price"] for lv in downs] == pytest.approx([95.1, 90.4])
+    # Совпавший по цене уровень (108 ≈ 107.8 в пределах 0.3%) подтверждён
+    # (+0.02); неподтверждённые остаются со структурным шансом.
+    assert ups[1]["probability"] == pytest.approx(0.24)
+    assert ups[0]["probability"] == pytest.approx(0.35)
+    assert calls["n"] >= 1  # LLM всё ещё вызывается (для вердикта)
+
+
+def test_flat_verdict_with_structure_returns_structure(monkeypatch):
+    """Сортировка уровней в blend: UP по возрастанию, DOWN по убыванию."""
+    levels = aibt._blend_levels(_mk_struct(100.0), [], 100.0)
+    ups = [lv["price"] for lv in levels if lv["side"] == "UP"]
+    downs = [lv["price"] for lv in levels if lv["side"] == "DOWN"]
+    assert ups == pytest.approx([102.3, 107.8])
+    assert downs == pytest.approx([95.1, 90.4])
+
+    monkeypatch.setattr(aibt, "_llm_request", lambda *a, **k: json.dumps({
+        "pu": 0.0, "pd": 0.0, "pf": 0.0, "sig": "F", "tg": []}))
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: _mk_struct(100.0))
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
+
+    levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H",
+                                               current_price=100.0)
+    # Плоский вердикт + структура: уровни рисуются из логики, без ошибки.
+    assert err is None and price == pytest.approx(100.0)
+    assert {lv["price"] for lv in levels} == {102.3, 107.8, 95.1, 90.4}

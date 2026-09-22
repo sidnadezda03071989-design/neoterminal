@@ -31,6 +31,7 @@ CHARON_DEFAULT_PROMPT = (
     "rsi/adx/hv are 0-100; div.rsi/macd/obv in {-1,0,1} (-1 bearish, +1 "
     "bullish); t.atr_pct=atr/close (normalized risk). Missing block "
     "= no data = ignore it.\n"
+    "CBR history (last 90d, K=50 similar): up=X% down=Y% flat=Z% n=47 conf=0.71\n"
     "Rules:\n"
     "1 base: se.sharpe>3 & (rsi<p.oversold or bb<0.125) -> pu=se.wr. "
     "bb oversold threshold = 0.5-std*0.25 with std=1.5 -> 0.125 (NOT 0.1). "

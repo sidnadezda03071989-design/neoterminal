@@ -1,0 +1,171 @@
+{
+  "generated_at": "2026-09-22T06:31:04.677567+00:00",
+  "symbol": "BTCUSDT",
+  "timeframe": "1H",
+  "db": "C:\\neoterminal\\data\\cbr.db",
+  "csv": "C:\\neoterminal\\scripts\\charon_data_cache\\BTCUSDT_1h_700d.csv",
+  "K": 50,
+  "min_distance": 2.0,
+  "regime_match": true,
+  "window_days": 180,
+  "query_bars": 5005,
+  "start_fraction": 0.7,
+  "engines": {
+    "A_charon": {
+      "trades": 618,
+      "winrate": 0.4903,
+      "avg_pnl_pct": 0.1055,
+      "profit_factor": 1.16,
+      "sharpe": 0.8489,
+      "max_dd": -82.5186,
+      "sum_pnl_pct": 65.1825
+    },
+    "B_cbr": {
+      "trades": 2537,
+      "winrate": 0.6878,
+      "avg_pnl_pct": 0.7408,
+      "profit_factor": 3.3203,
+      "sharpe": 6.458,
+      "max_dd": -26.9256,
+      "sum_pnl_pct": 1879.3022
+    },
+    "C_blended": {
+      "trades": 1071,
+      "winrate": 0.6657,
+      "avg_pnl_pct": 0.6347,
+      "profit_factor": 2.7169,
+      "sharpe": 5.4112,
+      "max_dd": -25.4656,
+      "sum_pnl_pct": 679.7583
+    }
+  },
+  "coverage": {
+    "A_charon": 0.1235,
+    "B_cbr": 0.5069,
+    "C_blended": 0.214
+  },
+  "by_regime": {
+    "flat": {
+      "A_charon": {
+        "trades": 155,
+        "winrate": 0.5226,
+        "avg_pnl_pct": 0.1936,
+        "profit_factor": 1.3379,
+        "sharpe": 1.7275,
+        "max_dd": -21.6788,
+        "sum_pnl_pct": 30.0118
+      },
+      "B_cbr": {
+        "trades": 1480,
+        "winrate": 0.6899,
+        "avg_pnl_pct": 0.6378,
+        "profit_factor": 3.0423,
+        "sharpe": 6.2474,
+        "max_dd": -18.4171,
+        "sum_pnl_pct": 943.9618
+      },
+      "C_blended": {
+        "trades": 591,
+        "winrate": 0.7005,
+        "avg_pnl_pct": 0.6041,
+        "profit_factor": 3.071,
+        "sharpe": 6.3751,
+        "max_dd": -13.7261,
+        "sum_pnl_pct": 357.0085
+      }
+    },
+    "reversal": {
+      "A_charon": {
+        "trades": 4,
+        "winrate": 0.0,
+        "avg_pnl_pct": -2.8871,
+        "profit_factor": 0.0,
+        "sharpe": -26.6841,
+        "max_dd": -11.304,
+        "sum_pnl_pct": -11.5484
+      },
+      "B_cbr": {
+        "trades": 8,
+        "winrate": 1.0,
+        "avg_pnl_pct": 1.7426,
+        "profit_factor": null,
+        "sharpe": 17.6144,
+        "max_dd": 0.0,
+        "sum_pnl_pct": 13.9407
+      },
+      "C_blended": {
+        "trades": 5,
+        "winrate": 0.4,
+        "avg_pnl_pct": -1.083,
+        "profit_factor": 0.5209,
+        "sharpe": -5.112,
+        "max_dd": -8.5419,
+        "sum_pnl_pct": -5.4152
+      }
+    },
+    "trend_down": {
+      "A_charon": {
+        "trades": 173,
+        "winrate": 0.5145,
+        "avg_pnl_pct": 0.1728,
+        "profit_factor": 1.2833,
+        "sharpe": 1.4669,
+        "max_dd": -32.4992,
+        "sum_pnl_pct": 29.9012
+      },
+      "B_cbr": {
+        "trades": 504,
+        "winrate": 0.629,
+        "avg_pnl_pct": 0.7348,
+        "profit_factor": 2.7961,
+        "sharpe": 5.8185,
+        "max_dd": -26.9282,
+        "sum_pnl_pct": 370.3274
+      },
+      "C_blended": {
+        "trades": 193,
+        "winrate": 0.6218,
+        "avg_pnl_pct": 0.6771,
+        "profit_factor": 2.5831,
+        "sharpe": 5.5069,
+        "max_dd": -12.5606,
+        "sum_pnl_pct": 130.6837
+      }
+    },
+    "trend_up": {
+      "A_charon": {
+        "trades": 286,
+        "winrate": 0.465,
+        "avg_pnl_pct": 0.0588,
+        "profit_factor": 1.0835,
+        "sharpe": 0.4451,
+        "max_dd": -91.4122,
+        "sum_pnl_pct": 16.8179
+      },
+      "B_cbr": {
+        "trades": 545,
+        "winrate": 0.7321,
+        "avg_pnl_pct": 1.0111,
+        "profit_factor": 4.8931,
+        "sharpe": 7.6242,
+        "max_dd": -26.9256,
+        "sum_pnl_pct": 551.0723
+      },
+      "C_blended": {
+        "trades": 282,
+        "winrate": 0.6277,
+        "avg_pnl_pct": 0.7003,
+        "profit_factor": 2.5228,
+        "sharpe": 4.7157,
+        "max_dd": -28.4129,
+        "sum_pnl_pct": 197.4813
+      }
+    }
+  },
+  "verdict": {
+    "is_pass": true,
+    "delta_winrate": 0.1754,
+    "delta_sharpe": 4.5623,
+    "note": "C превосходит A: winrate+0.18, sharpe+4.56"
+  }
+}

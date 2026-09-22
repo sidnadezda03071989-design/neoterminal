@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-09-22T07:07:00.444665+00:00",
+  "params": {
+    "symbol": "BTCUSDT",
+    "timeframe": "1H",
+    "db": "C:\\neoterminal\\data\\cbr.db",
+    "csv": "C:\\neoterminal\\scripts\\charon_data_cache\\BTCUSDT_1h_700d.csv",
+    "K": 10,
+    "min_distance": 1.0,
+    "regime_match": true,
+    "window_days": 180,
+    "start_fraction": 0.0,
+    "seed": 42,
+    "fee_per_side": 0.0005,
+    "slippage": 0.0002,
+    "sharpe_ppy": 252.0
+  },
+  "sample": {
+    "n_trades": 535,
+    "winrate": 0.4748,
+    "avg_pnl_pct": -0.1005,
+    "std_pnl_pct": 2.4236,
+    "sharpe_gross": -0.658,
+    "max_dd_pct": -100.6824,
+    "profit_factor": 0.881,
+    "avg_bars_held": 18.9
+  },
+  "checks": [
+    {
+      "id": "sample",
+      "title": "Sample size",
+      "status": "ok",
+      "n_trades": 535,
+      "detail": "n=535 сделок (200+: OK, 100-200: WARN, <100: FAIL)"
+    },
+    {
+      "id": "fees",
+      "title": "Sharpe after fees",
+      "status": "fail",
+      "sharpe_gross": -0.658,
+      "sharpe_net": -1.575,
+      "avg_fee_pp": 0.1399,
+      "detail": "gross=-0.66 net=-1.57 (fees 0.05% + slippage 0.02% на сторону)"
+    },
+    {
+      "id": "walk_forward",
+      "title": "Walk-forward (3 periods)",
+      "status": "fail",
+      "periods": [
+        {
+          "name": "P1",
+          "start_ts": 1729922400,
+          "end_ts": 1749938400,
+          "n": 126,
+          "winrate": 0.4841,
+          "sharpe": 0.4041,
+          "sum_pnl_pct": 7.064
+        },
+        {
+          "name": "P2",
+          "start_ts": 1749938400,
+          "end_ts": 1769954400,
+          "n": 258,
+          "winrate": 0.4341,
+          "sharpe": -0.7971,
+          "sum_pnl_pct": -24.2967
+        },
+        {
+          "name": "P3",
+          "start_ts": 1769954400,
+          "end_ts": 1789970400,
+          "n": 151,
+          "winrate": 0.3907,
+          "sharpe": -3.6314,
+          "sum_pnl_pct": -111.3587
+        }
+      ],
+      "detail": "P1: n=126 sharpe=0.404 / P2: n=258 sharpe=-0.797 / P3: n=151 sharpe=-3.631"
+    },
+    {
+      "id": "oos",
+      "title": "Out-of-sample 70/30",
+      "status": "fail",
+      "train": {
+        "n": 402,
+        "sharpe": -1.387
+      },
+      "test": {
+        "n": 133,
+        "sharpe": -2.163
+      },
+      "ratio": null,
+      "detail": "train=-1.387 test=-2.163 ratio=-"
+    },
+    {
+      "id": "shuffle",
+      "title": "Permutation (labels shuffled)",
+      "status": "fail",
+      "real_sharpe": -0.658,
+      "shuffled_sharpe": -0.158,
+      "shuffled_n": 469,
+      "ratio": null,
+      "detail": "real=-0.658 shuffled=-0.158 ratio=-"
+    }
+  ],
+  "verdict": {
+    "value": "NO-GO",
+    "reason": "no-go: комиссии и slippage съедают весь edge (net Sharpe < 1.5)",
+    "recommendation": "пересмотреть параметры K/min_distance при фиксированных правилах и повторить валидацию; blender/Этап 2 при этом не менять"
+  }
+}

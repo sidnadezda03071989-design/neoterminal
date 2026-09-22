@@ -1,5 +1,12 @@
 // DrawingsManager — движок рисования на lightweight-charts v5.
 import { state } from '../state.js';
+import { pushAction as historyPush, undo as historyUndo, redo as historyRedo,
+  canUndo as historyCanUndo, canRedo as historyCanRedo } from './history.js';
+import * as hray from './hray.js';
+import * as vline from './vline.js';
+import * as channel from './channel.js';
+import * as position from './position.js';
+import * as arrow from './arrow.js';
 
 const USER_COLOR = '#2962ff';
 const AI_COLOR   = '#ff9800';
@@ -23,6 +30,23 @@ function fmtPrice(v) {
   const av = Math.abs(v);
   const d = av >= 1000 ? 1 : av >= 1 ? 2 : av >= 0.01 ? 4 : 6;
   return Number(v).toFixed(d);
+}
+
+function fmtTime(t) {
+  if (t == null) return '—';
+  const d = new Date(t * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+const _cssCache = {};
+function cssVar(name, fallback) {
+  if (!_cssCache[name]) {
+    let v = '';
+    try { v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); } catch (e) {}
+    _cssCache[name] = v || fallback;
+  }
+  return _cssCache[name];
 }
 
 function tfSeconds(tf) {
@@ -104,6 +128,9 @@ class Renderer {
   paint(ctx, size, d, pts) {
     const color = d.color || (d.created_by === 'ai' ? AI_COLOR : USER_COLOR);
     const selected = this.dm.selectedId === d.id;
+    const ui = { strokeMain, strokePoly, drawTag, hexToRgba, cssVar, fmtPrice, fmtTime };
+    const kn = (plist, sel) => { if (sel) this.knots(ctx, plist); };
+    const preview = d._preview ? this.dm.toPx(d._preview.time, d._preview.price) : null;
     switch (d.type) {
       case 'h_line': {
         const y = pts[0].y;
@@ -161,11 +188,25 @@ class Renderer {
         if (selected) this.knots(ctx, [pts[0]]);
         break;
       }
+      case 'hray':
+        hray.paint({ ctx, d, pts, color, selected, ui, kn });
+        break;
+      case 'vline':
+        vline.paint({ ctx, d, pts, color, selected, ui, kn });
+        break;
+      case 'channel':
+        channel.paint({ ctx, d, pts, color, selected, ui, kn, preview });
+        break;
+      case 'position':
+      case 'long_position':
+      case 'short_position':
+        position.paint({ ctx, d, pts, color, selected, ui, kn, preview });
+        break;
     }
   }
   knots(ctx, pts) {
     pts.forEach((p) => {
-      ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
       ctx.fillStyle = '#fff'; ctx.fill();
       ctx.strokeStyle = '#131722'; ctx.lineWidth = 1.5; ctx.stroke();
     });
@@ -302,6 +343,7 @@ export class DrawingsManager {
     this.container = cfg.container;
     this.candlesRef = cfg.candlesRef;
     this.onChanged = cfg.onChanged || (() => {});
+    this.onHistoryChange = cfg.onHistoryChange || (() => {});
     this.symbol = cfg.symbol || 'BTCUSDT';
     this.timeframe = cfg.timeframe || '1H';
     this.drawings = [];
@@ -312,8 +354,17 @@ export class DrawingsManager {
     this._requestUpdate = null;
     this.drag = null;
     this._draftPrim = null;
+    this._pendingCreate = null; // незавершённый многоточечный рисунок (channel/position)
     this.magnet = false;
     this.measurement = null; // { p1, p2 } — временный рисунок, в БД не пишется
+    this._markersPlugin = null; // createSeriesMarkers для стрелок
+    if (window.LightweightCharts && window.LightweightCharts.createSeriesMarkers) {
+      try {
+        this._markersPlugin = window.LightweightCharts.createSeriesMarkers(this.series, []);
+      } catch (e) {
+        this._markersPlugin = null;
+      }
+    }
     this.series.attachPrimitive(new MeasurePrimitive(this));
     this._bind();
   }
@@ -410,6 +461,7 @@ export class DrawingsManager {
   }
 
   _attach(d) {
+    if (d.type === 'arrow') return; // стрелки рендерятся через createSeriesMarkers
     const prim = new Primitive(this, d);
     this.series.attachPrimitive(prim);
     this._prims.set(d.id, prim);
@@ -427,6 +479,29 @@ export class DrawingsManager {
   }
   _fire() { if (this._requestUpdate) this._requestUpdate(); }
 
+  _candleAt(time) {
+    const arr = this._times();
+    const i = this._indexOfTime(time);
+    return arr && i >= 0 ? arr[i] : null;
+  }
+  _cloneShape(d) {
+    try { return JSON.parse(JSON.stringify(d)); }
+    catch (e) { return Object.assign({}, d, { points: (d.points || []).slice() }); }
+  }
+  _syncMarkers() {
+    if (!this._markersPlugin) return;
+    const list = [];
+    for (const d of this.drawings) {
+      if (d.type !== 'arrow' || !d.points || !d.points.length) continue;
+      const m = arrow.buildMarker(d, USER_COLOR);
+      if (!m) continue;
+      m.shape = arrow.dirFor(d, this._candleAt(m.time)) === 'down' ? 'arrowDown' : 'arrowUp';
+      list.push(m);
+    }
+    this._markersPlugin.setMarkers(list);
+  }
+  _updateHistoryUI() { this.onHistoryChange(); }
+
   refresh(list) {
     this._teardown();
     this.drawings = Array.isArray(list) ? list : [];
@@ -434,6 +509,7 @@ export class DrawingsManager {
     if (this.selectedId && !this.drawings.some((d) => d.id === this.selectedId)) {
       this.selectedId = null;
     }
+    this._syncMarkers();
     this.onChanged();
     this._fire();
   }
@@ -443,7 +519,6 @@ export class DrawingsManager {
     this.timeframe = timeframe || this.timeframe;
     const qs = new URLSearchParams();
     if (symbol) qs.set('symbol', symbol);
-    if (timeframe) qs.set('timeframe', timeframe);
     fetch('/api/drawings' + (qs.toString() ? '?' + qs : ''))
       .then((r) => r.json())
       .then((data) => this.refresh(data.drawings || []))
@@ -455,6 +530,8 @@ export class DrawingsManager {
     this.symbol = symbol;
     this.timeframe = timeframe;
     this.measurement = null; // смена символа/ТФ — сбросить measure
+    this._pendingCreate = null;
+    this._discardGhost();
     this._fire();
     this.loadFromServer(symbol, timeframe);
   }
@@ -463,6 +540,7 @@ export class DrawingsManager {
     this.tool = tool;
     if (tool !== 'cursor') this.selectedId = null;
     this.drag = null;
+    this._pendingCreate = null;
     this._discardGhost();
     this._fire();
   }
@@ -473,8 +551,16 @@ export class DrawingsManager {
   }
 
   _minPoints(type) {
-    if (type === 'h_line' || type === 'text') return 1;
+    if (type === 'h_line' || type === 'text' || type === 'hray' ||
+        type === 'vline' || type === 'arrow') return 1;
+    if (type === 'channel' || type === 'position' || type === 'long_position'
+        || type === 'short_position') return 3;
     return 2;
+  }
+
+  _isMultiClick(type) {
+    return type === 'channel' || type === 'position' || type === 'long_position'
+      || type === 'short_position';
   }
 
   _bind() {
@@ -488,9 +574,13 @@ export class DrawingsManager {
         self.deleteSelected();
       }
       if (e.key === 'Escape') {
-        if (self.measurement || (self.drag && self.drag.mode === 'measure')) {
+        if (self.measurement || (self.drag && self.drag.mode === 'measure') || self._pendingCreate) {
           self.measurement = null; // Esc — отмена measure
           self.drag = null;
+          if (self._pendingCreate) {
+            self._pendingCreate = null;
+            self._discardGhost();
+          }
         }
         self.selectedId = null; self._fire();
       }
@@ -513,6 +603,7 @@ export class DrawingsManager {
           drawing: hit, pointIndex: pi,
           startX: p.x, startY: p.y,
           orig: hit.points.map((pt) => ({ time: pt.time, price: pt.price })),
+          origShape: this._cloneShape(hit),
         };
         this._fire(); this.onChanged();
       } else if (this.selectedId) {
@@ -534,17 +625,32 @@ export class DrawingsManager {
     e.stopPropagation(); e.preventDefault();
     const snap = this._snap(p.x, p.y);
     if (!snap) return;
-    const draft = {
-      id: 'draft_' + Date.now().toString(36),
-      type: this.tool,
-      points: [snap],
-      color: this.color,
-      label: '',
-      created_by: 'user',
-    };
+
+    let draft;
+    if (this._pendingCreate && this._pendingCreate.type === this.tool) {
+      // Продолжаем многоточечный инструмент: следующий клик = следующая точка.
+      draft = this._pendingCreate;
+      this._pendingCreate = null;
+      draft.points.push(snap);
+      if (draft._preview) delete draft._preview;
+      if (!this._draftPrim) {
+        this._draftPrim = new Primitive(this, draft);
+        this.series.attachPrimitive(this._draftPrim);
+      }
+      this._fire();
+    } else {
+      draft = {
+        id: 'draft_' + Date.now().toString(36),
+        type: this.tool,
+        points: [snap],
+        color: this.color,
+        label: '',
+        created_by: 'user',
+      };
+      this._draftPrim = new Primitive(this, draft);
+      this.series.attachPrimitive(this._draftPrim);
+    }
     this.drag = { mode: 'create', drawing: draft };
-    this._draftPrim = new Primitive(this, draft);
-    this.series.attachPrimitive(this._draftPrim);
   }
 
   _onMove(e) {
@@ -566,6 +672,8 @@ export class DrawingsManager {
         const last = d.points[d.points.length - 1];
         const q = last ? this.toPx(last.time, last.price) : null;
         if (!q || Math.hypot(q.x - p.x, q.y - p.y) > 2) d.points.push(snap);
+      } else if (this._isMultiClick(d.type)) {
+        d._preview = snap; // живое превью следующего клика (channel/position)
       } else {
         if (d.points.length < 2) d.points.push(snap);
         else d.points[1] = snap;
@@ -581,13 +689,13 @@ export class DrawingsManager {
     }
 
     if (dg.mode === 'move') {
-      const arr = this._times();
-      if (!arr) return;
-      const t0 = arr[0].time;
-      const t1 = arr[arr.length - 1].time;
-      const tspan = Math.max(1, t1 - t0);
-      const xspan = Math.max(1, this.container.clientWidth);
-      const dxT = ((p.x - dg.startX) / xspan) * tspan;
+      const tA = this._xToTime(dg.startX);
+      const tB = this._xToTime(p.x);
+      let dxT = 0;
+      if (tA != null && tB != null) {
+        dxT = tB - tA;
+        if (!Number.isFinite(dxT)) dxT = 0;
+      }
       const p0 = this.series.coordinateToPrice(dg.startY);
       const p1 = this.series.coordinateToPrice(p.y);
       const dyPrice = (p1 != null && p0 != null) ? (p1 - p0) : 0;
@@ -595,6 +703,11 @@ export class DrawingsManager {
         time: this._nearestTime(pt.time + dxT),
         price: pt.price + dyPrice,
       }));
+      console.log('[drag] TEMP-DIAG', {
+        startX: dg.startX, currentX: p.x, dxPx: p.x - dg.startX, tA, tB, dxT,
+        pointBefore: { ...dg.orig[0] },
+        pointAfter: { ...dg.drawing.points[0] },
+      });
       this._fire();
     }
   }
@@ -611,15 +724,32 @@ export class DrawingsManager {
 
     if (dg.mode === 'create') {
       const d = dg.drawing;
+      const minPts = this._minPoints(d.type);
+      if (d.type === 'pen' && d.points.length < 2) { this._discardGhost(); return; }
+      if (d.points.length < minPts) {
+        if (this._isMultiClick(d.type)) {
+          // Ждём следующий клик — примитив остаётся на графике.
+          this._pendingCreate = d;
+          if (d._preview) delete d._preview;
+          this._fire();
+        } else {
+          this._discardGhost();
+        }
+        return;
+      }
       this._discardGhost();
-      if (d.type === 'pen' && d.points.length < 2) return;
-      if (d.points.length < this._minPoints(d.type)) return;
       delete d.id;
       d.id = 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       d.symbol = this.symbol;
       d.timeframe = this.timeframe;
+      if (d.type === 'arrow' && d.points[0]) {
+        d.points[0].dir = arrow.dirFor(d, this._candleAt(d.points[0].time));
+      }
       this.drawings.push(d);
       this._attach(d);
+      if (d.type === 'arrow') this._syncMarkers();
+      historyPush({ type: 'create', before: null, after: this._cloneShape(d), id: d.id });
+      this._updateHistoryUI();
       this._fire(); this.onChanged();
       this._save(d);
       this.setTool('cursor');
@@ -630,7 +760,20 @@ export class DrawingsManager {
     }
 
     if (dg.mode === 'point' || dg.mode === 'move') {
-      this._update(dg.drawing);
+      const d = dg.drawing;
+      if (d.type === 'arrow' && d.points[0]) {
+        d.points[0].dir = arrow.dirFor(d, this._candleAt(d.points[0].time));
+      }
+      const before = dg.origShape || this._cloneShape(d);
+      const after = this._cloneShape(d);
+      if (JSON.stringify(before.points) !== JSON.stringify(after.points)) {
+        historyPush({ type: 'update', before, after, id: d.id });
+        this._updateHistoryUI();
+        this._update(d);
+      }
+      this._syncMarkers();
+      this._fire();
+      this.onChanged();
     }
   }
 
@@ -642,7 +785,7 @@ export class DrawingsManager {
   }
 
   _nearestKnot(d, px, py) {
-    let bi = -1, bd = 10;
+    let bi = -1, bd = 16;
     (d.points || []).forEach((p, i) => {
       const q = this.toPx(p.time, p.price);
       if (!q) return;
@@ -698,6 +841,13 @@ export class DrawingsManager {
         return best;
       }
       case 'text': return Math.hypot(px - pts[0].x, py - pts[0].y);
+      case 'hray': return hray.hitDist(pts, px, py);
+      case 'vline': return vline.hitDist(pts, px, py);
+      case 'channel': return channel.hitDist(pts, px, py);
+      case 'position': return position.hitDist(pts, px, py);
+      case 'long_position': return position.hitDist(pts, px, py);
+      case 'short_position': return position.hitDist(pts, px, py);
+      case 'arrow': return arrow.hitDist(pts, px, py);
       default: return Infinity;
     }
   }
@@ -724,28 +874,146 @@ export class DrawingsManager {
     const self = this;
     const d = this.drawings.find(function(x) { return x.id === self.selectedId; });
     if (!d) return;
+    const before = this._cloneShape(d);
     fetch('/api/drawings/' + encodeURIComponent(d.id), { method: 'DELETE' })
       .then(function() {
         self._detach(d.id);
         self.drawings = self.drawings.filter(function(x) { return x.id !== d.id; });
         self.selectedId = null;
+        historyPush({ type: 'delete', before: before, after: null, id: d.id });
+        self._updateHistoryUI();
+        self._syncMarkers();
         self._fire(); self.onChanged();
       }).catch(function() {});
   }
 
   clearAll() {
     const self = this;
+    const before = this.drawings.map((d) => this._cloneShape(d));
     fetch('/api/drawings', { method: 'DELETE' })
-      .then(function() { self.selectedId = null; self.refresh([]); })
-      .catch(function() {});
+      .then(function() {
+        self.selectedId = null;
+        historyPush({ type: 'clear', before: before, after: null });
+        self._updateHistoryUI();
+        self.refresh([]);
+      }).catch(function() {});
   }
   eraseAI() {
     const self = this;
+    const before = this.drawings.filter((d) => d.created_by === 'ai').map((d) => this._cloneShape(d));
     fetch('/api/drawings?created_by=ai', { method: 'DELETE' })
       .then(function(r) { return r.json(); })
-      .then(function(data) { self.refresh(data.drawings || []); })
+      .then(function(data) {
+        historyPush({ type: 'clear', before: before, after: null });
+        self._updateHistoryUI();
+        self.refresh(data.drawings || []);
+      })
       .catch(function() { self.loadFromServer(self.symbol, self.timeframe); });
   }
+  canUndo() { return historyCanUndo(); }
+  canRedo() { return historyCanRedo(); }
+
+  undo() {
+    return historyUndo((action, dir) => this._applyHistory(action, dir));
+  }
+  redo() {
+    return historyRedo((action, dir) => this._applyHistory(action, dir));
+  }
+
+  _applyHistory(action, dir) {
+    const undo = dir === 'undo';
+    switch (action.type) {
+      case 'create':
+        if (undo) this._removeShapeById(action.id);
+        else this._upsertShape(this._cloneShape(action.after));
+        break;
+      case 'delete':
+        if (undo) this._upsertShape(this._cloneShape(action.before));
+        else this._removeShapeById(action.id);
+        break;
+      case 'update':
+        this._upsertShape(this._cloneShape(undo ? action.before : action.after));
+        break;
+      case 'clear':
+        if (undo) this._replaceAll((action.before || []).map((d) => this._cloneShape(d)));
+        else this._replaceAll([]);
+        break;
+      default:
+        return;
+    }
+    this._persistHistory(action, dir);
+    if (this.selectedId && !this.drawings.some((d) => d.id === this.selectedId)) {
+      this.selectedId = null;
+    }
+    this._syncMarkers();
+    this._fire();
+    this.onChanged();
+    this._updateHistoryUI();
+  }
+
+  _persistHistory(action, dir) {
+    const undo = dir === 'undo';
+    switch (action.type) {
+      case 'create':
+        if (undo) this._apiDelete(action.id);
+        else this._apiUpsert(action.after);
+        break;
+      case 'delete':
+        if (undo) this._apiUpsert(action.before);
+        else this._apiDelete(action.id);
+        break;
+      case 'update':
+        this._apiUpdate(undo ? action.before : action.after);
+        break;
+      case 'clear':
+        (action.before || []).forEach((d) => {
+          if (undo) this._apiUpsert(d);
+          else this._apiDelete(d.id);
+        });
+        break;
+    }
+  }
+
+  _upsertShape(sh) {
+    const i = this.drawings.findIndex((d2) => d2.id === sh.id);
+    if (i >= 0) this.drawings[i] = sh;
+    else this.drawings.push(sh);
+    this._detach(sh.id);
+    this._attach(sh);
+    if (sh.type === 'arrow') this._syncMarkers();
+  }
+  _removeShapeById(id) {
+    const i = this.drawings.findIndex((d2) => d2.id === id);
+    if (i < 0) return;
+    this.drawings.splice(i, 1);
+    this._detach(id);
+    this._syncMarkers();
+  }
+  _replaceAll(list) {
+    this._teardown();
+    this.drawings = list;
+    for (const d of this.drawings) this._attach(d);
+    this._syncMarkers();
+  }
+
+  _apiUpsert(sh) {
+    fetch('/api/drawings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ drawing: sh }),
+    }).catch(function() {});
+  }
+  _apiDelete(id) {
+    fetch('/api/drawings/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function() {});
+  }
+  _apiUpdate(sh) {
+    fetch('/api/drawings/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ drawing: sh }),
+    }).catch(function() {});
+  }
+
   exportJSON() {
     const blob = new Blob([JSON.stringify({ version: 1, drawings: this.drawings }, null, 2)],
       { type: 'application/json' });

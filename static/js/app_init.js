@@ -166,9 +166,18 @@ export function initDrawingsManager() {
     chart, series: candleSeries, container,
     candlesRef: () => state.activeCandles,
     onChanged: updateAiDrawingsUI,
+    onHistoryChange: syncHistoryButtons,
     symbol: state.symbol, timeframe: state.timeframe,
   });
   state.dm = dm;
+  syncHistoryButtons();
+}
+
+export function syncHistoryButtons() {
+  const u = $('undo-btn');
+  const r = $('redo-btn');
+  if (u) u.disabled = !(state.dm && state.dm.canUndo());
+  if (r) r.disabled = !(state.dm && state.dm.canRedo());
 }
 
 export function initBacktestRenderer() {
@@ -389,6 +398,10 @@ export function initUI() {
   if (clr) clr.addEventListener('click', () => {
     if (state.dm && confirmedDanger('Удалить все рисунки?')) state.dm.clearAll();
   });
+  const uBtn = $('undo-btn');
+  const rBtn = $('redo-btn');
+  if (uBtn) uBtn.addEventListener('click', () => { if (state.dm) state.dm.undo(); });
+  if (rBtn) rBtn.addEventListener('click', () => { if (state.dm) state.dm.redo(); });
   const eraseAi = $('erase-ai-btn');
   if (eraseAi) eraseAi.addEventListener('click', () => {
     if (state.dm && confirmedDanger('Стереть рисунки AI?')) state.dm.eraseAI();

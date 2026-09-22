@@ -332,6 +332,37 @@ SCAN_DEFAULT_TIMEFRAMES = ["15m", "1H"]
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "data.db"
+# ------------------------------------------------------- CBR-база (Этап 1+)
+# Хранилище снимков рынка для case-based reasoning (app_pkg.cbr). Отдельная
+# БД от основной (data.db), чтобы тяжёлый backfill не блокировал торговлю.
+CBR_DB_PATH = DATA_DIR / "cbr.db"
+# Гейт записи снимков из pipeline (хуки ai_backtest/market_snapshot).
+# False — CBR накапливается только оркестратором scripts/cbr_build.py.
+CBR_ENABLED = os.getenv("CBR_ENABLED", "0") == "1"
+# Параметры triple-barrier backfill (конвенция labels.py: SL-приоритет).
+CBR_BACKFILL_HORIZON = 20
+CBR_BACKFILL_ATR_K = 1.5
+# Параметры query API для LLM (token-diet, app_pkg.cbr.query_api).
+# 180d — окно соседей k-NN Этапа 2 (было 90, переопределено по ТЗ).
+CBR_QUERY_WINDOW_DAYS = 180
+CBR_QUERY_MIN_SAMPLES = 10
+# ------------------------------------------------------ CBR (Этап 2: FAISS+k-NN)
+# Артефакты индекса и статистики нормализации (строятся scripts/cbr_build.py).
+CBR_FAISS_INDEX_PATH = DATA_DIR / "cbr.faiss"
+CBR_NORMALIZE_STATS_PATH = DATA_DIR / "cbr_norm_stats.pkl"
+# Гейт Этапа 2 в pipeline: смешивание verdict Charon+CBR в _flush_pending.
+# False — k-NN живёт только в автономных сценариях (бэктест/скрипты);
+# True включается проверка запросом и DEFAULTS КАК в бэктесте.
+CBR_STAGE2_ENABLED = os.getenv("CBR_STAGE2_ENABLED", "0") == "1"
+# Параметры k-NN (query_api.get_similar_summary).
+CBR_K_DEFAULT = 50
+CBR_MIN_DISTANCE = 2.0
+CBR_REGIME_MATCH = True
+# Пороги смешивания (blender.blend): n < MIN -> только Charon,
+# n > STRONG_SAMPLES и confidence > STRONG_CONF -> CBR доминирует.
+CBR_BLEND_MIN_SAMPLES = 10
+CBR_BLEND_STRONG_SAMPLES = 30
+CBR_BLEND_STRONG_CONF = 0.6
 # Конфигурационные файлы проекта (переопределяемые пользователем промпты).
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", str(BASE_DIR / "config"))).resolve()
 # Системный промпт «Псевдо-Харона»: редактируется во вкладке «🧠 Данные для
@@ -432,8 +463,8 @@ DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "120"))
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "2000"))
 
 # ------------------------------------------------------- Groq (fallback)
-# Резервный провайдер: включается ТОЛЬКО если DeepSeek вернул 401/403/404
-# (см. app_pkg/ai/llm.py). По умолчанию не используется.
+# Резервный провайдер ПОСЛЕ DeepSeek в цепочке по умолчанию (deepseek ->
+# qwen -> groq): включается только если предыдущие провайдеры недоступны.
 # OpenAI-совместимый API, заголовок Authorization: Bearer gsk_...
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or ""
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
@@ -483,13 +514,14 @@ OPENROUTER_TIMEOUT = GROQ_TIMEOUT
 OPENROUTER_MAX_TOKENS = GROQ_MAX_TOKENS
 
 # ------------------------------------------------ fallback-цепочка провайдеров
-# Порядок опроса в app_pkg/ai/llm.py: qwen -> groq -> deepseek. Первый
-# провайдер с непустым ключом используется; при 401/403/404 или сетевом
-# сбое запрос уходит к следующему. Переопределяется env LLM_PROVIDER_ORDER
-# (имена через запятую). Неизвестные имена пропускаются с warning.
+# Порядок опроса в app_pkg/ai/llm.py: deepseek (aitunnel.ru) -> qwen -> groq.
+# Провайдер с непустым ключом опрашивается первым; при 401/403/404 или
+# сетевом сбое запрос уходит к следующему. Переопределяется env
+# LLM_PROVIDER_ORDER (имена через запятую). Неизвестные имена пропускаются
+# с warning.
 LLM_PROVIDER_ORDER = [
     p.strip() for p in os.getenv("LLM_PROVIDER_ORDER",
-                                 "qwen,groq,deepseek").split(",")
+                                 "deepseek,qwen,groq").split(",")
     if p.strip()
 ]
 

@@ -60,6 +60,16 @@
   <button class="tool-btn" data-tool="pen" title="Кисть">✎</button>
   <button class="tool-btn" data-tool="text" title="Текст">T</button>
   <span class="sep"></span>
+  <button class="tool-btn" data-tool="hray" title="Горизонтальный луч">→</button>
+  <button class="tool-btn" data-tool="vline" title="Вертикальная линия">↓</button>
+  <button class="tool-btn" data-tool="channel" title="Канал">╱╱</button>
+  <button class="tool-btn" data-tool="long_position" title="Long позиция: вход → TP → SL">Long</button>
+  <button class="tool-btn" data-tool="short_position" title="Short позиция: вход → TP → SL">Short</button>
+  <button class="tool-btn" data-tool="arrow" title="Стрелка">↑↓</button>
+  <span class="sep"></span>
+  <button class="btn" id="undo-btn" title="Отменить (Ctrl+Z)">↶</button>
+  <button class="btn" id="redo-btn" title="Повторить (Ctrl+Shift+Z)">↷</button>
+  <span class="sep"></span>
   <button class="tool-btn" id="measure-btn" title="Измерить">📏</button>
   <button class="tool-btn" id="magnet-btn" title="Магнит">🧲</button>
   <span class="sep"></span>
@@ -237,6 +247,12 @@
         <input type="text" id="aibt-model" placeholder="(по умолчанию)">
         <div class="bt-run-row">
           <button id="aibt-run-btn" class="btn ai-btn">▶️ Запустить</button>
+        </div>
+        <div class="aibt-settings-row">
+          <label class="aibt-tpsl-toggle" for="aibt-tpsl-toggle">
+            <input type="checkbox" id="aibt-tpsl-toggle" checked>
+            Тейк/стоп по уровням (TP/SL)
+          </label>
         </div>
       </div>
       <div class="aibt-progress" id="aibt-progress" style="display:none">

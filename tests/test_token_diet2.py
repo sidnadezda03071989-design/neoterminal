@@ -544,6 +544,7 @@ def test_levels_for_slice_uses_compact_snapshot_and_tg(monkeypatch):
     monkeypatch.setattr(aibt, "charon_prompt_text", lambda: "RULES")
     monkeypatch.setattr(aibt, "compact_snapshot",
                         lambda *a, **k: {"t": {"rsi": 25.0, "close": 100.0}})
+    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
 
     levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H")
 

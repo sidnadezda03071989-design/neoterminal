@@ -23,6 +23,9 @@
   --accent:       #58a6ff;   /* активные ссылки, фокус */
   --accent-soft:  rgba(88, 166, 255, 0.15);  /* подсветка */
 
+  /* Drawings */
+  --drawing-fill: rgba(88, 166, 255, 0.18);  /* заливка канала */
+
   /* AI */
   --ai:           #a371f7;
   --ai-glow:      rgba(163, 113, 247, 0.25);
@@ -94,6 +97,7 @@ select:focus, input:focus { border-color:var(--accent);
               border-color var(--transition),
               box-shadow var(--transition); }
 .btn:hover { background:var(--bg-hover); }
+.btn:disabled { opacity: .45; cursor: default; }
 .btn.panel-active { background: var(--accent-soft); color: var(--accent); }
 .ai-btn { background: rgba(163, 113, 247, 0.15);
   border: 1px solid var(--ai);
@@ -503,6 +507,17 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 .scan-mode-toggle { display: flex; align-items: center; gap: 4px;
   font-size: 12px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .scan-mode-toggle input { cursor: pointer; }
+/* Настройка AI Backtest «TP/SL по уровням». */
+.aibt-settings-row { display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; }
+.aibt-tpsl-toggle { display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--text-muted); cursor: pointer; }
+.aibt-tpsl-toggle input { cursor: pointer; }
+/* Сводка TP/SL по уровням в списке панели */
+.aibt-tpsl-summary { margin-top: 8px; padding: 6px 8px; font-size: 12px;
+  font-weight: 600; color: var(--text); background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(255, 255, 255, 0.25); border-radius: 6px;
+  white-space: nowrap; }
 .scan-strategies-count { margin-left: auto; font-size: 11px;
   color: var(--text-muted); }
 .scan-checks-strategies { grid-column: 1 / -1; }

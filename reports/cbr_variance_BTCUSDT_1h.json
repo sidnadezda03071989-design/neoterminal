@@ -1,0 +1,72 @@
+{
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "timeframe_canonical": "1H",
+  "n": 16681,
+  "feature_dim": 44,
+  "outcome_balance": {
+    "-1": 5897,
+    "0": 4990,
+    "1": 5794
+  },
+  "seed": 42,
+  "verdict": "GO",
+  "fail_reasons": [],
+  "metrics": {
+    "low_variance": {
+      "key": "low_variance",
+      "value": 4,
+      "total": 44,
+      "status": "OK"
+    },
+    "pairwise_ratio": {
+      "key": "pairwise_ratio",
+      "value": 0.1434802121972684,
+      "status": "WARN",
+      "n_samples": 1000,
+      "min_dist": 1.2025365619326231,
+      "median_dist": 8.381201445947662,
+      "mean_dist": 8.821162895865871,
+      "max_dist": 28.619498710382274
+    },
+    "pca": {
+      "key": "pca",
+      "value": 12,
+      "status": "OK",
+      "n_components": 44
+    },
+    "knn_up_std": {
+      "key": "knn_up_std",
+      "value": 0.19859987411879193,
+      "status": "OK",
+      "k": 50,
+      "n_queries": 200,
+      "per_query_up_mean": 0.2547
+    },
+    "regime_winrate": {
+      "key": "regime_winrate",
+      "value": 0.2251130145134428,
+      "status": "OK",
+      "by_regime": {
+        "flat": {
+          "n": 9687,
+          "up_rate": 0.3574894188087127
+        },
+        "reversal": {
+          "n": 90,
+          "up_rate": 0.5222222222222223
+        },
+        "trend_down": {
+          "n": 3736,
+          "up_rate": 0.29710920770877947
+        },
+        "trend_up": {
+          "n": 3168,
+          "up_rate": 0.37058080808080807
+        }
+      },
+      "n_regimes": 4
+    }
+  },
+  "checked_at": "2026-09-22T05:50:43.862283+00:00"
+}

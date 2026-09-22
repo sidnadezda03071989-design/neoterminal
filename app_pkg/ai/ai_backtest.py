@@ -33,6 +33,7 @@ from app_pkg.ai.context import build_multi_tf_context
 from app_pkg.ai.llm import _llm_request, _extract_json
 from app_pkg.ai.prompts import charon_prompt_text
 from app_pkg.ai.signal_filter import filter_levels, filter_verdict
+from app_pkg.ai.structure_levels import structure_levels_from_df
 from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.data.market_snapshot import compact_snapshot
 from app_pkg.ws import _ws_push
@@ -116,6 +117,18 @@ def _clamp_prob(raw):
     return min(1.0, max(0.0, prob))
 
 
+def _dict_prob(item):
+    """Вероятность из dict-элемента: probability | prob (модель иногда пишет
+    сокращённо) | None."""
+    if not isinstance(item, dict):
+        return None
+    if "probability" in item:
+        return item.get("probability")
+    if "prob" in item:
+        return item.get("prob")
+    return None
+
+
 def _dedupe_levels(items):
     """Убрать уровни с одинаковой ценой в одной стороне: берём max(prob).
 
@@ -195,7 +208,7 @@ def parse_probability_levels(raw_text, current_price=None):
         entry = {
             "side": side,
             "price": round(price, 8),
-            "probability": round(_clamp_prob(item.get("probability")), 4),
+            "probability": round(_clamp_prob(_dict_prob(item)), 4),
         }
         if cur:
             entry["diff"] = round(price - cur, 8)
@@ -276,6 +289,60 @@ def build_levels_context(symbol, timeframe, upto_sec=None, current_price=None):
     return "\n".join(parts)
 
 
+def _structure_levels(symbol, timeframe, upto_sec, current_price):
+    """Структурные уровни из свечей (свинги/пивоты/VWAP/ATR-якоря).
+
+    Детерминированная база уровней «по логике»: при T=0 и ~120 токенах LLM
+    рисует формульную сетку (равный шаг ~ATR с линейно убывающим шансом),
+    одинаковую для каждого прогона. Цены берём из реальной структуры рынка,
+    а модель используем лишь для уточнения вероятностей совпавших уровней.
+    Любой сбой здесь не роняет бэктест: возвращаем [] и живём по LLM-уровням.
+    """
+    try:
+        if upto_sec is not None:
+            df = get_replay_df(symbol, timeframe, to_sec=float(upto_sec),
+                               limit=config.DEFAULT_LIMIT)
+            if df is not None and not df.empty:
+                df = df[df["timestamp"] <= pd.to_datetime(
+                    int(upto_sec), unit="s", utc=True)]
+        else:
+            df = get_series_df(symbol, timeframe, limit=config.DEFAULT_LIMIT)
+        if df is None or df.empty:
+            return []
+        return structure_levels_from_df(df, current_price)
+    except Exception:  # noqa: BLE001
+        log.exception("ai_backtest structure levels failed")
+        return []
+
+
+def _blend_levels(struct, llm, current_price):
+    """Структурная база; LLM лишь подтверждает уровни, что совпали по цене.
+
+    Цены всегда рисуются из реальной структуры рынка (свинги/пивоты/VWAP):
+    равномерные сетки LLM (равный шаг ~ATR) не попадают на график. Уровень
+    LLM «подтверждает» структурный, если его цена близка (толерантность
+    ~0.3% от цены) к структурному той же стороны — вероятность такого уровня
+    чуть повышается (+0.02, кап 0.5, порядок ближний->дальний сохраняется).
+    Всё остальное LLM отдаётся на откуп детерминированному filter_levels.
+    """
+    tol = abs(current_price) * 0.003 if current_price else 0.0
+    base = [dict(sl) for sl in struct]
+    for lv in llm:
+        match = None
+        for sl in base:
+            if sl["side"] == lv["side"] and abs(sl["price"] - lv["price"]) <= tol:
+                match = sl
+                break
+        if match is None:
+            continue
+        match["probability"] = round(min(0.5, match["probability"] + 0.02), 4)
+    ups = sorted((x for x in base if x["side"] == "UP"),
+                 key=lambda x: x["price"])
+    downs = sorted((x for x in base if x["side"] == "DOWN"),
+                   key=lambda x: -x["price"])
+    return (ups[:PROB_LEVELS_MAX] + downs[:PROB_LEVELS_MAX])
+
+
 def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
                      current_price=None):
     """Один запрос к LLM -> (уровни, цена среза, текст ошибки).
@@ -321,14 +388,80 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
     if not raw:
         return [], current_price, ("LLM не вернула ответ (все провайдеры "
                                    "цепочки недоступны — проверьте ключи/лимиты)")
+    struct = _structure_levels(symbol, timeframe, upto_sec, current_price)
+    ts = upto_sec if upto_sec is not None else int(utils.now_sec())
+    source = "backtest" if upto_sec is not None else "live"
     levels = parse_probability_levels(raw, current_price)
-    if not levels:
+    if levels is None:
+        # Валидный вердикт без выразимых уровней — обычно sig=F / плоский
+        # рынок {"pu":0,"pd":0,"pf":0,"sig":"F","tg":[]}: это НЕ ошибка LLM,
+        # а честный ответ «сделки нет». Если структура свечей есть — рисуем
+        # уровни из логики рынка вместо пустоты; иначе пусто без error.
+        # Мусор/не-JSON/ответ без sig по-прежнему даёт диагностику.
+        verdict = parse_verdict(raw)
+        if verdict is not None:
+            log.info("ai_backtest flat verdict %s/%s: %s",
+                     symbol, timeframe, verdict)
+            chosen = struct if struct else []
+            if chosen:
+                chosen = filter_levels(chosen, snapshot)
+            _cbr_store_snapshot(
+                symbol, timeframe, ts, snapshot, verdict=verdict,
+                levels=chosen, price=current_price, source=source)
+            return chosen, current_price, None
         return [], current_price, ("LLM вернула ответ без валидных уровней: "
                                    + str(raw)[:200])
+    if struct:
+        # Рисуем структурные цены, вероятности LLM — только для совпавших.
+        levels = _blend_levels(struct, levels, current_price)
     # Детерминированный пост-фильтр: MTF/ADX/VWAP+OBV правила поверх
     # вероятностей уровней (тот же compact_snapshot, что ушёл в промпт).
     levels = filter_levels(levels, snapshot)
+    _cbr_store_snapshot(
+        symbol, timeframe, ts, snapshot, levels=levels, price=current_price,
+        source=source)
     return levels, current_price, None
+
+
+def _cbr_store_snapshot(symbol, timeframe, ts, snap, verdict=None, levels=None,
+                        price=None, source="backtest"):
+    """Хук CBR: записать снимок в БД (гейт config.CBR_ENABLED, ошибки глушим).
+
+    Снимок не должен ронять бэктест: любая ошибка CBR -> warning + return.
+    levels -> [{delta_pct, prob}] (delta — % от текущей цены).
+    """
+    if not config.CBR_ENABLED or not isinstance(snap, dict) or not snap:
+        return
+    try:
+        from app_pkg.cbr.store import get_cbr_conn, store_snapshot
+        sn = dict(snap)
+        sn.setdefault("symbol", symbol)
+        sn.setdefault("timeframe", timeframe)
+        if "ts" not in sn:
+            sn["ts"] = int(ts)
+        sn["source"] = source
+        if verdict:
+            sn["verdict"] = verdict.get("sig")
+        if levels:
+            cur = price if price is not None else utils._clean(
+                (snap.get("t") or {}).get("close"))
+            items = []
+            for lv in levels:
+                lprice = utils._clean(lv.get("price"))
+                if lprice is None:
+                    continue
+                if cur:
+                    delta = round((lprice - cur) / cur * 100.0, 4)
+                else:
+                    delta = round(lprice, 4)
+                items.append({"delta": delta,
+                              "prob": _clamp_prob(lv.get("probability"))})
+            sn["levels"] = items
+        if price is not None:
+            sn["entry_price"] = price
+        store_snapshot(get_cbr_conn(), sn)
+    except Exception as exc:  # noqa: BLE001 — CBR не должен валить бэктест
+        log.warning("cbr store failed: %s", exc)
 
 
 def _llm_error_hint(exc):
@@ -408,6 +541,11 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
         "elapsed_seconds": elapsed,
         "created_at": utils.now_iso(),
     }
+    if not levels and not error:
+        # Пусто без ошибки = валидный вердикт «рынок плоский». Не ошибка —
+        # поясняем нейтральной заметкой вместо красного ⚠.
+        result["notice"] = ("Уровней не найдено: рынок без явной сделки "
+                            "(сигнал FLAT) — уровни не рисуем")
     if levels:
         try:
             db.db_save_ai_backtest(
@@ -562,7 +700,7 @@ def _verdict_from_obj(obj):
         for item in raw_tg:
             if isinstance(item, dict):
                 price = utils._clean(item.get("price"))
-                prob = _clamp_prob(item.get("probability"))
+                prob = _clamp_prob(_dict_prob(item))
             elif isinstance(item, (list, tuple)) and len(item) >= 2:
                 price = utils._clean(item[0])
                 prob = _clamp_prob(item[1])
@@ -643,11 +781,73 @@ def _add_usage(totals, usage):
             continue
 
 
-def _flush_pending(pending, results, cache, totals, model, system):
+# Кэш артефактов Этапа 2 (индекс + статистика нормализации) в рамках процесса.
+_CBR_KNN_ASSETS = {"index": None, "stats": None}
+
+
+def _cbr_knn_assets():
+    """(index, stats) — ленивая загрузка артефактов CBR Этапа 2 (или None,None)."""
+    if _CBR_KNN_ASSETS["index"] is not None:
+        return _CBR_KNN_ASSETS["index"], _CBR_KNN_ASSETS["stats"]
+    from app_pkg.cbr import index as cbr_index
+    from app_pkg.cbr import normalize as cbr_norm
+    index = cbr_index.load_index(str(config.CBR_FAISS_INDEX_PATH))
+    stats = cbr_norm.load_stats(str(config.CBR_NORMALIZE_STATS_PATH))
+    _CBR_KNN_ASSETS["index"] = index
+    _CBR_KNN_ASSETS["stats"] = stats
+    return index, stats
+
+
+def _cbr_blend_verdict(verdict, snap, symbol, timeframe, ts=None):
+    """Смешивание Charon + CBR (Этап 2): добавляет final_pu/final_pd/cbr.
+
+    Гейт config.CBR_STAGE2_ENABLED (default False). Любая ошибка (нет
+    артефактов, БД, данных) -> вердикт без изменений: хук не должен ронять
+    бэктест. ts переопределяется на бар (иначе live => 'сейчас').
+    """
+    if not config.CBR_STAGE2_ENABLED or not isinstance(verdict, dict):
+        return verdict
+    try:
+        index, stats = _cbr_knn_assets()
+        if index is None or not (isinstance(stats, dict) and "mean" in stats):
+            return verdict
+        from app_pkg.cbr import blender, query_api
+        from app_pkg.cbr.store import get_cbr_conn
+        snap2 = dict(snap)
+        if ts is not None:
+            snap2["ts"] = int(ts)
+        cbr = query_api.get_similar_summary(
+            get_cbr_conn(), index, snap2, symbol, timeframe,
+            bar_ts=int(ts) if ts is not None else None,
+            stats=stats)
+        if not isinstance(cbr, dict) or cbr.get("insufficient_data"):
+            return verdict  # CBR без данных — остаётся чистый Charon
+        out = dict(verdict)
+        b = blender.blend(out.get("pu", 0.0), out.get("pd", 0.0), cbr,
+                          cbr.get("regime"))
+        out["final_pu"] = b["final_pu"]
+        out["final_pd"] = b["final_pd"]
+        out["cbr"] = {
+            "n": cbr.get("n"), "confidence": cbr.get("confidence"),
+            "winrate_up": cbr.get("winrate_up"),
+            "winrate_down": cbr.get("winrate_down"),
+            "regime": cbr.get("regime"),
+            "w1": b["w1"], "w2": b["w2"], "source": b["source"],
+        }
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cbr blend skipped: %s", exc)
+        return verdict
+
+
+def _flush_pending(pending, results, cache, totals, model, system,
+                   symbol=None, timeframe=None):
     """Отправить накопленные снимки: batch>1 — пачкой, иначе по одному.
 
     При невалидном/неполном массиве пакет разбирается по одному (fallback).
-    Заполняет results/cache и копит totals.llm_calls + tokens.
+    Заполняет results/cache и копит totals.llm_calls + tokens. Если заданы
+    symbol/timeframe и включён CBR-гейт — каждый размеченный снимок
+    записывается в CBR-базу (вердикт-хук).
     """
     if not pending:
         return
@@ -662,8 +862,12 @@ def _flush_pending(pending, results, cache, totals, model, system):
         if verdicts is not None and all(verdicts):
             for (idx, ts, snap, key), verdict in zip(pending, verdicts):
                 filtered = filter_verdict(verdict, snap, generated_at=ts)
+                filtered = _cbr_blend_verdict(filtered, snap, symbol,
+                                              timeframe, ts=ts)
                 results[idx] = dict(filtered)
                 cache[key] = dict(filtered)
+                _cbr_store_snapshot(symbol, timeframe, ts, snap,
+                                    verdict=filtered)
             return
     for idx, ts, snap, key in pending:
         usage = {}
@@ -674,8 +878,11 @@ def _flush_pending(pending, results, cache, totals, model, system):
         verdict = parse_verdict(raw)
         if verdict is not None:
             filtered = filter_verdict(verdict, snap, generated_at=ts)
+            filtered = _cbr_blend_verdict(filtered, snap, symbol,
+                                          timeframe, ts=ts)
             results[idx] = filtered
             cache[key] = dict(filtered)
+            _cbr_store_snapshot(symbol, timeframe, ts, snap, verdict=filtered)
 
 
 def _carry_forward(prev_verdict):
@@ -733,7 +940,8 @@ def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
             last_verdict = _carry_forward(last_verdict)
             results[idx] = last_verdict
         if len(pending) >= batch:
-            _flush_pending(pending, results, cache, totals, model, system)
+            _flush_pending(pending, results, cache, totals, model, system,
+                           symbol=symbol, timeframe=timeframe)
             for pidx, _pts, psnap, _pk in pending:
                 if results.get(pidx):
                     last_verdict = results[pidx]
@@ -742,7 +950,8 @@ def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
             pending = []
         prev = snap
     if pending:
-        _flush_pending(pending, results, cache, totals, model, system)
+        _flush_pending(pending, results, cache, totals, model, system,
+                       symbol=symbol, timeframe=timeframe)
         for pidx, _pts, psnap, _pk in pending:
             if results.get(pidx):
                 last_verdict = results[pidx]

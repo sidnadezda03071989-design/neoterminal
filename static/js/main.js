@@ -16,6 +16,9 @@ window.__toggleCmdPalette = toggleCommandPalette;
 window.__alertToast = showAlertToast;
 state.chart = chart;
 
+window.__undo = () => { if (state.dm) state.dm.undo(); };
+window.__redo = () => { if (state.dm) state.dm.redo(); };
+
 document.addEventListener('DOMContentLoaded', () => {
   const saved = loadAppState();
   if (saved) {

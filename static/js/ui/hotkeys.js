@@ -6,6 +6,13 @@ export function bindHotkeys() {
       if (e.key === 'k' || e.key === 'K') {
         e.preventDefault();
         if (window.__toggleCmdPalette) window.__toggleCmdPalette();
+      } else if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) { if (window.__redo) window.__redo(); }
+        else if (window.__undo) window.__undo();
+      } else if (e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        if (window.__redo) window.__redo();
       }
       return;
     }
@@ -15,7 +22,10 @@ export function bindHotkeys() {
       case 'r': if (window.__setTool) window.__setTool('rectangle'); break;
       case 'f': if (window.__setTool) window.__setTool('fib'); break;
       case 'p': if (window.__setTool) window.__setTool('pen'); break;
-      case 'v': if (window.__setTool) window.__setTool('cursor'); break;
+      case 'v':
+        if (e.shiftKey) { if (window.__setTool) window.__setTool('vline'); }
+        else if (window.__setTool) window.__setTool('cursor');
+        break;
       case 'escape': if (window.__setTool) window.__setTool('cursor'); break;
     }
   });

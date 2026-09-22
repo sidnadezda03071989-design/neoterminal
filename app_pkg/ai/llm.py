@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Клиент LLM (OpenAI-совместимый API) для всего ИИ-стека.
 
-Fallback-цепочка из трёх провайдеров: Qwen (DashScope, QWEN_*) -> Groq
-(GROQ_*) -> DeepSeek через aitunnel.ru (DEEPSEEK_*). Порядок задаётся
+Fallback-цепочка из трёх провайдеров: DeepSeek через aitunnel.ru
+(DEEPSEEK_*) -> Qwen (DashScope, QWEN_*) -> Groq (GROQ_*). Порядок задаётся
 config.LLM_PROVIDER_ORDER (env LLM_PROVIDER_ORDER, по умолчанию
-"qwen,groq,deepseek"). Провайдер без ключа пропускается; при HTTP
+"deepseek,qwen,groq"). Провайдер без ключа пропускается; при HTTP
 401/403/404 или сетевом сбое запрос уходит к следующему.
 
 - _LLM_SESSION — глобальная requests.Session (keep-alive; старое имя
@@ -335,7 +335,7 @@ def _chain_providers(vision=False, api_key=None, base_url=None, model=None,
             "timeout": timeout or DEEPSEEK_TIMEOUT,
             "max_tokens": DEEPSEEK_MAX_TOKENS,
         }]
-    order = list(LLM_PROVIDER_ORDER) or ["qwen", "groq", "deepseek"]
+    order = list(LLM_PROVIDER_ORDER) or ["deepseek", "qwen", "groq"]
     if vision:
         order = ["qwen"] + [p for p in order if p != "qwen"]
     chain = []

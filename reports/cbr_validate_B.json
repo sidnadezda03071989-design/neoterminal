@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-09-22T06:44:48.421564+00:00",
+  "params": {
+    "symbol": "BTCUSDT",
+    "timeframe": "1H",
+    "db": "C:\\neoterminal\\data\\cbr.db",
+    "csv": "scripts\\charon_data_cache\\BTCUSDT_1h_700d.csv",
+    "K": 10,
+    "min_distance": 1.0,
+    "regime_match": true,
+    "window_days": 180,
+    "start_fraction": 0.0,
+    "seed": 42,
+    "fee_per_side": 0.0005,
+    "slippage": 0.0002,
+    "sharpe_ppy": 252.0
+  },
+  "sample": {
+    "n_trades": 9320,
+    "winrate": 0.7072,
+    "avg_pnl_pct": 0.9371,
+    "std_pnl_pct": 2.0659,
+    "sharpe_gross": 7.2,
+    "max_dd_pct": -57.2203,
+    "profit_factor": 3.897,
+    "avg_bars_held": 18.97
+  },
+  "checks": [
+    {
+      "id": "sample",
+      "title": "Sample size",
+      "status": "ok",
+      "n_trades": 9320,
+      "detail": "n=9320 сделок (200+: OK, 100-200: WARN, <100: FAIL)"
+    },
+    {
+      "id": "fees",
+      "title": "Sharpe after fees",
+      "status": "ok",
+      "sharpe_gross": 7.2,
+      "sharpe_net": 6.124,
+      "avg_fee_pp": 0.1401,
+      "detail": "gross=7.20 net=6.12 (fees 0.05% + slippage 0.02% на сторону)"
+    },
+    {
+      "id": "walk_forward",
+      "title": "Walk-forward (3 periods)",
+      "status": "ok",
+      "periods": [
+        {
+          "name": "P1",
+          "start_ts": 1729922400,
+          "end_ts": 1749938400,
+          "n": 3527,
+          "winrate": 0.6629,
+          "sharpe": 6.1215,
+          "sum_pnl_pct": 3083.1937
+        },
+        {
+          "name": "P2",
+          "start_ts": 1749938400,
+          "end_ts": 1769954400,
+          "n": 3297,
+          "winrate": 0.6391,
+          "sharpe": 5.3875,
+          "sum_pnl_pct": 1964.331
+        },
+        {
+          "name": "P3",
+          "start_ts": 1769954400,
+          "end_ts": 1789970400,
+          "n": 2496,
+          "winrate": 0.7023,
+          "sharpe": 7.1235,
+          "sum_pnl_pct": 2380.9023
+        }
+      ],
+      "detail": "P1: n=3527 sharpe=6.122 / P2: n=3297 sharpe=5.388 / P3: n=2496 sharpe=7.123"
+    },
+    {
+      "id": "oos",
+      "title": "Out-of-sample 70/30",
+      "status": "ok",
+      "train": {
+        "n": 7166,
+        "sharpe": 5.861
+      },
+      "test": {
+        "n": 2154,
+        "sharpe": 7.205
+      },
+      "ratio": 1.229,
+      "detail": "train=5.861 test=7.205 ratio=1.229"
+    },
+    {
+      "id": "shuffle",
+      "title": "Permutation (labels shuffled)",
+      "status": "ok",
+      "real_sharpe": 7.2,
+      "shuffled_sharpe": 0.13,
+      "shuffled_n": 7642,
+      "ratio": 55.474,
+      "detail": "real=7.200 shuffled=0.130 ratio=55.474"
+    }
+  ],
+  "verdict": {
+    "value": "GO",
+    "reason": "все пять проверок пройдены: сделок достаточно, edge держится после комиссий, по периодам и вне выборки, shuffle-тест подтверждает сигнал",
+    "recommendation": "использовать B (CBR-only) в проде: K=10, min_distance=1.0"
+  }
+}

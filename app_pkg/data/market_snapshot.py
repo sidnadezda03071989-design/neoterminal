@@ -1371,6 +1371,28 @@ def _compact_micro(raw):
     return out or None
 
 
+def _cbr_store_live_snapshot(symbol, timeframe, compact):
+    """Хук CBR: live-снимок в БД (гейт config.CBR_ENABLED; ошибки глушим).
+
+    Только для upto_sec=None (live): в реплее компакт-снимок строится для
+    каждого бара бэктеста, и там запись делает вердикт-хук ai_backtest.py.
+    ts берём по последней свече среза (реплей-безопасно), не по часам.
+    """
+    if not config.CBR_ENABLED or not isinstance(compact, dict) or not compact:
+        return
+    try:
+        from app_pkg.cbr.store import get_cbr_conn, store_snapshot
+        df = _slice_df(symbol, timeframe, None)
+        if df is None or df.empty:
+            return
+        store_snapshot(get_cbr_conn(), {
+            "symbol": symbol, "timeframe": timeframe,
+            "ts": _df_last_ts_sec(df), "source": "live", **compact,
+        })
+    except Exception as exc:  # noqa: BLE001 — CBR не должен ронять снимок
+        log.warning("cbr live store failed: %s", exc)
+
+
 def _mtf_compact(symbol, upto_sec=None):
     """Агрегаты по ТФ вместо сырых свечей: {tf: {tr, trend, rsi, adx}}.
 
@@ -1456,4 +1478,6 @@ def compact_snapshot(symbol, timeframe, upto_sec=None):
     mtf = _mtf_compact(symbol, upto_sec)
     if mtf:
         out["mtf"] = mtf
+    if upto_sec is None:
+        _cbr_store_live_snapshot(symbol, timeframe, out)
     return out

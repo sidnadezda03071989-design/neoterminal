@@ -28,6 +28,9 @@ const local = {
 
 const POLL_MS = 2000;
 
+// Настройка «TP/SL по уровням»: живёт в localStorage, чисто клиентская.
+const TP_SL_KEY = 'aibt_tpsl_enabled';
+
 /* ------------------------------------------------------- панель open/close */
 export function setAiProbZonesRenderer(chart, series, container) {
   // Якорь зон — полный ряд свечей (state.candles); в реплее вызывающий код
@@ -35,6 +38,7 @@ export function setAiProbZonesRenderer(chart, series, container) {
   const renderer = new AIProbZonesRenderer(
     chart, series, container, () => state.candles,
   );
+  renderer.enableTpsl = _tpslEnabled();
   state.aiProbRenderer = renderer;
   return renderer;
 }
@@ -45,12 +49,33 @@ export function openAiBacktest() {
   panel.style.display = 'block';
   _initFormDefaults();
   _syncModeHint();
+  _initTpslToggle();
 }
 
 export function closeAiBacktest() {
   const panel = $('ai-backtest-panel');
   if (panel) panel.style.display = 'none';
   _stopPoll();
+}
+
+/* Тумблер «TP/SL по уровням»: состояние из localStorage, смена перерисовывает
+   текущие зоны без повторного запроса к LLM. */
+function _tpslEnabled() {
+  const stored = localStorage.getItem(TP_SL_KEY);
+  return stored != null ? stored === '1' : true;
+}
+
+function _initTpslToggle() {
+  const t = $('aibt-tpsl-toggle');
+  if (!t) return;
+  if (!t.dataset.bound) {
+    t.dataset.bound = '1';
+    t.addEventListener('change', () => {
+      localStorage.setItem(TP_SL_KEY, t.checked ? '1' : '0');
+      if (state.aiProbRenderer) state.aiProbRenderer.setTpsl(t.checked);
+    });
+  }
+  if (t.checked !== _tpslEnabled()) t.checked = _tpslEnabled();
 }
 
 function _initFormDefaults() {
@@ -165,7 +190,6 @@ async function _finish(runId) {
 /* Общий путь применения результата (и для sync, и для поллинга). */
 function _applyResult(data) {
   const levels = (data && Array.isArray(data.levels)) ? data.levels : [];
-  _renderLevels(levels, data && data.error);
   // Рисуем ТОЛЬКО уровни: снять блоки сделок обычного бэктеста, чтобы на
   // графике не оставалось «сделок» рядом с зонами вероятностей.
   if (state.backtestRenderer && state.backtestRenderer.clear) {
@@ -173,9 +197,13 @@ function _applyResult(data) {
   }
   const upto = data && data.upto_sec != null ? Number(data.upto_sec) : null;
   local.lastUpto = upto;
+  // Зоны раньше списка: сводка TP/SL в панели читает renderer.tpsl —
+  // тот же источник, что и линии на графике (единый набор).
   if (state.aiProbRenderer) {
+    state.aiProbRenderer.enableTpsl = _tpslEnabled();
     state.aiProbRenderer.render(levels, _anchorForUpto(upto));
   }
+  _renderLevels(levels, data && data.error, data && data.notice);
   // Причину отказа показываем явно (квота/rate limit/нет JSON) — «уровни не
   // получены» без деталей бесполезно.
   if (data && data.error) _showError(data.error);
@@ -183,25 +211,33 @@ function _applyResult(data) {
 }
 
 /* Краткий список уровней в панели: +{diff} {prob}% (как на пилюлях графика).
-   error — причина, если уровней нет (показываем её вместо заглушки). */
-function _renderLevels(levels, error) {
+   error — причина, если уровней нет (показываем её вместо заглушки);
+   notice — нейтральное пояснение (напр. «рынок плоский») без красного ⚠.
+   Источник — зафиксированные на графике уровни (renderer.levels: ближние
+   уже сдвинуты на 0.5·ATR), чтобы панель и график не расходились. */
+function _renderLevels(levels, error, notice) {
   const box = $('aibt-levels');
   if (!box) return;
   box.innerHTML = '';
-  if (!levels.length) {
+  const disp = (state.aiProbRenderer && state.aiProbRenderer.levels.length)
+    ? state.aiProbRenderer.levels : levels;
+  if (!disp.length) {
     const empty = document.createElement('div');
     empty.className = 'aibt-levels-empty';
-    empty.textContent = error ? 'Уровни не получены — см. причину выше'
-      : 'Уровни не получены';
+    if (error) empty.textContent = 'Уровни не получены — см. причину выше';
+    else if (notice) empty.textContent = notice;
+    else empty.textContent = 'Уровни не получены';
     box.appendChild(empty);
     return;
   }
-  const sorted = levels.slice().sort((a, b) => Number(b.price) - Number(a.price));
+  const sorted = [...disp]
+    .sort((a, b) => Number(b.price) - Number(a.price));
   for (const lv of sorted) {
-    const isUp = String(lv.side || '').toUpperCase() === 'UP';
+    const isUp = lv.side === 'UP';
     const diff = Number(lv.diff);
     const price = Number(lv.price);
     const prob = Number(lv.probability);
+    if (!Number.isFinite(prob)) continue;
     const row = document.createElement('div');
     row.className = 'aibt-level-row ' + (isUp ? 'up' : 'down');
     const left = document.createElement('span');
@@ -218,6 +254,31 @@ function _renderLevels(levels, error) {
     row.append(left, right);
     box.appendChild(row);
   }
+  _renderTpslSummary(box);
+}
+
+/* Сводка потенциальных TP/SL в панели: читает готовый renderer.tpsl
+   (тот же выбор направления+ATR-отбор, что рисуется на графике), поэтому
+   цены панели и линий всегда совпадают. Показывается при включённой
+   настройке. Направление: цель на стороне с большей вероятностью. */
+function _renderTpslSummary(box) {
+  if (!_tpslEnabled()) return;
+  const r = state.aiProbRenderer;
+  const tpsl = r && r.tpsl;
+  if (!tpsl) return;
+  const parts = [];
+  if (tpsl.tp && Number.isFinite(Number(tpsl.tp.price))) {
+    parts.push('TP ' + _fmtPrice(tpsl.tp.price));
+  }
+  if (tpsl.sl && Number.isFinite(Number(tpsl.sl.price))) {
+    parts.push('SL ' + _fmtPrice(tpsl.sl.price));
+  }
+  if (!parts.length) return;
+  const dir = tpsl.side === 'short' ? 'ШОРТ' : 'ЛОНГ';
+  const sum = document.createElement('div');
+  sum.className = 'aibt-tpsl-summary';
+  sum.textContent = dir + ' · Потенциальные: ' + parts.join('  ·  ');
+  box.appendChild(sum);
 }
 
 function _fmtPrice(v) {

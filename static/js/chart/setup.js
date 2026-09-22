@@ -230,7 +230,7 @@ class ReplayBarrierPrimitive {
         if (Math.abs(c.width - gw) <= 2 && Math.abs(c.height - gh) <= 2) { base = c; break; }
       }
       if (!base) return;
-      const ctx = base.getContext('2d');
+      const ctx = base.getContext('2d', { willReadFrequently: true });
       const img = ctx.getImageData(0, 0, base.width, base.height).data;
       const [gr, gg, gb] = _hexToRgb(COLORS.grid);
       const tol = 9;
