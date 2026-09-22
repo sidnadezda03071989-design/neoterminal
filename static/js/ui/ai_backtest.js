@@ -21,13 +21,12 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1H', '4H', '1D'];
 
 const local = {
   runId: null, running: false, pollTimer: null,
-  // Авто-пересчёт при сдвиге барьера реплея: последнее посчитанное время и
-  // таймер дебаунса (барьер можно тащить мышью — запросы не должны литься).
-  lastUpto: null, debounceTimer: null, autoUpto: null,
+  // Время среза последнего расчёта (якорь зон). Пересчёт — только по явному
+  // нажатию «Запустить», без авто-реакции на движение барьера реплея.
+  lastUpto: null,
 };
 
 const POLL_MS = 2000;
-const AUTO_DEBOUNCE_MS = 700;
 
 /* ------------------------------------------------------- панель open/close */
 export function setAiProbZonesRenderer(chart, series, container) {
@@ -52,9 +51,6 @@ export function closeAiBacktest() {
   const panel = $('ai-backtest-panel');
   if (panel) panel.style.display = 'none';
   _stopPoll();
-  if (local.debounceTimer) {
-    clearTimeout(local.debounceTimer); local.debounceTimer = null;
-  }
 }
 
 function _initFormDefaults() {
@@ -144,7 +140,7 @@ export function updateAiBacktestProgress(data) {
   if (!local.runId) local.runId = data.run_id;
   _setProgress(Number(data.done) || 0, Number(data.total) || 0);
   if (data.error) _showError(data.error);
-  if (data.finished) _finish(data.runId);
+  if (data.finished) _finish(data.run_id);
 }
 
 /* ---------------------------------------------------------------- результаты */
@@ -264,8 +260,7 @@ function _currentParams() {
   return { symbol, timeframe, model };
 }
 
-/* Синхронный расчёт: нужен для авто-пересчёта при сдвиге барьера реплея
-   (SSE/поллинг избыточен — ответ приходит сразу). */
+/* Синхронный расчёт: ответ приходит сразу (без SSE/поллинга). */
 async function _fetchLevelsSync(upto) {
   const { symbol, timeframe, model } = _currentParams();
   const resp = await fetch('/api/ai-backtest', {
@@ -312,31 +307,9 @@ export async function runAiBacktest() {
   }
 }
 
-/* ------------------------------- авто-пересчёт при движении барьера реплея */
-/* Вызывается из data/replay.js (replaySetData) на каждый сдвиг барьера.
-   Дебаунс: при перетаскивании барьера мышью запросы не должны литься. */
-export function onReplayBarrierChanged() {
-  if (!state.aiProbRenderer || !state.aiProbRenderer.levels.length) return;
-  if (state.mode !== 'replay') return;
-  if (local.running) return;
-  const upto = _replayUpto();
-  if (upto == null || upto === local.lastUpto || upto === local.autoUpto) return;
-  local.autoUpto = upto;
-  if (local.debounceTimer) clearTimeout(local.debounceTimer);
-  local.debounceTimer = setTimeout(async () => {
-    local.debounceTimer = null;
-    if (state.mode !== 'replay' || local.running) return;
-    try {
-      const data = await _fetchLevelsSync(local.autoUpto);
-      _applyResult(data);
-    } catch (e) { /* тихо: авто-пересчёт — фон */ }
-  }, AUTO_DEBOUNCE_MS);
-}
-
 /* Смена symbol/tf/режима: зоны устарели — просто скрыть. */
 export function resetAiProbZones() {
   local.lastUpto = null;
-  local.autoUpto = null;
   local.runId = null;
   _hideProgress();
   _renderLevels([]);

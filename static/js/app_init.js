@@ -4,7 +4,7 @@ import { loadLive } from './data/live.js';
 import { loadReplay, playReplay, pauseReplay, resetReplay,
   replayStepBack, replayStepForward, applyReplayPreset,
   stopReplay, replaySetData, refreshIndicatorsUpto,
-  initReplayBarrierDrag, setReplayBarrierHandler } from './data/replay.js';
+  initReplayBarrierDrag } from './data/replay.js';
 import { runAIAnalysis, updateAiDrawingsUI } from './ai/analysis.js';
 import { openChat, closeChat, sendChatMessage } from './ai/chat.js';
 import { setTool, toggleMagnet, syncToolbarUI, setSymbolChangeHandler,
@@ -21,7 +21,7 @@ import { openJournal, closeJournal, initJournalUI } from './ui/journal.js';
 import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
 import { openAiBacktest, closeAiBacktest, runAiBacktest, updateAiBacktestProgress,
   initAiBacktestSymbols, hideAiProbZones, setAiProbZonesRenderer,
-  onReplayBarrierChanged, resetAiProbZones }
+  resetAiProbZones }
   from './ui/ai_backtest.js';
 import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   updateScanProgress, toggleScanConfig, resetScanConfig, toggleAllStrategies,
@@ -430,9 +430,6 @@ export function initUI() {
   initJournalUI();
   initAiDataUI();
   initReplayBarrierDrag();
-  // Сдвиг барьера реплея -> авто-пересчёт уровней вероятностей AI Backtest
-  // (срез данных = до барьера; работает и в live — там коллбэк ничего не делает).
-  setReplayBarrierHandler(onReplayBarrierChanged);
   setTool('cursor');
   syncToolbarUI();
 }

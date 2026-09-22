@@ -19,14 +19,6 @@ function _dateInputEpoch(id, endOfDay = false) {
   return String(Math.floor(t / 1000));
 }
 
-// Коллбэк «барьер реплея сдвинулся» (авто-пересчёт уровней вероятностей).
-// Вешает app_init.js — так нет циклического импорта ui/ai_backtest.js <->
-// data/replay.js. Объявлен ДО replaySetData: переменная в TDZ, а функция
-// читает её только в момент вызова (после инициализации модуля).
-let _barrierCb = null;
-
-export function setReplayBarrierHandler(cb) { _barrierCb = cb; }
-
 export function replaySetData(index, skipBarrier) {
   const idx = Math.max(0, Math.min(index, state.candles.length));
   // Данные на графике НЕ режем: всегда полный набор, «будущее» правее линии
@@ -52,10 +44,6 @@ export function replaySetData(index, skipBarrier) {
   }
   updateReplayPos(idx);
   _followBarrier();
-  // Уровни вероятностей AI Backtest считаются по срезу до барьера: барьер
-  // сдвинулся — зоны устарели. Коллбэк вешает app_init.js (без циклических
-  // импортов ui/ai_backtest.js <-> data/replay.js).
-  if (_barrierCb) { try { _barrierCb(); } catch (e) { /* фон */ } }
 }
 
 export function updateReplayPos(idx) {

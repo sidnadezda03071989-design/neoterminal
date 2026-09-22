@@ -34,6 +34,13 @@ def create_app():
     from app_pkg.routes import register_routes
     register_routes(app)
 
+    # Доп. блоки Market Snapshot: crowd/macro/calendar/derivatives/news_sentiment
+    # (см. app_pkg/routes/extra_data.py — имена blueprint'ов оттуда).
+    from app_pkg.routes.extra_data import (derivatives_bp, macro_bp,
+                                           news_sentiment_bp, sentiment_bp)
+    for bp in (sentiment_bp, macro_bp, derivatives_bp, news_sentiment_bp):
+        app.register_blueprint(bp)
+
     @app.errorhandler(404)
     def not_found(_e):
         return jsonify({"error": "Not found"}), 404

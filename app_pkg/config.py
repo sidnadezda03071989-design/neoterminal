@@ -390,6 +390,13 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY") or ""
 COINGECKO_BASE_URL = os.getenv("COINGECKO_BASE_URL",
                                "https://api.coingecko.com/api/v3")
 
+# --------------------------------------------------------------- макро (FRED)
+# Серии DGS10 / FEDFUNDS / DTWEXBGS (US 10Y, ставка ФРС, широкий DXY).
+# Без ключа макро-блок снимка отдаёт null-схему (сервер не падает).
+FRED_API_KEY = os.getenv("FRED_API_KEY") or ""
+FRED_BASE_URL = os.getenv("FRED_BASE_URL",
+                          "https://api.stlouisfed.org/fred")
+
 
 
 # ------------------------------------------------------------ DeepSeek

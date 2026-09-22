@@ -212,34 +212,51 @@ def _post_chat(url, headers, payload, timeout, model):
     return resp
 
 
-def _build_payload(model, system, messages, max_tokens):
-    """Payload /chat/completions (system уже очищен/дополнен вызывающим)."""
-    return {
+def _build_payload(model, system, messages, max_tokens, temperature=0.3,
+                   reasoning_effort=None):
+    """Payload /chat/completions (system уже очищен/дополнен вызывающим).
+
+    temperature переопределяем вызывающим (AI Backtest-вердикты — 0.0 для
+    детерминизма); дефолт 0.3 сохранён для остальных агентов.
+    reasoning_effort ("none"|"low"|...|None) добавляется в payload ТОЛЬКО
+    когда задан явно: reasoning-модели (deepseek-v4-flash) иначе тратят
+    весь max_tokens на chain-of-thought и не отдают JSON.
+    """
+    payload = {
         "model": model,
         "messages": [{"role": "system", "content": system}] + list(messages),
-        "temperature": 0.3,
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    return payload
 
 
 def _attempt_chat(base_url, api_key, model, system, messages, max_tokens,
-                  timeout):
+                  timeout, temperature=0.3, reasoning_effort=None):
     """Одна попытка у провайдера: json-режим, при HTTP 400 — повтор без него.
 
-    Решение о fallback на другого провайдера принимает вызывающий код,
-    поэтому raise_for_status() здесь не вызывается.
+    При 400 снимаем и response_format, и необязательный reasoning_effort:
+    провайдер мог отклонить любой из них, а 400 в текстовом режиме
+    терминален для цепочки (см. _call_with_fallback). Решение о fallback на
+    другого провайдера принимает вызывающий код, поэтому raise_for_status()
+    здесь не вызывается.
     """
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = _llm_headers(api_key)
-    payload = _build_payload(model, system, messages, max_tokens)
+    payload = _build_payload(model, system, messages, max_tokens, temperature,
+                             reasoning_effort)
     resp = _post_chat(url, headers,
                       dict(payload, response_format={"type": "json_object"}),
                       timeout, model)
     if resp.status_code == 400:
-        # Модель/роут не поддерживает json-режим — повторяем без
-        # response_format, но с явной инструкцией в system.
+        # Модель/роут не поддерживает json-режим (или reasoning_effort) —
+        # повторяем без response_format и без необязательного
+        # reasoning_effort, но с явной инструкцией в system.
         log.warning("LLM %s rejected response_format (HTTP 400) "
                     "— retry без него", model)
+        payload.pop("reasoning_effort", None)
         payload["messages"][0]["content"] = (
             f"{system}\nОтвечай строго валидным JSON.")
         resp = _post_chat(url, headers, payload, timeout, model)
@@ -336,21 +353,52 @@ def _completion_content(resp):
 
     Часть моделей (напр. openai/gpt-oss-120b на Groq) отвечает HTTP 200 с
     ПУСТЫМ message.content, а текст кладёт в message.reasoning (не
-    reasoning_content) — читаем и его. Если текста нет нигде — None, и
-    _call_with_fallback уходит к следующему провайдеру цепочки (иначе пустой
-    200 «съедал» ответ: DeepSeek не вызывался, панель получала пустоту).
+    reasoning_content) — читаем и его. Но если ответ ОБРЕЗАН
+    (finish_reason="length") и content пуст, то reasoning — это незавершённый
+    chain-of-thought (весь max_tokens ушёл на размышления), а не ответ:
+    возвращаем None, чтобы _call_with_fallback ушёл к следующему провайдеру.
+    Иначе на панель попадал текст «We need to process the input snapshot...»
+    вместо уровней. Если текста нет нигде — тоже None.
     """
     data = resp.json()
     choices = data.get("choices") or []
     if not choices:
         return None
-    message = choices[0].get("message") or {}
-    content = (message.get("content")
-               or message.get("reasoning_content")
-               or message.get("reasoning"))
+    choice = choices[0]
+    message = choice.get("message") or {}
+    content = message.get("content")
     if isinstance(content, str):
         content = content.strip()
-    return content or None
+    if content:
+        return content
+    if choice.get("finish_reason") == "length":
+        return None
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    if isinstance(reasoning, str):
+        reasoning = reasoning.strip()
+    return reasoning or None
+
+
+def _collect_usage(resp, usage_out):
+    """Суммировать usage.{prompt,completion,total}_tokens ответа в usage_out.
+
+    Токен-диета AI Backtest: точный расход считаем ТОЛЬКО по факту ответа
+    API. usage_out — обычный dict-аккумулятор; None — учёт не нужен.
+    Нечисловые/отсутствующие поля не ломают прогон.
+    """
+    if not isinstance(usage_out, dict):
+        return
+    try:
+        usage = (resp.json() or {}).get("usage") or {}
+    except Exception:  # noqa: BLE001 — тело без JSON не должно ронять запрос
+        return
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        try:
+            value = int(usage.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value:
+            usage_out[key] = usage_out.get(key, 0) + value
 
 
 def _purpose_max_tokens(purpose):
@@ -367,7 +415,9 @@ def _purpose_max_tokens(purpose):
 
 def _call_with_fallback(system, messages=None, vision=False, user_text=None,
                         image_base64=None, api_key=None, base_url=None,
-                        model=None, timeout=None, purpose=None):
+                        model=None, timeout=None, purpose=None,
+                        max_tokens=None, temperature=None, usage_out=None,
+                        reasoning_effort=None):
     """Единая точка запроса к LLM: перебор провайдеров fallback-цепочки.
 
     vision=False -> текстовый POST {base}/chat/completions (_attempt_chat);
@@ -375,6 +425,12 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
 
     purpose ("analysis"|"chat") задаёт max_tokens ответа независимо от
     провайдера (токен-диета); None -> max_tokens провайдера.
+    max_tokens/temperature — явный перебор: AI Backtest-вердикты просят
+    120 токенов при temperature=0.0; temperature=None -> 0.3 (дефолт).
+    reasoning_effort ("none"|...|None) — глушит chain-of-thought у
+    reasoning-моделей (None -> параметр в payload не идёт).
+    usage_out (dict) — аккумулятор usage.{prompt,completion}_tokens успешного
+    ответа (см. _collect_usage).
 
     Правила:
       * нет ключа / нет base_url или модели -> провайдер пропускается
@@ -425,10 +481,12 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
                                        cfg["timeout"], system, user_text,
                                        image_base64)
             else:
+                tok = (max_tokens or _purpose_max_tokens(purpose)
+                       or cfg["max_tokens"])
+                temp = 0.3 if temperature is None else temperature
                 resp = _attempt_chat(cfg["base_url"], cfg["api_key"],
-                                     prompt_model, system, messages,
-                                     _purpose_max_tokens(purpose)
-                                     or cfg["max_tokens"], cfg["timeout"])
+                                     prompt_model, system, messages, tok,
+                                     cfg["timeout"], temp, reasoning_effort)
         except _NETWORK_ERRORS as exc:
             log.warning("provider %s failed (network: %s), fallback to %s",
                         name, exc, nxt)
@@ -455,6 +513,7 @@ def _call_with_fallback(system, messages=None, vision=False, user_text=None,
         resp.raise_for_status()
         content = _completion_content(resp)
         if content:
+            _collect_usage(resp, usage_out)
             return content
         # HTTP 200 с пустым текстом (модель вернула только reasoning/ничего):
         # не «съедаем» ответ — пробуем следующего провайдера цепочки.
@@ -496,7 +555,9 @@ def _llm_cache_parts(system, messages):
 
 
 def _llm_request(system, messages, api_key=None, base_url=None,
-                 model=None, timeout=None, purpose="analysis"):
+                 model=None, timeout=None, purpose="analysis",
+                 max_tokens=None, temperature=None, usage_out=None,
+                 reasoning_effort=None):
     """Текстовый запрос: цепочка qwen -> groq -> deepseek.
 
     Порядок — config.LLM_PROVIDER_ORDER. Явные креда (api_key/base_url/
@@ -528,7 +589,9 @@ def _llm_request(system, messages, api_key=None, base_url=None,
             return cached
     result = _call_with_fallback(
         system, messages, vision=False, api_key=api_key, base_url=base_url,
-        model=model, timeout=timeout, purpose=purpose)
+        model=model, timeout=timeout, purpose=purpose, max_tokens=max_tokens,
+        temperature=temperature, usage_out=usage_out,
+        reasoning_effort=reasoning_effort)
     if use_cache and key and result is not None:
         set_cached_llm_response(key, result)
     return result

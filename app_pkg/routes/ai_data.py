@@ -25,24 +25,10 @@ log = logging.getLogger(__name__)
 
 # Расчёт сырых данных уходит в отдельный пул с жёстким таймаутом: медленный
 # форекс-источник (MT5/yfinance) НЕ должен держать thread Waitress и вешать
-# панель. По таймауту отдаётся пустой снимок (числа None) — контракт для ИИ
-# сохраняется, сервер не «зависает».
+# панель. По таймауту/ошибке отдаётся {"error": "timeout", "partial": {}} —
+# без фиктивных цифр старой схемы; сервер не «зависает».
 _RAW_DATA_TIMEOUT_SEC = 20.0
 _raw_exec = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-data-raw")
-
-
-def _empty_snapshot():
-    """Пустой снимок Market Snapshot (числа None) при таймауте/ошибке."""
-    return {
-        "technicals": {
-            "rsi": None, "atr": None, "bb_pct_b": None,
-            "sma20_diff_pct": None, "close": None,
-        },
-        "scanner_edge": {
-            "winrate": None, "sharpe": None, "max_dd": None, "params": {},
-        },
-        "sentiment": {"ls_ratio": 0, "long_pct": 0, "fear_greed": 50},
-    }
 
 
 def _valid_pair(symbol, timeframe):
@@ -66,7 +52,7 @@ def api_ai_data_raw():
         log.warning("ai-data raw timeout/error for %s %s (limit %.0fs)",
                     symbol, timeframe, _RAW_DATA_TIMEOUT_SEC)
         future.cancel()
-        data = _empty_snapshot()
+        return jsonify({"error": "timeout", "partial": {}})
     return jsonify(data)
 
 

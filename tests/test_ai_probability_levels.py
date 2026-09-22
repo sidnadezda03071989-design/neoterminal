@@ -158,9 +158,8 @@ def test_run_ai_backtest_one_llm_call_and_levels_only(monkeypatch):
     monkeypatch.setattr(aibt, "_llm_request", fake_llm)
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {}, "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
     monkeypatch.setattr(aibt.db, "db_save_ai_backtest",
                         lambda *a, **k: 1)
 
@@ -183,9 +182,8 @@ def test_run_ai_backtest_llm_failure_reports_error(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("net")))
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 50.0)
     monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {}, "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
 
     res = aibt.run_ai_backtest("BTCUSDT", "1H", mode="live")
 
@@ -222,9 +220,8 @@ def test_levels_for_slice_reports_empty_llm_answer(monkeypatch):
     """LLM вернула None (цепочка недоступна) -> понятная причина, не пустота."""
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {}, "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
     monkeypatch.setattr(aibt, "_llm_request", lambda *a, **k: None)
 
     levels, _price, err = aibt.levels_for_slice("BTCUSDT", "1H")
@@ -237,9 +234,8 @@ def test_levels_for_slice_reports_unparsable_answer(monkeypatch):
     """LLM вернула не-JSON -> причина содержит фрагмент ответа для диагностики."""
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {}, "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
     monkeypatch.setattr(aibt, "_llm_request",
                         lambda *a, **k: "извините, не могу помочь")
 
@@ -254,14 +250,14 @@ def test_run_ai_backtest_replay_passes_upto(monkeypatch):
     """mode=replay: upto_sec уходит в сырые данные (без look-ahead) и в результат."""
     seen = {}
 
-    def fake_raw(symbol, tf, upto_sec=None):
+    def fake_snap(symbol, tf, upto_sec=None):
         seen["upto"] = upto_sec
-        return {"technicals": {}, "scanner_edge": {}, "sentiment": {}}
+        return {"t": {"close": 42.0}}
 
     monkeypatch.setattr(aibt, "_llm_request",
                         lambda *a, **k: json.dumps({"targets": []}))
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 42.0)
-    monkeypatch.setattr(aibt, "get_raw_market_data", fake_raw)
+    monkeypatch.setattr(aibt, "compact_snapshot", fake_snap)
 
     upto = BASE_TS + 10 * STEP
     res = aibt.run_ai_backtest("BTCUSDT", "1H", upto_sec=upto, mode="replay")
@@ -290,10 +286,8 @@ def test_levels_for_slice_hybrid_messages(monkeypatch):
     monkeypatch.setattr(aibt, "_llm_request", fake_llm)
     monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
     monkeypatch.setattr(aibt, "charon_prompt_text", lambda: "RULES-FROM-FILE")
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {"rsi": 62.0},
-                                         "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"rsi": 62.0, "close": 100.0}})
 
     levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H")
     assert err is None and price == pytest.approx(100.0)
@@ -301,8 +295,7 @@ def test_levels_for_slice_hybrid_messages(monkeypatch):
     assert calls["system"] == "RULES-FROM-FILE"
     # Два сообщения: system-промпт (передаётся отдельным аргументом) + user JSON.
     assert calls["messages"] == [{"role": "user", "content": (
-        '{"current_price":100.0,"technicals":{"rsi":62.0},"scanner_edge":{},'
-        '"sentiment":{}}')}]
+        '{"current_price":100.0,"t":{"rsi":62.0,"close":100.0}}')}]
 
     ups = [lv for lv in levels if lv["side"] == "UP"]
     downs = [lv for lv in levels if lv["side"] == "DOWN"]
@@ -333,8 +326,9 @@ def test_parse_probability_levels_targets_format(monkeypatch):
 
 # -------------------------------------------------------- цена среза (live/replay)
 def test_slice_price_cuts_by_upto_sec(monkeypatch):
-    """_slice_price: цена = последний бар <= upto_sec (replay), сеть не нужна."""
+    """_slice_price: replay — историческое окно до барьера, live — хвост."""
     df = _df()
+    monkeypatch.setattr(aibt, "get_replay_df", lambda *a, **k: df)
     monkeypatch.setattr(aibt, "get_series_df", lambda *a, **k: df)
     upto = BASE_TS + 9 * STEP  # 10-я свеча, close=10.0
 
@@ -468,10 +462,8 @@ def test_route_sync_end_to_end_pill_labels(monkeypatch):
     df["close"] = 100.0
     monkeypatch.setattr(aibt, "get_series_df", lambda *a, **k: df)
     monkeypatch.setattr("app_pkg.ai.context.get_series_df", lambda *a, **k: df)
-    monkeypatch.setattr(aibt, "get_raw_market_data",
-                        lambda *a, **k: {"technicals": {"close": 100.0},
-                                         "scanner_edge": {},
-                                         "sentiment": {}})
+    monkeypatch.setattr(aibt, "compact_snapshot",
+                        lambda *a, **k: {"t": {"close": 100.0}})
     monkeypatch.setattr(aibt, "_llm_request", lambda *a, **k: json.dumps({
         "levels": [
             {"side": "UP", "price": 100.5, "probability": 0.613},

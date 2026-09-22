@@ -14,12 +14,13 @@
     последняя доступная свеча. Данные — ровно те же, что у Харона.
   • Результат — только уровни с вероятностями: никаких сделок, winrate,
     sharpe. Это «помощник вероятностей», а не стратегия.
-  • Работает и в реплее, и в реальном времени: движок stateless, вызывается
-    сколько угодно раз (кнопка «Запустить», авто-пересчёт при сдвиге барьера).
+  • Работает и в реплее, и в реальном времени: движок stateless, считается
+    строго по явному запросу (кнопка «Запустить» в панели).
 
 Зоны и пилюли «+{diff} {prob}%» рисует AIProbZonesRenderer.
 """
 
+import hashlib
 import json
 import logging
 import threading
@@ -31,8 +32,8 @@ from app_pkg import config, db, utils
 from app_pkg.ai.context import build_multi_tf_context
 from app_pkg.ai.llm import _llm_request, _extract_json
 from app_pkg.ai.prompts import charon_prompt_text
-from app_pkg.data.fetch import get_series_df
-from app_pkg.data.market_snapshot import get_raw_market_data
+from app_pkg.data.fetch import get_replay_df, get_series_df
+from app_pkg.data.market_snapshot import compact_snapshot
 from app_pkg.ws import _ws_push
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,23 @@ _RUNS_MAX = 50
 
 # Сколько уровней запрашиваем/принимаем в каждую сторону (UP/DOWN).
 PROB_LEVELS_MAX = 5
+
+# ---------------------------------------------- токен-диета: вердикты (v3)
+# Компактный ответ LLM: короткие ключи, без reason. Детерминизм — T=0.
+VERDICT_MAX_TOKENS = 120
+VERDICT_TEMPERATURE = 0.0
+# Глушим chain-of-thought: deepseek-v4-flash иначе тратит весь лимит
+# (120 токенов) на reasoning, отдаёт finish_reason="length" и пустой
+# content — панель получала текст размышлений вместо JSON-уровней.
+VERDICT_REASONING_EFFORT = "none"
+# Триггеры адаптивного шага: LLM зовём только если сработал хотя бы один.
+ADAPTIVE_RSI_NEAR = 5.0     # (a) rsi в пределах 5 от oversold/overbought
+ADAPTIVE_RSI_DELTA = 7.0    # (b) |rsi - rsi на прошлом вызове| > 7
+ADAPTIVE_CLOSE_ATR = 0.7    # (c) |close - close на прошлом вызове| > .7*atr
+DEFAULT_OVERSOLD = 30.0
+DEFAULT_OVERBOUGHT = 70.0
+# Флаг пакетной обработки: 1 — по одному снимку, 5 — пять за один вызов.
+BATCH_SIZE_DEFAULT = 1
 
 
 def get_run(run_id):
@@ -97,6 +115,21 @@ def _clamp_prob(raw):
     return min(1.0, max(0.0, prob))
 
 
+def _dedupe_levels(items):
+    """Убрать уровни с одинаковой ценой в одной стороне: берём max(prob).
+
+    Модель иногда отдаёт один и тот же уровень дважды (напр. две пары tg с
+    одной ценой) — на панели это выглядело дублем строки.
+    """
+    best = {}
+    for lv in items:
+        key = round(lv["price"], 8)
+        prev = best.get(key)
+        if prev is None or lv["probability"] > prev["probability"]:
+            best[key] = lv
+    return list(best.values())
+
+
 def parse_probability_levels(raw_text, current_price=None):
     """Ответ LLM -> отсортированный список уровней с вероятностями.
 
@@ -116,8 +149,13 @@ def parse_probability_levels(raw_text, current_price=None):
     if not isinstance(parsed, dict):
         return None
     raw_levels = parsed.get("targets")
+    from_tg = False
     if raw_levels is None:
         raw_levels = parsed.get("levels")
+    if raw_levels is None:
+        # v3-вердикт: tg = [[price, prob], ...]
+        raw_levels = parsed.get("tg")
+        from_tg = True
     if isinstance(raw_levels, dict):
         # Модель вернула {"UP": {...}, "DOWN": {...}} вместо списка.
         expanded = []
@@ -134,6 +172,9 @@ def parse_probability_levels(raw_text, current_price=None):
     cur = utils._clean(current_price)
     up, down = [], []
     for item in raw_levels:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            # v3 tg-пара [price, prob]: сторону выведем из цены.
+            item = {"price": item[0], "probability": item[1]}
         if not isinstance(item, dict):
             continue
         side = _normalize_side(item.get("side") or item.get("direction"))
@@ -160,6 +201,10 @@ def parse_probability_levels(raw_text, current_price=None):
             entry["diff_pct"] = round((price - cur) / cur * 100.0, 4)
         (up if side == "UP" else down).append(entry)
 
+    # Дубли по цене в одной стороне (модель иногда повторяет уровень):
+    # оставляем вариант с большей вероятностью.
+    up = _dedupe_levels(up)
+    down = _dedupe_levels(down)
     # UP — по возрастанию цены (ближний уровень первым), DOWN — по убыванию.
     up.sort(key=lambda x: x["price"])
     down.sort(key=lambda x: -x["price"])
@@ -167,6 +212,12 @@ def parse_probability_levels(raw_text, current_price=None):
               + sorted(down, key=lambda x: -x["price"])[:PROB_LEVELS_MAX])
     if not levels:
         return None
+    if from_tg:
+        # v3: суммарная вероятность по всем уровням = 1.00 (100%).
+        total = sum(lv["probability"] for lv in levels)
+        if total > 0:
+            for lv in levels:
+                lv["probability"] = round(lv["probability"] / total, 4)
     return levels
 
 
@@ -243,13 +294,13 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
                           "(проверьте символ/таймфрейм)")
     # Гибридная архитектура: системный промпт с правилами — из файла
     # (config/charon_prompt.txt, редактируется во вкладке «🧠 Данные для ИИ»),
-    # а user-сообщение — чистый JSON с цифрами (get_raw_market_data).
-    # Никаких текстовых описаний рынка: нейросеть считает уровни по формулам
-    # промпта, а не по пересказу свечей.
+    # а user-сообщение — КОМПАКТНЫЙ JSON-снимок (compact_snapshot, схема v3:
+    # t/se/s/c/m/cal/d/ns). Ключи снимка совпадают с описанием в промпте —
+    # никаких текстовых пересказов рынка.
     system_prompt = charon_prompt_text()
-    raw_data = get_raw_market_data(symbol, timeframe, upto_sec=upto_sec)
+    snapshot = compact_snapshot(symbol, timeframe, upto_sec=upto_sec)
     user_message = json.dumps(
-        {"current_price": current_price, **raw_data},
+        {"current_price": current_price, **snapshot},
         ensure_ascii=False, separators=(",", ":"),
     )
     try:
@@ -258,6 +309,9 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
             [{"role": "user", "content": user_message}],
             model=model,
             purpose=None,
+            max_tokens=VERDICT_MAX_TOKENS,
+            temperature=VERDICT_TEMPERATURE,
+            reasoning_effort=VERDICT_REASONING_EFFORT,
         )
     except Exception as exc:  # noqa: BLE001
         msg = _llm_error_hint(exc)
@@ -291,11 +345,18 @@ def _llm_error_hint(exc):
 def _slice_price(symbol, timeframe, upto_sec=None):
     """Цена последнего бара среза: <= upto_sec (replay) или последняя (live).
 
-    Источник — тот же get_series_df, что и у контекста Харона: цена «отсюда»
-    для уровней всегда совпадает с последней свечой в промпте.
+    Источник — тот же, что и у контекста Харона: цена «отсюда» для уровней
+    всегда совпадает с последней свечой в промпте. В реплее берём ИСТОРИЧЕСКОЕ
+    окно, заканчивающееся на барьере (get_replay_df), а не live-хвост
+    get_series_df: иначе барьер старше последних N баров давал пустой срез
+    («нет данных для среза»).
     """
     try:
-        df = get_series_df(symbol, timeframe, limit=config.DEFAULT_LIMIT)
+        if upto_sec is not None:
+            df = get_replay_df(symbol, timeframe, to_sec=float(upto_sec),
+                               limit=config.DEFAULT_LIMIT)
+        else:
+            df = get_series_df(symbol, timeframe, limit=config.DEFAULT_LIMIT)
         if df is None or df.empty:
             return None
         if upto_sec is not None:
@@ -386,3 +447,320 @@ def run_ai_backtest_async(symbol, timeframe, upto_sec=None, mode="live",
     threading.Thread(target=_bg, daemon=True,
                      name=f"ai-bt-{run_id[:8]}").start()
     return run_id
+
+
+# ======================================== адаптивный прогон (токен-диета v3)
+
+def _verdict_params(compact, override=None):
+    """oversold/overbought для триггера (a): из se.p, иначе дефолт 30/70."""
+    if override:
+        try:
+            return {"oversold": float(override.get("oversold",
+                                                   DEFAULT_OVERSOLD)),
+                    "overbought": float(override.get("overbought",
+                                                     DEFAULT_OVERBOUGHT))}
+        except (TypeError, ValueError):
+            pass
+    params = (compact.get("se") or {}).get("p") or {}
+
+    def _f(key, default):
+        try:
+            return float(params.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    return {"oversold": _f("oversold", DEFAULT_OVERSOLD),
+            "overbought": _f("overbought", DEFAULT_OVERBOUGHT)}
+
+
+def _snap_t(compact):
+    return compact.get("t") or {}
+
+
+def _snap_clock(compact):
+    c = compact.get("c") or {}
+    return c.get("ses"), c.get("open")
+
+
+def _snap_hi2h(compact):
+    return (compact.get("cal") or {}).get("hi2h")
+
+
+def _should_call(cur, prev, last_call, params):
+    """Триггеры адаптивного шага: True — звать LLM.
+
+    last_call — {rsi, close} на прошлом РЕАЛЬНОМ вызове (None — первый шаг
+    окна, триггер e). prev — предыдущий шаг (для смены ses/open/hi2h).
+    Триггеры: (a) rsi у зон; (b) |Δrsi| > 7 от прошлого вызова;
+    (c) |Δclose| > 0.7*atr от прошлого вызова; (d) смена ses/open/hi2h.
+    """
+    if last_call is None:
+        return True  # (e) первый шаг окна
+    t = _snap_t(cur)
+    rsi = t.get("rsi")
+    close = t.get("close")
+    atr = t.get("atr")
+    os_, ob = params["oversold"], params["overbought"]
+    if rsi is not None and (abs(rsi - os_) <= ADAPTIVE_RSI_NEAR
+                            or abs(rsi - ob) <= ADAPTIVE_RSI_NEAR):
+        return True  # (a)
+    last_rsi = last_call.get("rsi")
+    if (rsi is not None and last_rsi is not None
+            and abs(rsi - last_rsi) > ADAPTIVE_RSI_DELTA):
+        return True  # (b)
+    last_close = last_call.get("close")
+    if (close is not None and last_close is not None and atr
+            and abs(close - last_close) > ADAPTIVE_CLOSE_ATR * atr):
+        return True  # (c)
+    if prev is not None:
+        if _snap_clock(cur) != _snap_clock(prev):
+            return True  # (d)
+        if _snap_hi2h(cur) != _snap_hi2h(prev):
+            return True  # (d)
+    return False
+
+
+def _verdict_cache_key(compact):
+    """md5(round(rsi//5), round(close//(atr/2)), флаги блоков, ses)."""
+    t = _snap_t(compact)
+    rsi = t.get("rsi")
+    close = t.get("close")
+    atr = t.get("atr")
+    ses = (compact.get("c") or {}).get("ses")
+    rsi_b = int(rsi // 5) if rsi is not None else None
+    close_b = int(close // (atr / 2.0)) if (close is not None and atr) else None
+    flags = ",".join(sorted(compact.keys()))
+    raw = repr((rsi_b, close_b, flags, ses))
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _verdict_from_obj(obj):
+    """Объект вердикта v3 -> нормализованный dict (или None при ошибке)."""
+    if not isinstance(obj, dict):
+        return None
+    sig = str(obj.get("sig") or "").strip().upper()
+    if sig not in ("L", "S", "F"):
+        word = str(obj.get("signal") or obj.get("sig") or "").strip().upper()
+        if word in ("BUY", "LONG", "L"):
+            sig = "L"
+        elif word in ("SELL", "SHORT", "S"):
+            sig = "S"
+        elif word in ("HOLD", "FLAT", "F", "WAIT"):
+            sig = "F"
+    if sig not in ("L", "S", "F"):
+        return None
+    pu = _clamp_prob(obj.get("pu"))
+    pd_ = _clamp_prob(obj.get("pd"))
+    pf = _clamp_prob(obj.get("pf"))
+    targets = []
+    raw_tg = obj.get("tg") or obj.get("targets") or []
+    if isinstance(raw_tg, list):
+        for item in raw_tg:
+            if isinstance(item, dict):
+                price = utils._clean(item.get("price"))
+                prob = _clamp_prob(item.get("probability"))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                price = utils._clean(item[0])
+                prob = _clamp_prob(item[1])
+            else:
+                continue
+            if price is not None:
+                targets.append([round(price, 2), prob])
+    conf = pu if sig == "L" else pd_ if sig == "S" else pf
+    return {"sig": sig, "pu": pu, "pd": pd_, "pf": pf,
+            "tg": targets, "conf": round(conf, 4)}
+
+
+def parse_verdict(raw_text):
+    """Ответ LLM -> компактный вердикт {sig,pu,pd,pf,tg,conf} или None."""
+    if not raw_text:
+        return None
+    return _verdict_from_obj(_extract_json(raw_text))
+
+
+def parse_verdict_batch(raw_text, n):
+    """Ответ LLM -> список из n вердиктов или None (тогда fallback по одному)."""
+    if not raw_text:
+        return None
+    parsed = _extract_json(raw_text)
+    if isinstance(parsed, dict):
+        for key in ("v", "verdicts", "batch", "results", "targets"):
+            if isinstance(parsed.get(key), list):
+                parsed = parsed[key]
+                break
+    if not isinstance(parsed, list) or len(parsed) != n:
+        return None
+    return [_verdict_from_obj(item) for item in parsed]
+
+
+def _bar_timestamps(df, bars, upto_sec=None):
+    """Unix-секунды последних bars баров среза (<= upto_sec при replay)."""
+    if df is None or df.empty:
+        return []
+    if upto_sec is not None:
+        mask = df["timestamp"] <= pd.to_datetime(int(upto_sec), unit="s",
+                                                 utc=True)
+        df = df[mask]
+    if df is None or df.empty:
+        return []
+    tail = df.tail(int(bars)) if bars else df
+    out = []
+    for value in tail["timestamp"]:
+        ts = pd.Timestamp(value)
+        if getattr(ts, "tz", None) is None:
+            ts = ts.tz_localize("UTC")
+        out.append(int(ts.timestamp()))
+    return out
+
+
+def _llm_verdict(system, payload_text, model, usage):
+    """Один вызов LLM с вердикт-настройками (120 токенов, T=0) и учётом usage."""
+    return _llm_request(
+        system,
+        [{"role": "user", "content": payload_text}],
+        model=model,
+        purpose=None,
+        max_tokens=VERDICT_MAX_TOKENS,
+        temperature=VERDICT_TEMPERATURE,
+        usage_out=usage,
+        reasoning_effort=VERDICT_REASONING_EFFORT,
+    )
+
+
+def _add_usage(totals, usage):
+    """Суммировать usage.{prompt,completion,total}_tokens в totals токен-диеты."""
+    mapping = (("prompt_tokens", "tokens_prompt"),
+               ("completion_tokens", "tokens_completion"),
+               ("total_tokens", "tokens_total"))
+    for src, dst in mapping:
+        try:
+            totals[dst] = totals.get(dst, 0) + int(usage.get(src) or 0)
+        except (TypeError, ValueError):
+            continue
+
+
+def _flush_pending(pending, results, cache, totals, model, system):
+    """Отправить накопленные снимки: batch>1 — пачкой, иначе по одному.
+
+    При невалидном/неполном массиве пакет разбирается по одному (fallback).
+    Заполняет results/cache и копит totals.llm_calls + tokens.
+    """
+    if not pending:
+        return
+    if len(pending) > 1:
+        usage = {}
+        payload = json.dumps([snap for _, snap, _ in pending],
+                             ensure_ascii=False, separators=(",", ":"))
+        raw = _llm_verdict(system, payload, model, usage)
+        totals["llm_calls"] += 1
+        _add_usage(totals, usage)
+        verdicts = parse_verdict_batch(raw, len(pending))
+        if verdicts is not None and all(verdicts):
+            for (idx, _snap, key), verdict in zip(pending, verdicts):
+                results[idx] = dict(verdict)
+                cache[key] = dict(verdict)
+            return
+    for idx, snap, key in pending:
+        usage = {}
+        payload = json.dumps(snap, ensure_ascii=False, separators=(",", ":"))
+        raw = _llm_verdict(system, payload, model, usage)
+        totals["llm_calls"] += 1
+        _add_usage(totals, usage)
+        verdict = parse_verdict(raw)
+        if verdict is not None:
+            results[idx] = verdict
+            cache[key] = dict(verdict)
+
+
+def _carry_forward(prev_verdict):
+    """Пропущенный шаг: сигнал прежний, confidence *= 0.9."""
+    if not prev_verdict:
+        return None
+    out = dict(prev_verdict)
+    out["conf"] = round(out.get("conf", 0.0) * 0.9, 4)
+    out["carried"] = True
+    return out
+
+
+def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
+                         adaptive=True, model=None, upto_sec=None, params=None):
+    """Прогон по барам с адаптивным шагом и пакетированием (токен-диета v3).
+
+    Каждый бар -> compact_snapshot(symbol, tf, upto_sec=ts). При adaptive=True
+    LLM зовётся только по триггеру (_should_call), иначе carry-forward
+    (сигнал прежний, confidence *= 0.9). Кэш вердиктов живёт в рамках прогона.
+    batch>1 пакует столько снимков в один вызов (fallback — по одному).
+    Метрики: tokens_prompt/tokens_completion/total, llm_calls, cache_hits.
+    """
+    batch = max(1, int(batch or 1))
+    run_id = uuid.uuid4().hex
+    df = get_series_df(symbol, timeframe, limit=bars,
+                       history_limit=config.TRENDS_HISTORY)
+    stamps = _bar_timestamps(df, bars, upto_sec)
+    system = charon_prompt_text()
+    totals = {"tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
+              "llm_calls": 0, "cache_hits": 0}
+    cache = {}
+    results = {}
+    signals = []
+    steps = []
+    pending = []
+    last_call = None
+    last_verdict = None
+    prev = None
+    use_cache = bool(adaptive)
+    for idx, ts in enumerate(stamps):
+        snap = compact_snapshot(symbol, timeframe, ts)
+        step_params = _verdict_params(snap, params)
+        trigger = True if not adaptive else _should_call(
+            snap, prev, last_call, step_params)
+        key = _verdict_cache_key(snap)
+        if trigger and use_cache and key in cache:
+            last_verdict = dict(cache[key])
+            results[idx] = last_verdict
+            totals["cache_hits"] += 1
+            last_call = {"rsi": _snap_t(snap).get("rsi"),
+                         "close": _snap_t(snap).get("close")}
+        elif trigger:
+            pending.append((idx, snap, key))
+        else:
+            last_verdict = _carry_forward(last_verdict)
+            results[idx] = last_verdict
+        if len(pending) >= batch:
+            _flush_pending(pending, results, cache, totals, model, system)
+            for pidx, psnap, _pk in pending:
+                if results.get(pidx):
+                    last_verdict = results[pidx]
+                last_call = {"rsi": _snap_t(psnap).get("rsi"),
+                             "close": _snap_t(psnap).get("close")}
+            pending = []
+        prev = snap
+    if pending:
+        _flush_pending(pending, results, cache, totals, model, system)
+        for pidx, psnap, _pk in pending:
+            if results.get(pidx):
+                last_verdict = results[pidx]
+            last_call = {"rsi": _snap_t(psnap).get("rsi"),
+                         "close": _snap_t(psnap).get("close")}
+    for idx, ts in enumerate(stamps):
+        verdict = results.get(idx) or {}
+        sig = verdict.get("sig")
+        signals.append(sig)
+        steps.append({"i": idx, "upto_sec": ts, "sig": sig,
+                      "conf": verdict.get("conf"),
+                      "carried": bool(verdict.get("carried"))})
+    n = len(stamps)
+    metrics = dict(totals)
+    metrics["steps"] = n
+    metrics["llm_calls_ratio"] = round(totals["llm_calls"] / n, 4) if n else 0.0
+    metrics["adaptive"] = adaptive
+    metrics["batch"] = batch
+    metrics["cache_size"] = len(cache)
+    return {
+        "run_id": run_id, "status": "finished", "symbol": symbol,
+        "timeframe": timeframe, "bars": n, "adaptive": adaptive, "batch": batch,
+        "signals": signals, "steps": steps, "metrics": metrics,
+        "tokens_prompt": totals["tokens_prompt"],
+        "tokens_completion": totals["tokens_completion"],
+        "llm_calls": totals["llm_calls"], "cache_hits": totals["cache_hits"],
+    }

@@ -47,8 +47,7 @@ def api_ai_backtest_start():
       mode      — "live" (по умолчанию) | "replay";
       upto_sec  — время барьера реплея (только для mode=replay);
       sync      — true: посчитать синхронно и вернуть результат сразу
-                  (нужно для авто-пересчёта при сдвиге барьера реплея,
-                  когда SSE/поллинг избыточен).
+                  (панель AI Backtest ждёт ответ без SSE/поллинга).
     Возвращает {run_id, status, symbol, timeframe, mode, upto_sec} или
     полный результат при sync=true.
     """
