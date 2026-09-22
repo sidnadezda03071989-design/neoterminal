@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/ai-analysis.
 
 Ответ — ПЛОСКИЙ dict (без обёртки {"analysis": ...}).
 """
 
-import json
 import logging
 import uuid
 
@@ -12,16 +10,18 @@ import pandas as pd
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
-from app_pkg.cache import get_cached_verdict, set_cached_verdict
-from app_pkg.db import db_get_all_drawings, db_add_drawing
-from app_pkg.data.fetch import get_series_df, get_replay_df
-from app_pkg.ai.context import build_multi_tf_context, format_tf_section
-from app_pkg.ai.prompts import QWEN_SYSTEM_PROMPT
 from app_pkg.ai.agents import (
-    analyze_with_ai, analyze_with_agents, _normalize_model_drawings,
     _normalize_ai_result,
+    _normalize_model_drawings,
+    analyze_with_agents,
+    analyze_with_ai,
 )
-from app_pkg.ai.llm import _llm_vision_request, _extract_json
+from app_pkg.ai.context import build_multi_tf_context, format_tf_section
+from app_pkg.ai.llm import _extract_json, _llm_vision_request
+from app_pkg.ai.prompts import QWEN_SYSTEM_PROMPT
+from app_pkg.cache import get_cached_verdict, set_cached_verdict
+from app_pkg.data.fetch import get_replay_df, get_series_df
+from app_pkg.db import db_add_drawing, db_get_all_drawings
 
 bp = Blueprint("ai", __name__)
 log = logging.getLogger(__name__)

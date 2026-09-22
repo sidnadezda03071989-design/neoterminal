@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Микроструктура стакана крипты: спред, дисбаланс, крупные сделки (Binance spot).
 
 get_micro_snapshot(symbol) -> dict

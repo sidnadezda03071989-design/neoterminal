@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from app_pkg import config, utils
+from app_pkg import utils
 
 logger = logging.getLogger(__name__)
 

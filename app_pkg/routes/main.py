@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: корневые страницы, healthz, версия, статус MT5."""
 
 from flask import Blueprint, jsonify, render_template

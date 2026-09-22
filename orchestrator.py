@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """orchestrator.py — FastAPI-сервер чата с оркестратором на Qwen.
 
 Qwen (OpenAI-совместимый API Dashscope) получает 4 инструмента и сам решает,
@@ -23,7 +22,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -163,7 +161,7 @@ TOOLS = [
 ]
 
 
-def _run_cline_task(task: str, cwd: Optional[str] = None) -> str:
+def _run_cline_task(task: str, cwd: str | None = None) -> str:
     """python cline_bridge.py --parse "<task>" (флаги строго ДО задачи —
     argparse бриджа собран на REMAINDER и всё после задачи считает её текстом)."""
     if not BRIDGE_PATH.exists():
@@ -220,7 +218,7 @@ def _list_dir(path: str) -> str:
     return json.dumps({"path": path, "entries": items}, ensure_ascii=False)
 
 
-def _run_command(command: str, cwd: Optional[str] = None) -> str:
+def _run_command(command: str, cwd: str | None = None) -> str:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],

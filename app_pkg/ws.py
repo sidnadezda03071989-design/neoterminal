@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SSE-рассылка событий клиентам (event-stream).
 
 Формат события: "event: {event}\ndata: {json}\n\n".

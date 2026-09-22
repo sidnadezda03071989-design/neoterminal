@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """NeoTerminal — точка входа (dev-сервер Flask)."""
 
 import threading
 
-from app_pkg import create_app, config
+from app_pkg import config, create_app
 from app_pkg.data import mt5
 from app_pkg.data.live import start_background_threads
 

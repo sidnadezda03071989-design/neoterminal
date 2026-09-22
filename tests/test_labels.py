@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Triple-barrier разметка (app_pkg/ml/labels.py).
 
 Без сети, синтетические ряды. Проверяем:
@@ -13,11 +12,14 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from app_pkg.data import market_snapshot
-from app_pkg.ml.labels import (build_labeled_dataset, charon_features,
-                               default_features, triple_barrier_labels)
+from app_pkg.ml.labels import (
+    build_labeled_dataset,
+    charon_features,
+    default_features,
+    triple_barrier_labels,
+)
 
 N = 300
 HORIZON = 20

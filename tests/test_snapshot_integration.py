@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Интеграция доп. блоков в Market Snapshot (get_raw_market_data).
 
 Dev-БД и сеть не трогаются: get_series_df подменён синтетическим срезом,
@@ -92,7 +91,7 @@ def _patch_ok_getters(monkeypatch, calendar=None):
     monkeypatch.setattr(ms, "get_news_sentiment",
                         lambda s, **k: _news_ok())
     if calendar is None:
-        calendar = lambda c, *a, **k: _calendar_ok()  # noqa: E731
+        calendar = lambda c, *a, **k: _calendar_ok()
     monkeypatch.setattr(ms, "get_econ_calendar", calendar)
 
 

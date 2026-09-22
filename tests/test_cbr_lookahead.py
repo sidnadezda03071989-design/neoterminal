@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты анти-look-ahead для CBR k-NN (Этап 2): tests/test_cbr_lookahead.py.
 
 После фикса get_similar_summary соседями выбираются ТОЛЬКО бары, чей
@@ -40,7 +39,6 @@ def env():
     import os
     import tempfile
 
-    from app_pkg import config
     from app_pkg.cbr import index as cbr_index
     from app_pkg.cbr import normalize as cbr_norm
     from app_pkg.cbr import schema, store

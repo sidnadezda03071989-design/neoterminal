@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты расширенного сканера: 12 стратегий, лимиты 50000 комбинаций / 30 мин
 warning / 4 ч hard-limit, оценка длительности, ETA в прогрессе и подписи
 новых стратегий.
@@ -16,8 +15,12 @@ import pytest
 
 from app_pkg import config, create_app, db
 from app_pkg.ai import scanner as scanner_mod
-from app_pkg.routes.scanner import (_annotate, _estimate_seconds,
-                                    _human_seconds, _strategy_label)
+from app_pkg.routes.scanner import (
+    _annotate,
+    _estimate_seconds,
+    _human_seconds,
+    _strategy_label,
+)
 
 # 9 новых стратегий (к 3 прежним: sma_cross/rsi_reversal/macd_cross).
 NEW_STRATEGIES = ["ema_cross", "bb_reversal", "bb_breakout", "supertrend",

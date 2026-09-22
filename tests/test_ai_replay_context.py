@@ -17,17 +17,16 @@ import re
 import pandas as pd
 import pytest
 
-from app_pkg import config
-from app_pkg.ai.context import build_multi_tf_context
+from app_pkg import config, create_app
 from app_pkg.ai import chat as ai_chat
+from app_pkg.ai.context import build_multi_tf_context
 from app_pkg.cache import (
+    _VERDICT_CACHE,
     get_cached_verdict,
     invalidate_verdicts_for,
     set_cached_verdict,
-    _VERDICT_CACHE,
 )
 from app_pkg.data import fetch
-from app_pkg import create_app
 
 BASE_TS = 1700000000
 STEP = 3600  # 1H

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """NeoTerminal — пакет бэкенда, фабрика create_app()."""
 
 # ВАЖНО: .env должен быть загружен ДО любых импортов, читающих os.getenv
@@ -36,8 +35,12 @@ def create_app():
 
     # Доп. блоки Market Snapshot: crowd/macro/calendar/derivatives/news_sentiment
     # (см. app_pkg/routes/extra_data.py — имена blueprint'ов оттуда).
-    from app_pkg.routes.extra_data import (derivatives_bp, macro_bp,
-                                           news_sentiment_bp, sentiment_bp)
+    from app_pkg.routes.extra_data import (
+        derivatives_bp,
+        macro_bp,
+        news_sentiment_bp,
+        sentiment_bp,
+    )
     for bp in (sentiment_bp, macro_bp, derivatives_bp, news_sentiment_bp):
         app.register_blueprint(bp)
 

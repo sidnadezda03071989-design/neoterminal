@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Разовый импорт прогоночного CSV сканера в SQLite (scan_results).
 
 Читает scan_<run_id>.csv — выгрузку GET /api/scan/<run_id>/export.csv

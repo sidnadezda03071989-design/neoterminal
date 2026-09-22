@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Feature importance + walk-forward оценка LightGBM на Charon-фичах.
 
 Собирает X, y из walk-forward срезов (как в сканере, _wf_window_slices) и
@@ -31,7 +30,6 @@ timestamp,open,high,low,close,volume; timestamp tz-aware или naive UTC).
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -43,12 +41,15 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config                      # noqa: E402  (после bootstrap)
-from app_pkg.ai import scanner as scanner_mod   # noqa: E402
-from app_pkg.ml.labels import (                 # noqa: E402
-    build_labeled_dataset, triple_barrier_labels,
-    charon_features, default_features,
-    DEFAULT_K, DEFAULT_HORIZON,
+from app_pkg import config
+from app_pkg.ai import scanner as scanner_mod
+from app_pkg.ml.labels import (
+    DEFAULT_HORIZON,
+    DEFAULT_K,
+    build_labeled_dataset,
+    charon_features,
+    default_features,
+    triple_barrier_labels,
 )
 
 _LABELS = [-1, 0, 1]
@@ -105,7 +106,7 @@ def load_df(args):
         df = pd.read_csv(args.cache)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         return df.sort_values("timestamp").reset_index(drop=True)
-    from app_pkg.data.fetch import get_replay_df      # noqa: E402
+    from app_pkg.data.fetch import get_replay_df
     limit = config.HISTORY_LIMITS.get(args.timeframe, 20000)
     from_sec = int(time.time()) - args.days * 86400
     print(f"[fetch] {args.symbol}/{args.timeframe} ~{args.days}d, limit={limit} ...")
@@ -281,6 +282,7 @@ def relabel_slice(X, df_slice, k, h):
 def grid_run(df, slices, args):
     """Перебор k x horizon на walk-forward срезах (фичи считаем один раз)."""
     from itertools import product
+
     from sklearn.metrics import accuracy_score, f1_score
 
     fold_subs = [
@@ -360,8 +362,8 @@ def main(argv=None):
     print("\n=== класс-баланс (train, первый фолд) ===")
     for line in charon["report"]:
         print(" ", line)
-    print(f"[hint] цель ≈ +1/-1/0 35/35/30; при сильном перекосе крутить "
-          f"--k/--horizon")
+    print("[hint] цель ≈ +1/-1/0 35/35/30; при сильном перекосе крутить "
+          "--k/--horizon")
 
     print("\n=== per-fold (walk-forward) ===")
     for res in (charon, ohlcv):

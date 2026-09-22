@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/scan (grid-search сканер стратегий).
 
 POST /api/scan                   — запуск скана (опц. body.custom_grids)
@@ -22,7 +21,6 @@ from flask import Blueprint, Response, jsonify, request
 from app_pkg import config, db
 from app_pkg.ai import scanner as scanner_mod
 from app_pkg.ai.scanner import _normalize_timeframes
-
 
 bp = Blueprint("scanner", __name__)
 log = logging.getLogger(__name__)
@@ -311,7 +309,7 @@ def api_scan_start():
             scanner_mod.run_scan(
                 symbols, timeframes, strategies,
                 run_id=run_id, grids=grids, use_full_history=use_full_history)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("scan run %s failed", run_id)
 
     threading.Thread(target=_bg, daemon=True,

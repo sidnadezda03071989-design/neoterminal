@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Grid по (k, horizon) для triple-barrier CBR: поиск сбалансированных классов.
 
 Для каждой пары (k, horizon) ставится временная CBR-БД из одних и тех же
@@ -24,10 +23,10 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config  # noqa: E402
-from app_pkg.cbr import backfill, schema, store  # noqa: E402
-from app_pkg.ml import labels  # noqa: E402
-from scripts import cbr_build  # noqa: E402
+from app_pkg import config
+from app_pkg.cbr import backfill, schema, store
+from app_pkg.ml import labels
+from scripts import cbr_build
 
 TARGET_UP, TARGET_DOWN, TARGET_FLAT = 0.35, 0.35, 0.30
 BALANCE_OK = 0.85

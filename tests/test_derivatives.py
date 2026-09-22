@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты деривативов (app_pkg/data/derivatives.py).
 
 Сеть не трогаем: requests.get монкипатчится по URL. Ветки: успех / ошибка

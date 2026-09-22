@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты 9 новых стратегий backtest.py (EMA, BB, Supertrend, Stoch, CCI,
 VWAP, ADX).
 
@@ -19,9 +18,17 @@ import pandas as pd
 import pytest
 
 from app_pkg.ai.backtest import (
-    STRATEGY_MAP, ADXTrend, BollingerBreakout, BollingerReversal, CCIReversal,
-    EMACross, StochasticCross, StochasticReversal, SupertrendFollow,
-    VWAPReversal, run_backtest,
+    STRATEGY_MAP,
+    ADXTrend,
+    BollingerBreakout,
+    BollingerReversal,
+    CCIReversal,
+    EMACross,
+    StochasticCross,
+    StochasticReversal,
+    SupertrendFollow,
+    VWAPReversal,
+    run_backtest,
 )
 
 T = 1_700_000_000

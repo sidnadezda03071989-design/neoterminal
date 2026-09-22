@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты AI Backtest «Псевдо-Харон»: уровни вероятностей (без сети).
 
 Проверяем:
@@ -19,10 +18,9 @@ import json
 import pandas as pd
 import pytest
 
-from app_pkg import config
+from app_pkg import config, create_app
 from app_pkg.ai import ai_backtest as aibt
 from app_pkg.data import fetch
-from app_pkg import create_app
 
 BASE_TS = 1700000000
 STEP = 3600

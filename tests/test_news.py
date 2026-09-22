@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты новостей по активу (app_pkg/data/news.py + routes/news.py).
 
 Сеть не трогаем: провайдеры _fetch_finnhub_category/_fetch_coingecko
@@ -12,8 +11,7 @@ import pytest
 
 from app_pkg import config, create_app
 from app_pkg.data import news as news_mod
-from app_pkg.data.news import (_clean_text, _merge_by_time, _norm_epoch,
-                               get_symbol_news)
+from app_pkg.data.news import _clean_text, _merge_by_time, _norm_epoch, get_symbol_news
 
 app = create_app()
 
@@ -112,7 +110,7 @@ def test_categories_crypto_vs_forex(monkeypatch):
         return []
 
     monkeypatch.setattr(news_mod, "_fetch_finnhub_category", fake_fh)
-    monkeypatch.setattr(news_mod, "_fetch_coingecko", lambda: [])
+    monkeypatch.setattr(news_mod, "_fetch_coingecko", list)
     news_mod._news_for_symbol("BTCUSDT")
     assert seen == {"crypto": 1}
     seen.clear()

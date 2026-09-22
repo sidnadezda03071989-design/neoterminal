@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Детерминированный фильтр сигналов поверх вердикта LLM.
 
 Правила (спека «MTF как обязательный фильтр») применяются ПОСЛЕ ответа
@@ -265,10 +264,7 @@ def filter_levels(levels, snapshot=None):
         side = str(lv.get("side") or "").strip().upper()
         prob = round(_clamp01(lv.get("probability")), 4)
         changed = False
-        if side == "UP" and h4 == "down":
-            prob = round(prob * config.SIGNAL_FILTER_MTF_AGAINST_MULT, 4)
-            changed = True
-        elif side == "DOWN" and h4 == "up":
+        if side == "UP" and h4 == "down" or side == "DOWN" and h4 == "up":
             prob = round(prob * config.SIGNAL_FILTER_MTF_AGAINST_MULT, 4)
             changed = True
         if adx_flat:

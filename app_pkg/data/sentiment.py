@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Толпа (crowd sentiment): long/short-соотношения Binance Futures + Fear&Greed.
 
 get_crowd_snapshot(symbol) -> dict

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты токен-диеты (без сети): контекст, история чата, кеш LLM.
 
 Проверяем:
@@ -21,9 +20,9 @@ import pandas as pd
 import pytest
 
 from app_pkg import config
-from app_pkg.ai.context import build_multi_tf_context, format_tf_section
 from app_pkg.ai import chat as ai_chat
 from app_pkg.ai import llm
+from app_pkg.ai.context import build_multi_tf_context, format_tf_section
 from app_pkg.cache import _LLM_RESPONSE_CACHE
 from app_pkg.data import fetch
 
@@ -111,7 +110,7 @@ def test_skip_tf_dropped_from_sections_but_not_trends(monkeypatch):
     assert "=== Candles 15m" in ctx
     # Trends строятся по всем ТФ.
     for tf in config.TIMEFRAMES:
-        assert f"15m: trend=" in ctx or tf in ctx.split("=== Trends ===")[1]
+        assert "15m: trend=" in ctx or tf in ctx.split("=== Trends ===")[1]
 
 
 def test_candle_format_no_commas(monkeypatch):

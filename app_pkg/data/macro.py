@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Макро-срез: ставки/индекс доллара (FRED) и календарь экономики (Finnhub).
 
 get_macro_snapshot(symbol) -> dict
@@ -147,8 +146,7 @@ def _parse_event_time(raw):
         return None
     try:
         iso = raw.strip().replace(" ", "T")
-        if iso.endswith("Z"):
-            iso = iso[:-1]
+        iso = iso.removesuffix("Z")
         dt = datetime.fromisoformat(iso)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)

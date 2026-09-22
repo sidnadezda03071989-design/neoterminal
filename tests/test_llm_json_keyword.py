@@ -15,7 +15,7 @@ import logging
 
 import pytest
 
-from app_pkg.ai import prompts, llm
+from app_pkg.ai import llm, prompts
 from app_pkg.ai.llm import _llm_request
 
 
@@ -62,7 +62,7 @@ def test_auto_adds_json_keyword(monkeypatch, caplog):
     """Промпт без 'json' -> в system, ушедший в POST, дописан '\\njson'."""
     captured = {}
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         captured["payload"] = json
         return _FakeResp()
 
@@ -84,7 +84,7 @@ def test_no_double_add_when_json_present(monkeypatch, caplog):
     """'json' уже в промпте/сообщении -> ничего не добавляется, без warning."""
     captured = {}
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         captured["payload"] = json
         return _FakeResp()
 
@@ -105,7 +105,7 @@ def test_user_message_json_counts(monkeypatch):
     """'json' в user-сообщении тоже спасает — system не дополняется."""
     captured = {}
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         captured["payload"] = json
         return _FakeResp()
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты ИИ-интеграции статистики сканера (app_pkg/ai/context.py и
 app_pkg/ai/ai_backtest.py::_scanner_block).
 
@@ -27,9 +26,9 @@ import pytest
 _DATA_DIR = tempfile.mkdtemp(prefix="neoterminal_test_")
 os.environ["DATA_DIR"] = _DATA_DIR
 
-from app_pkg import db  # noqa: E402
-from app_pkg.ai import context as ctx  # noqa: E402
-from app_pkg.ai import ai_backtest as aibt  # noqa: E402
+from app_pkg import db
+from app_pkg.ai import ai_backtest as aibt
+from app_pkg.ai import context as ctx
 
 T = 1_700_000_000
 STEP = 900

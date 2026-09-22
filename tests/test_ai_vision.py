@@ -9,10 +9,9 @@
 
 import pytest
 
-from app_pkg import config
-from app_pkg.cache import get_cached_verdict, _VERDICT_CACHE
+from app_pkg import config, create_app
+from app_pkg.cache import _VERDICT_CACHE, get_cached_verdict
 from app_pkg.data import fetch
-from app_pkg import create_app
 
 _PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUg" + "A" * 200  # короткий фейковый PNG
 
@@ -166,7 +165,7 @@ def test_vision_disabled_ignores_screenshot(client, monkeypatch):
                         lambda *a, **kw: (_ for _ in ()).throw(
                             AssertionError("vision must not run")))
 
-    fake_text = lambda ctx: dict(_FAKE_TEXT_RESULT)  # noqa: E731
+    fake_text = lambda ctx: dict(_FAKE_TEXT_RESULT)
     if config.GROQ_AGENT_MODE == 2:
         monkeypatch.setattr("app_pkg.routes.ai.analyze_with_agents", fake_text)
     else:
@@ -188,7 +187,7 @@ def test_cache_key_includes_has_screenshot(client, monkeypatch):
 
     monkeypatch.setattr("app_pkg.routes.ai._llm_vision_request",
                         lambda *a, **kw: json.dumps(_FAKE_VISION_RESULT))
-    fake_text = lambda ctx: dict(_FAKE_TEXT_RESULT)  # noqa: E731
+    fake_text = lambda ctx: dict(_FAKE_TEXT_RESULT)
     if config.GROQ_AGENT_MODE == 2:
         monkeypatch.setattr("app_pkg.routes.ai.analyze_with_agents", fake_text)
     else:

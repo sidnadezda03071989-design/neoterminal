@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Валидация CBR-only (B): пять проверок достоверности claimed Sharpe.
 
 После A/B/C (Этап 2) blended (C) стабильно обгоняет Charon (A) по winrate,
@@ -35,13 +34,20 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config  # noqa: E402
-from app_pkg.cbr import index as cbr_index  # noqa: E402
-from app_pkg.cbr import normalize as cbr_norm  # noqa: E402
-from app_pkg.cbr import query_api, schema, store  # noqa: E402
-from scripts.cbr_backtest_abc import (  # noqa: E402
-    DEFAULT_CSV, TRADE_HORIZON, TP_PCT, SL_FLOOR, SL_ATR_K,
-    direction, load_csv, load_db, snap_from_features,
+from app_pkg import config
+from app_pkg.cbr import index as cbr_index
+from app_pkg.cbr import normalize as cbr_norm
+from app_pkg.cbr import query_api, schema, store
+from scripts.cbr_backtest_abc import (
+    DEFAULT_CSV,
+    SL_ATR_K,
+    SL_FLOOR,
+    TP_PCT,
+    TRADE_HORIZON,
+    direction,
+    load_csv,
+    load_db,
+    snap_from_features,
 )
 
 REPORTS_DIR = _BASE_DIR / "reports"
@@ -188,7 +194,7 @@ def run_b_only(conn, db_rows, index, stats, csv_data, symbol, timeframe,
 
 def trade_stats(trades, key="net_pct"):
     """Метрики по списку сделок: n/winrate/avg_pnl/std/sharpe/dd/pf/bars."""
-    out = {"n": int(len(trades))}
+    out = {"n": len(trades)}
     if len(trades) == 0:
         out.update({"winrate": None, "avg_pnl_pct": None, "std_pnl_pct": None,
                     "sharpe": None, "max_dd_pct": None, "profit_factor": None,
@@ -406,8 +412,8 @@ def save_png(pargs, trades, wf_periods, out_path):
     """3 графика: equity curve (net), распределение PnL, Sharpe по периодам."""
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     pnls = [float(t["net_pct"]) for t in trades]
@@ -587,9 +593,9 @@ def main():
         recommendation = (f"набрать >= {N_MIN_OK} сделок: увеличить K, "
                           f"ослабить min_distance, затем повторить валидацию")
     else:
-        recommendation = (f"пересмотреть параметры K/min_distance при "
-                          f"фиксированных правилах и повторить валидацию; "
-                          f"blender/Этап 2 при этом не менять")
+        recommendation = ("пересмотреть параметры K/min_distance при "
+                          "фиксированных правилах и повторить валидацию; "
+                          "blender/Этап 2 при этом не менять")
 
     report = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

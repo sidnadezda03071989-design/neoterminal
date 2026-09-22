@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/chart-context — данные графика + контекст для ИИ."""
 
 import logging
@@ -6,10 +5,10 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
-from app_pkg.data.fetch import get_series_df, get_replay_df
-from app_pkg.indicators import slice_payload
 from app_pkg.ai.context import _compute_multi_tf_trends, build_multi_tf_context
+from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.db import db_get_all_drawings
+from app_pkg.indicators import slice_payload
 
 bp = Blueprint("chart_ctx", __name__)
 log = logging.getLogger(__name__)

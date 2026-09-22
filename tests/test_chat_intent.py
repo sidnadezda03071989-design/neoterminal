@@ -10,7 +10,7 @@
 import pytest
 
 from app_pkg import create_app
-from app_pkg.ai import prompts  # noqa: F401 — импорт не должен падать
+from app_pkg.ai import prompts
 from app_pkg.ai.chat import _detect_analysis_intent
 from app_pkg.cache import _VERDICT_CACHE
 from app_pkg.data import fetch

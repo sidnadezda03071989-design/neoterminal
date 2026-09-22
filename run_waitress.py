@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """NeoTerminal — production-запуск через Waitress."""
 
 import threading

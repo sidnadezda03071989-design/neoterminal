@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Оркестратор CBR-базы Харона (Этап 1+): запись снимков + backfill + отчёт.
 
 Читает OHLCV-источник (CSV в формате timestamp,open,high,low,close,volume
@@ -27,11 +26,11 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config, utils  # noqa: E402
-from app_pkg.cbr import backfill, index as cbr_index  # noqa: E402
-from app_pkg.cbr import normalize as cbr_norm  # noqa: E402
-from app_pkg.cbr import query_api, schema, store  # noqa: E402
-from app_pkg.ml import labels  # noqa: E402
+from app_pkg import config
+from app_pkg.cbr import backfill, query_api, schema, store
+from app_pkg.cbr import index as cbr_index
+from app_pkg.cbr import normalize as cbr_norm
+from app_pkg.ml import labels
 
 
 def build_stage2_artifacts(conn, symbol, timeframe):
@@ -57,7 +56,7 @@ def build_stage2_artifacts(conn, symbol, timeframe):
           f"index={index_path} stats={stats_path} "
           f"built_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}")
     return {"stats_path": stats_path, "index_path": index_path,
-            "rows": int(len(X))}
+            "rows": len(X)}
 
 
 def load_candle_df(csv_path=None, symbol=None, timeframe=None):

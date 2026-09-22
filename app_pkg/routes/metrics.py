@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /metrics (Prometheus text format) и /ws (SSE event-stream)."""
 
 from flask import Blueprint, Response

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Прототип ML-разметки: triple-barrier labeling (Лопес де Прадо).
 
 Подготавливает обучающий датасет из OHLCV (офлайн, без сети): для каждого
@@ -31,7 +30,6 @@ import os
 import numpy as np
 import pandas as pd
 
-from app_pkg import utils
 from app_pkg.data import market_snapshot
 from app_pkg.indicators import _atr, rsi_wilder
 
@@ -514,7 +512,7 @@ def build_labeled_dataset(df, k=DEFAULT_K, horizon=DEFAULT_HORIZON,
     if dropna:
         rows = rows.dropna(subset=["label"])
         rows = rows.dropna()          # прогревные звон-строки признаков
-    meta["n_labeled"] = int(len(rows))
+    meta["n_labeled"] = len(rows)
     meta["n_skipped"] = int(meta["n_computable"] - len(rows))
     if not rows.empty:
         counts = rows["label"].value_counts().to_dict()

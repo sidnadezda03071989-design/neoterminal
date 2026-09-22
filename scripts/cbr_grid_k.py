@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Сетка K x min_distance для CBR Этапа 2 (scripts/cbr_backtest_abc run-backbone).
 
 Прогоняет A/B/C-бэктест на 12 комбинациях (K, min_distance) с ОСТАЛЬНЫМИ
@@ -17,17 +16,20 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config  # noqa: E402
-from app_pkg.cbr import schema  # noqa: E402
-
-from scripts.cbr_backtest_abc import (  # noqa: E402
-    REPORTS_DIR, DEFAULT_CSV, build_verdict, load_csv, load_db, run_backtest)
+from app_pkg import config
+from app_pkg.cbr import schema
+from scripts.cbr_backtest_abc import (
+    DEFAULT_CSV,
+    REPORTS_DIR,
+    build_verdict,
+    load_csv,
+    load_db,
+    run_backtest,
+)
 
 # 12 комбинаций (K x min_distance).
 GRID_COMBOS = [

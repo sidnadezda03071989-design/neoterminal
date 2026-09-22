@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/chat, /api/chat/history, /api/chat/clear."""
 
 import logging
@@ -6,8 +5,8 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config
-from app_pkg.db import db_get_chat_history, db_clear_chat
 from app_pkg.ai.chat import chat_with_model
+from app_pkg.db import db_clear_chat, db_get_chat_history
 
 bp = Blueprint("chat", __name__)
 log = logging.getLogger(__name__)

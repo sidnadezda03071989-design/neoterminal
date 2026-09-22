@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Честная sanity-проверка token-diet CBR-API: SELECT LIMIT 50 vs API.
 
 LLM не грузит всю таблицу — наивно он дёрнул бы SELECT * LIMIT 50 по
@@ -20,8 +19,8 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config, utils  # noqa: E402
-from app_pkg.cbr import query_api, schema  # noqa: E402
+from app_pkg import config, utils
+from app_pkg.cbr import query_api, schema
 
 
 def canonical_tf(tf):

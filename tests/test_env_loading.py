@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app_pkg import config  # noqa: F401 — импорт пакета должен вызвать load_dotenv
+from app_pkg import config
 
 
 def test_load_dotenv_reads_tmp_env(tmp_path, monkeypatch):

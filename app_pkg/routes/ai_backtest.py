@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/ai-backtest (AI Backtest «Псевдо-Харон»).
 
 POST /api/ai-backtest           — расчёт уровней вероятностей (в фоне)
@@ -18,10 +17,11 @@ from flask import Blueprint, jsonify, request
 
 from app_pkg import config
 from app_pkg.ai.ai_backtest import (
-    get_run, run_ai_backtest, run_ai_backtest_async,
+    get_run,
+    run_ai_backtest,
+    run_ai_backtest_async,
 )
 from app_pkg.db import db_get_ai_backtest
-
 
 bp = Blueprint("ai_backtest", __name__)
 log = logging.getLogger(__name__)

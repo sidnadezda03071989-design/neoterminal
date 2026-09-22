@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Клиент LLM (OpenAI-совместимый API) для всего ИИ-стека.
 
 Fallback-цепочка из трёх провайдеров: DeepSeek через aitunnel.ru
@@ -49,13 +48,25 @@ from requests.adapters import HTTPAdapter
 from app_pkg import config
 from app_pkg.cache import get_cached_llm_response, set_cached_llm_response
 from app_pkg.config import (
-    DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    DEEPSEEK_VISION_MODEL, DEEPSEEK_TIMEOUT, DEEPSEEK_MAX_TOKENS,
-    GROQ_API_KEY, GROQ_BASE_URL, GROQ_MODEL, GROQ_VISION_MODEL,
-    GROQ_TIMEOUT, GROQ_MAX_TOKENS,
-    QWEN_API_KEY_1, QWEN_BASE_URL_1, QWEN_MODEL_1, QWEN_VL_MODEL,
-    QWEN_TIMEOUT, QWEN_MAX_TOKENS,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MAX_TOKENS,
+    DEEPSEEK_MODEL,
+    DEEPSEEK_TIMEOUT,
+    DEEPSEEK_VISION_MODEL,
+    GROQ_API_KEY,
+    GROQ_BASE_URL,
+    GROQ_MAX_TOKENS,
+    GROQ_MODEL,
+    GROQ_TIMEOUT,
+    GROQ_VISION_MODEL,
     LLM_PROVIDER_ORDER,
+    QWEN_API_KEY_1,
+    QWEN_BASE_URL_1,
+    QWEN_MAX_TOKENS,
+    QWEN_MODEL_1,
+    QWEN_TIMEOUT,
+    QWEN_VL_MODEL,
 )
 
 log = logging.getLogger(__name__)

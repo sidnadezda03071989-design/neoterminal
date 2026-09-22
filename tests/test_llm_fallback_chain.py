@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Fallback-цепочка провайдеров Qwen -> Groq -> DeepSeek (app_pkg/ai/llm.py).
 
 Сеть не трогаем: мокаем requests.Session.post и _vision_supported.
@@ -87,7 +86,7 @@ def _host(url):
 
 def _router(status_by_host, calls):
     """fake_post: статус по провайдеру + запись вызовов (host/url/payload)."""
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         host = _host(url)
         status = status_by_host[host]
         calls.append({"host": host, "url": url, "payload": json})

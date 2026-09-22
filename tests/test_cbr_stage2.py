@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты CBR Этапа 2: normalize / index (FAISS+k-NN) / blender / query_api /
 хук ai_backtest. Изолированы от data.db: синтетическая CBR-БД + tmp-артефакты.
 
@@ -24,11 +23,15 @@ from app_pkg import config
 from app_pkg.ai import ai_backtest as aibt
 from app_pkg.cbr import (
     blender,
-    index as cbr_index,
-    normalize as cbr_norm,
     query_api,
     schema,
     store,
+)
+from app_pkg.cbr import (
+    index as cbr_index,
+)
+from app_pkg.cbr import (
+    normalize as cbr_norm,
 )
 
 BASE_TS = 1_700_000_000

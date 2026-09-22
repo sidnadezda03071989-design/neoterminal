@@ -77,7 +77,7 @@ def apply_live_merge(symbol: str, tf: str, df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     try:
-        from app_pkg.data.live import live_bars, _live_bars_lock
+        from app_pkg.data.live import _live_bars_lock, live_bars
         with _live_bars_lock:
             bar = live_bars.get((symbol, tf))
     except Exception:  # noqa: BLE001

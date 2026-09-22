@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: новости по активу (/api/news/<symbol>)."""
 
 import logging

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/data, /api/last-bar, /api/replay-data, /api/watchlist."""
 
 import logging
@@ -7,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
-from app_pkg.data.fetch import get_series_df, get_replay_df
+from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.indicators import compute_indicators, df_to_payload
 
 bp = Blueprint("data", __name__)

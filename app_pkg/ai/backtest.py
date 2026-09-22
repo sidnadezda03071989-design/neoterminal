@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Бэктест торговых стратегий на исторических данных."""
 
 import logging
@@ -10,7 +9,11 @@ import pandas as pd
 from app_pkg import config, utils
 from app_pkg.data.fetch import get_replay_df
 from app_pkg.indicators import (
-    _adx, _atr, _supertrend, compute_indicators, rsi_wilder,
+    _adx,
+    _atr,
+    _supertrend,
+    compute_indicators,
+    rsi_wilder,
 )
 
 log = logging.getLogger(__name__)
@@ -32,7 +35,6 @@ class BacktestStrategy(ABC):
 
     def _precompute(self, df):
         """Предрасчёт производных серий под свои params; переопределяется."""
-        pass
 
     @abstractmethod
     def next(self, candles, ind, i, position, cash, equity_log):
@@ -869,11 +871,9 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     max_dd = 0
     peak = equity_log[0]["equity"]
     for e in equity_log:
-        if e["equity"] > peak:
-            peak = e["equity"]
+        peak = max(peak, e["equity"])
         dd = (peak - e["equity"]) / peak
-        if dd > max_dd:
-            max_dd = dd
+        max_dd = max(max_dd, dd)
 
     total_trades = len(trades)
     # BLOCK-40: winrate — доля прибыльных среди закрытых С НЕНУЛЕВЫМ

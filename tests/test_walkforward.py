@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Walk-forward (rolling-окна) и purge-сплит сканера.
 
 Без сети: run_backtest/get_replay_df мокаются. Проверяем:
@@ -10,7 +9,6 @@
     walk-forward (wf_folds) без поломки записи в БД.
 """
 
-import threading
 
 import pandas as pd
 import pytest

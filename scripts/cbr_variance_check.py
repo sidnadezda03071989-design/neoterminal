@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Variance-check CBR-базы перед Этапом 2 (FAISS + k-NN).
 
 Отвечает на вопрос: различаются ли снапшоты между собой в 44D пространстве
@@ -46,12 +45,12 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from sklearn.decomposition import PCA  # noqa: E402
-from sklearn.metrics.pairwise import euclidean_distances  # noqa: E402
-from sklearn.neighbors import NearestNeighbors  # noqa: E402
+from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.neighbors import NearestNeighbors
 
-from app_pkg import config, utils  # noqa: E402
-from app_pkg.cbr import schema, store  # noqa: E402
+from app_pkg import config
+from app_pkg.cbr import schema, store
 
 SEED = 42
 EPS = 1e-9
@@ -216,7 +215,7 @@ def metric_pca(X):
     pca.fit(zscore(X))
     cumvar = np.cumsum(pca.explained_variance_ratio_)
     mask = cumvar >= 0.80
-    n_80 = int(np.argmax(mask) + 1) if mask.any() else int(len(cumvar))
+    n_80 = int(np.argmax(mask) + 1) if mask.any() else len(cumvar)
     if n_80 > PCA_FAIL:
         status = "FAIL"
     elif n_80 > PCA_WARN:
@@ -224,7 +223,7 @@ def metric_pca(X):
     else:
         status = "OK"
     return {"key": "pca", "value": n_80, "status": status,
-            "n_components": int(len(cumvar)), "_cumvar": cumvar}
+            "n_components": len(cumvar), "_cumvar": cumvar}
 
 
 def metric_knn_up_std(X, y, k=KNN_K, n_queries=KNN_QUERIES, seed=SEED):
@@ -272,7 +271,7 @@ def metric_regime_winrate(regimes, y):
     spread = float(rates.max() - rates.min())
     status = "OK" if spread >= REGIME_MIN_SPREAD else "FAIL"
     return {"key": "regime_winrate", "value": spread, "status": status,
-            "by_regime": by_regime, "n_regimes": int(len(by_regime))}
+            "by_regime": by_regime, "n_regimes": len(by_regime)}
 
 
 # ------------------------------------------------------------------- чек
@@ -295,7 +294,7 @@ def run_check(X, y, regimes=None):
     counts = {int(v): int((y_arr == v).sum()) for v in (-1, 0, 1)}
     return {
         "metrics": metrics,
-        "n": int(len(y_arr)),
+        "n": len(y_arr),
         "feature_dim": int(np.asarray(X).shape[1]),
         "outcome_balance": counts,
         "fails": fails,
@@ -501,7 +500,7 @@ def main(argv=None):
     if res["verdict"] == "NO-GO":
         idx, selected = select_top_features(X, store.FEATURE_NAMES)
         sub = run_check(X[:, idx], y, regimes)
-        print(f"\n=== Feature selection (NO-GO) ===")
+        print("\n=== Feature selection (NO-GO) ===")
         src = "permutation importance" if load_perm_features() else "variance"
         print(f"Источник топ-15: {src}")
         print("Топ-15: " + ", ".join(selected))

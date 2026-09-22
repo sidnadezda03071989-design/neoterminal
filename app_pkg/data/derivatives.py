@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Деривативы крипты: open interest, funding, basis, top long/short (Binance).
 
 get_derivatives_snapshot(symbol) -> dict

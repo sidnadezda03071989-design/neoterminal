@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Асинхронная разметка outcome по triple-barrier (конвенция labels.py).
 
 backfill_outcomes берёт PENDING-строки таблицы snapshots (outcome IS NULL)

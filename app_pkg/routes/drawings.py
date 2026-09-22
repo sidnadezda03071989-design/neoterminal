@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/drawings CRUD + /api/ai-draw."""
 
 import logging
@@ -8,12 +7,15 @@ import pandas as pd
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
-from app_pkg.db import (
-    db_get_all_drawings, db_add_drawing, db_update_drawing,
-    db_delete_drawing, db_clear_drawings,
-)
 from app_pkg.ai.agents import _normalize_model_drawings
 from app_pkg.data.fetch import get_series_df
+from app_pkg.db import (
+    db_add_drawing,
+    db_clear_drawings,
+    db_delete_drawing,
+    db_get_all_drawings,
+    db_update_drawing,
+)
 
 bp = Blueprint("drawings", __name__)
 log = logging.getLogger(__name__)

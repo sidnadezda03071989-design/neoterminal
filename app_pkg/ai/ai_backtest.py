@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI Backtest «Псевдо-Харон»: вероятностные уровни через LLM.
 
 По методу Харона опасность рынка оценивается не индикаторами, а уровнями
@@ -30,7 +29,7 @@ import pandas as pd
 
 from app_pkg import config, db, utils
 from app_pkg.ai.context import build_multi_tf_context
-from app_pkg.ai.llm import _llm_request, _extract_json
+from app_pkg.ai.llm import _extract_json, _llm_request
 from app_pkg.ai.prompts import charon_prompt_text
 from app_pkg.ai.signal_filter import filter_levels, filter_verdict
 from app_pkg.ai.structure_levels import structure_levels_from_df
@@ -96,7 +95,7 @@ def _push_progress(run_id, done, total, upto_sec=None, levels=0,
         if error:
             data["error"] = error
         _ws_push("ai_backtest_progress", data)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("ai_backtest_progress push failed")
 
 
@@ -310,7 +309,7 @@ def _structure_levels(symbol, timeframe, upto_sec, current_price):
         if df is None or df.empty:
             return []
         return structure_levels_from_df(df, current_price)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("ai_backtest structure levels failed")
         return []
 
@@ -503,7 +502,7 @@ def _slice_price(symbol, timeframe, upto_sec=None):
             if df.empty:
                 return None
         return utils._clean(df["close"].iloc[-1])
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("ai_backtest slice price failed")
         return None
 
@@ -553,7 +552,7 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
                 {"mode": mode, "upto_sec": upto_sec, "model": model,
                  "price": result["price"]},
                 {}, levels, [])
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("ai_backtest db save failed")
 
     _RUNS[run_id] = result
@@ -576,7 +575,7 @@ def run_ai_backtest_async(symbol, timeframe, upto_sec=None, mode="live",
         try:
             run_ai_backtest(symbol, timeframe, upto_sec=upto_sec, mode=mode,
                             model=model, run_id=run_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("ai_backtest %s failed", run_id[:8])
             _RUNS[run_id] = {"run_id": run_id, "status": "finished",
                              "error": "Внутренняя ошибка расчёта уровней",

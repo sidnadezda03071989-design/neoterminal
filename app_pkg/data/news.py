@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Новости по активу: Finnhub (основной) + CoinGecko (вторичный).
 
 Finnhub /news отдаёт категориальные ленты (crypto/forex/general) — они
@@ -19,7 +18,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
 

@@ -162,13 +162,12 @@ def get_setting(key: str, default=None):
 def set_setting(key: str, value) -> None:
     """Сохранить настройку (upsert). value приводится к строке."""
     conn = _get_db()
-    with _db_lock:
-        with conn:
-            conn.execute(
-                "INSERT INTO settings(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, str(value)),
-            )
+    with _db_lock, conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
 
 
 def get_scan_rr() -> float:
@@ -470,17 +469,16 @@ def db_save_note(symbol: str, content: str, screenshots: list) -> None:
     """Сохранить/обновить заметку по активу (UPSERT по symbol)."""
     ts = utils.now_iso()
     conn = _get_db()
-    with _db_lock:
-        with conn:
-            conn.execute(
-                "INSERT INTO asset_notes (symbol, content, screenshots_json, "
-                "created_at, updated_at) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(symbol) DO UPDATE SET content=excluded.content, "
-                "screenshots_json=excluded.screenshots_json, "
-                "updated_at=excluded.updated_at",
-                (symbol, content, json.dumps(screenshots or [], ensure_ascii=False),
-                 ts, ts),
-            )
+    with _db_lock, conn:
+        conn.execute(
+            "INSERT INTO asset_notes (symbol, content, screenshots_json, "
+            "created_at, updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(symbol) DO UPDATE SET content=excluded.content, "
+            "screenshots_json=excluded.screenshots_json, "
+            "updated_at=excluded.updated_at",
+            (symbol, content, json.dumps(screenshots or [], ensure_ascii=False),
+             ts, ts),
+        )
 
 
 def db_list_notes() -> list:
@@ -524,17 +522,16 @@ def db_save_journal(content: str, screenshots: list) -> None:
     """Сохранить/обновить журнал (единственная запись id=1)."""
     ts = utils.now_iso()
     conn = _get_db()
-    with _db_lock:
-        with conn:
-            conn.execute(
-                "INSERT INTO journal (id, content, screenshots_json, "
-                "created_at, updated_at) VALUES (1,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET content=excluded.content, "
-                "screenshots_json=excluded.screenshots_json, "
-                "updated_at=excluded.updated_at",
-                (content, json.dumps(screenshots or [], ensure_ascii=False),
-                 ts, ts),
-            )
+    with _db_lock, conn:
+        conn.execute(
+            "INSERT INTO journal (id, content, screenshots_json, "
+            "created_at, updated_at) VALUES (1,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET content=excluded.content, "
+            "screenshots_json=excluded.screenshots_json, "
+            "updated_at=excluded.updated_at",
+            (content, json.dumps(screenshots or [], ensure_ascii=False),
+             ts, ts),
+        )
 
 
 # ------------------------------------------------------------------ scan

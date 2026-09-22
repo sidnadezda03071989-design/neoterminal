@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты variance-check CBR-БД перед Этапом 2 (FAISS + k-NN).
 
 Покрытие:
@@ -19,7 +18,6 @@ from scripts.cbr_variance_check import (
     metric_low_variance,
     metric_pairwise_ratio,
     metric_pca,
-    metric_regime_winrate,
     run_check,
     zscore,
 )

@@ -28,7 +28,7 @@ def _capture_request(monkeypatch, response):
     """Мокает _llm_request, возвращает список перехваченных вызовов."""
     calls = []
 
-    def fake(system, messages, **kw):  # noqa: ARG001
+    def fake(system, messages, **kw):
         calls.append({"system": system, "messages": messages})
         return response
 
@@ -131,7 +131,7 @@ def test_analysis_flow_uses_llm_request(monkeypatch):
 
     captured = {}
 
-    def fake_llm(system, messages, **kw):  # noqa: ARG001
+    def fake_llm(system, messages, **kw):
         captured["system"] = system
         captured["roles"] = [m["role"] for m in messages]
         return json.dumps({"signal": "BUY", "confidence": 0.8, "reason": "ok",

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """FAISS-индекс CBR (Этап 2): HNSW32 / Flat, L2-метрика, сохранение/загрузка.
 
 Индекс строится по НОРМАЛИЗОВАННЫМ 44-фич векторам (rolling z-score,
@@ -93,7 +92,6 @@ def build_faiss_index(X_normalized, index_type="HNSW"):
 
 def save_index(index, path):
     """Сохраняет индекс на диск. faiss — бинарный фaiss-формат, sklearn — pickle."""
-    import os
     from pathlib import Path
     path = str(path)
     Path(path).parent.mkdir(parents=True, exist_ok=True)

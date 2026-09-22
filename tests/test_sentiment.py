@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты crowd-сентимента (app_pkg/data/sentiment.py).
 
 Сеть не трогаем: requests.get монкипатчится по URL. Ветки: успех / ошибка

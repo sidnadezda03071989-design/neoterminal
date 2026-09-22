@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """BLOCK-40: метрики бэктеста — profit factor, winrate, expectancy.
 
 Синтетический df без сетевого доступа: run_backtest(df=...) данные не ходит.

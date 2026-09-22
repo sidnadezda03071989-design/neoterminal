@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """A/B/C-бэктест CBR Этапа 2: Charon-only vs CBR-only vs blended.
 
 Сравнение трёх двигателей на ОДНОМ и том же окне истории:
@@ -37,11 +36,15 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config  # noqa: E402
-from app_pkg.cbr import blender  # noqa: E402
-from app_pkg.cbr import index as cbr_index  # noqa: E402
-from app_pkg.cbr import normalize as cbr_norm  # noqa: E402
-from app_pkg.cbr import query_api, schema, store  # noqa: E402
+from app_pkg import config
+from app_pkg.cbr import (
+    blender,
+    query_api,
+    schema,
+    store,
+)
+from app_pkg.cbr import index as cbr_index
+from app_pkg.cbr import normalize as cbr_norm
 
 REPORTS_DIR = _BASE_DIR / "reports"
 DEFAULT_CSV = _BASE_DIR / "scripts" / "charon_data_cache" / "BTCUSDT_1h_700d.csv"
@@ -252,7 +255,7 @@ def simulate_trade(ts_arr, o_arr, h_arr, l_arr, c_arr, pos_map, ts_q,
 def metrics(pnl_list):
     """Метрики двигателя по списку PnL сделок (None = сделки не было)."""
     pnl = np.asarray([p for p in pnl_list if p is not None], dtype="float64")
-    base = {"trades": int(len(pnl))}
+    base = {"trades": len(pnl)}
     if len(pnl) == 0:
         base.update({"winrate": None, "avg_pnl_pct": None, "profit_factor": None,
                      "sharpe": None, "max_dd": None, "sum_pnl_pct": 0.0})
@@ -281,7 +284,7 @@ def metrics(pnl_list):
 
 def _cold(rows):
     """cold-по последнему n кэша (если надо — тут не используется)."""
-    return None
+    return
 
 
 def run_backtest(conn, db_rows, csv_name, K, min_distance, regime_match,

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Чат с ИИ: определение интента, анализ рынка или обычное общение."""
 
 import logging
@@ -8,18 +7,24 @@ import uuid
 import pandas as pd
 
 from app_pkg import config
-from app_pkg.db import (
-    db_append_chat, db_get_chat_history, db_get_all_drawings, db_add_drawing,
-)
-from app_pkg.ai.prompts import (
-    CHAT_SYSTEM_PROMPT_SMALLTALK, _ANALYZE_INTENT_RE,
-)
-from app_pkg.ai.llm import _extract_json, _llm_request
 from app_pkg.ai.agents import (
-    analyze_with_agents, analyze_with_ai, _normalize_model_drawings,
+    _normalize_model_drawings,
+    analyze_with_agents,
+    analyze_with_ai,
 )
 from app_pkg.ai.context import build_multi_tf_context
-from app_pkg.data.fetch import get_series_df, get_replay_df
+from app_pkg.ai.llm import _extract_json, _llm_request
+from app_pkg.ai.prompts import (
+    _ANALYZE_INTENT_RE,
+    CHAT_SYSTEM_PROMPT_SMALLTALK,
+)
+from app_pkg.data.fetch import get_replay_df, get_series_df
+from app_pkg.db import (
+    db_add_drawing,
+    db_append_chat,
+    db_get_all_drawings,
+    db_get_chat_history,
+)
 from app_pkg.utils import _clean, epoch_secs
 
 log = logging.getLogger(__name__)
@@ -43,7 +48,6 @@ def _candles_from_df(df):
     """DataFrame -> список компактных свечей для снапа рисунков."""
     if df is None or df.empty:
         return []
-    import pandas as pd
     result = []
     for _, r in df.iterrows():
         result.append({

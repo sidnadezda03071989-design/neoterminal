@@ -1,14 +1,18 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/alerts, /api/alerts/<id>, /api/positions."""
 
 import logging
 
 from flask import Blueprint, jsonify, request
 
-from app_pkg import config, utils
+from app_pkg import config
 from app_pkg.db import (
-    db_get_alerts, db_add_alert, db_delete_alert,
-    db_get_positions, db_open_position, db_close_position, db_log_trade,
+    db_add_alert,
+    db_close_position,
+    db_delete_alert,
+    db_get_alerts,
+    db_get_positions,
+    db_log_trade,
+    db_open_position,
 )
 
 bp = Blueprint("alerts", __name__)

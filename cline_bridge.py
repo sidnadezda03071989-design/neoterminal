@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """cline_bridge.py — внешняя обёртка для управления Cline CLI из другого процесса.
 
 Принимает задачу (аргумент командной строки или stdin), запускает Cline
@@ -30,7 +29,6 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -62,9 +60,9 @@ def _resolve_cline_command() -> list:
     return ["cline"]
 
 
-def _build_argv(task: str, timeout: int, provider: Optional[str],
-                model: Optional[str], thinking: Optional[str],
-                cwd: Optional[str], yolo: bool) -> list:
+def _build_argv(task: str, timeout: int, provider: str | None,
+                model: str | None, thinking: str | None,
+                cwd: str | None, yolo: bool) -> list:
     """Собрать argv для cline CLI (без запуска)."""
     argv = _resolve_cline_command()
     argv.append("--json")
@@ -119,10 +117,10 @@ def _looks_like_crash(result: dict) -> bool:
 def run_cline_task(
     task: str,
     timeout: int = DEFAULT_TIMEOUT,
-    cwd: Optional[str] = None,
-    provider: Optional[str] = DEFAULT_PROVIDER,
-    model: Optional[str] = DEFAULT_MODEL,
-    thinking: Optional[str] = None,
+    cwd: str | None = None,
+    provider: str | None = DEFAULT_PROVIDER,
+    model: str | None = DEFAULT_MODEL,
+    thinking: str | None = None,
     yolo: bool = True,
     retries: int = 0,
 ) -> dict:
@@ -166,10 +164,10 @@ def run_cline_task(
 def _launch(
     task: str,
     timeout: int,
-    cwd: Optional[str],
-    provider: Optional[str],
-    model: Optional[str],
-    thinking: Optional[str],
+    cwd: str | None,
+    provider: str | None,
+    model: str | None,
+    thinking: str | None,
     yolo: bool,
 ) -> dict:
     """Один запуск cline; контракт ответа — см. run_cline_task."""

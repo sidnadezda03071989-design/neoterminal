@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/ai-data (вкладка «🧠 Данные для ИИ»).
 
 GET  /api/ai-data/raw?symbol=BTCUSDT&timeframe=15m
@@ -12,7 +11,7 @@ POST /api/ai-data/prompt
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Blueprint, jsonify, request
 

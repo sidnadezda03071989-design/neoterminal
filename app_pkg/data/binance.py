@@ -118,7 +118,7 @@ def fetch_binance_paged(symbol: str, interval: str, total: int = _KLINES_PAGE_LI
             params["endTime"] = end_ms
         try:
             resp = _binance_get("/api/v3/klines", params)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Первая страница — ошибка наружу; на следующих отдаём то,
             # что уже успели скачать, вместо потери всей истории.
             if not pages:

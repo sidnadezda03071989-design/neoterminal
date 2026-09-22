@@ -55,7 +55,7 @@ def test_http_200_no_warning(monkeypatch, caplog):
     """HTTP 200 -> content модели, HTTP-warning'ов нет, response_format есть."""
     captured = {}
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         captured["url"] = url
         captured["payload"] = json
         captured["headers"] = kw.get("headers")
@@ -87,7 +87,7 @@ def test_fallback_on_400_drops_response_format(monkeypatch):
     """Попытка 1 (400 с response_format) -> попытка 2 без него + JSON-инструкция."""
     posts = []
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         posts.append(json)
         if len(posts) == 1:
             return _FakeResp(400, "response_format is not supported")
@@ -143,7 +143,7 @@ def test_rate_limit_429_all_providers(monkeypatch):
     """HTTP 429 у ВСЕХ провайдеров цепочки -> RuntimeError('rate limit')."""
     calls = []
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         calls.append(url)
         return _FakeResp(429, "too many requests")
 
@@ -160,7 +160,7 @@ def test_system_duplicates_removed(monkeypatch, caplog):
     """System-дубликаты в messages удаляются (двойной system ломает API)."""
     captured = {}
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         captured["payload"] = json
         return _FakeResp(200)
 

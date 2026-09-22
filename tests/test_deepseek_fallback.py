@@ -66,7 +66,7 @@ def _creds(monkeypatch):
 
 def _router(status_by_host, calls, text="forbidden"):
     """fake_post: статус по провайдеру (ds/groq) + запись вызовов."""
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         host = "groq" if url.startswith(_GROQ_URL) else "ds"
         status = status_by_host[host]
         calls.append({"host": host, "url": url, "payload": json})
@@ -160,7 +160,7 @@ def test_vision_both_unavailable_raises(monkeypatch):
 # ------------------------------------------------- сетевые сбои (fallback)
 def _network_router(error, calls, groq_status=200):
     """fake_post: DeepSeek падает сетью, Groq отвечает groq_status."""
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         host = "groq" if url.startswith(_GROQ_URL) else "ds"
         calls.append({"host": host, "url": url, "payload": json})
         if host == "ds":
@@ -196,7 +196,7 @@ def test_network_error_both_providers_returns_none(monkeypatch):
     """Сеть легла у DeepSeek и у Groq -> None (не исключение)."""
     calls = []
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         calls.append(url)
         raise requests.ConnectionError("network down")
 
@@ -222,7 +222,7 @@ def test_vision_network_error_falls_back_to_groq(monkeypatch):
 
 def test_vision_network_error_both_unavailable_raises(monkeypatch):
     """Vision: сеть легла у обоих -> RuntimeError('vision unavailable')."""
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         raise requests.ReadTimeout("timeout")
 
     monkeypatch.setattr(llm._LLM_SESSION, "post", fake_post)
@@ -236,7 +236,7 @@ def test_http_fallback_then_network_error_returns_none(monkeypatch):
     """DeepSeek 403 -> retry на Groq, у Groq сеть упала -> None."""
     calls = []
 
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         calls.append(url)
         if url.startswith(_GROQ_URL):
             raise requests.ConnectionError("groq down")
@@ -251,7 +251,7 @@ def test_http_fallback_then_network_error_returns_none(monkeypatch):
 
 def test_vision_http_fallback_then_network_error_raises(monkeypatch):
     """Vision: 403 DeepSeek -> Groq, сеть упала -> RuntimeError."""
-    def fake_post(url, json=None, **kw):  # noqa: A002
+    def fake_post(url, json=None, **kw):
         if url.startswith(_GROQ_URL):
             raise requests.ConnectionError("groq down")
         return _FakeResp(403, "forbidden")

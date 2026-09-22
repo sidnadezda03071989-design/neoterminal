@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint'ы доп. блоков Market Snapshot.
 
 GET /api/sentiment?symbol=BTCUSDT      — crowd (только крипта)

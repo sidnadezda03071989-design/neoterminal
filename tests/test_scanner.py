@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты grid-search сканера стратегий (app_pkg/ai/scanner.py).
 
 Все тесты — с моком run_backtest и get_replay_df (без сети). Проверяем:

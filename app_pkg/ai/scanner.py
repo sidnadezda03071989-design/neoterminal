@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Grid-search сканер стратегий.
 
 Перебирает декартово произведение параметров SCAN_GRIDS по каждой стратегии,
@@ -400,7 +399,7 @@ def _push_progress(run_id, done, total, current, eta_seconds=None,
         if cancelled:
             data["cancelled"] = True
         _ws_push("scan_progress", data)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("scan_progress push failed")
 
 
@@ -582,7 +581,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                         done += 1
                         try:
                             res = fut.result()
-                        except Exception:  # noqa: BLE001 — не роняем весь скан
+                        except Exception:
                             log.exception("scan: комбинация %s упала", params)
                             res = None
                         if res:
@@ -610,7 +609,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                                 try:
                                     saved_total += db.db_save_scan_results(
                                         run_id, results_buffer)
-                                except Exception:  # noqa: BLE001 — не валим скан
+                                except Exception:
                                     log.exception(
                                         "scan: batch save failed (%d rows)",
                                         len(results_buffer))
@@ -647,14 +646,14 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                         try:
                             saved_total += db.db_save_scan_results(
                                 run_id, results_buffer)
-                        except Exception:  # noqa: BLE001 — не валим скан
+                        except Exception:
                             log.exception(
                                 "scan: batch flush failed (%d rows)",
                                 len(results_buffer))
                         results_buffer.clear()
                 log.info("scan: %s/%s strategy=%s done (%d saved)",
                          symbol, tf, strategy, strategy_kept)
-        except Exception as exc:  # noqa: BLE001 — не валим весь скан
+        except Exception as exc:
             log.exception("scan: %s/%s crashed: %s", symbol, tf, exc)
             RUN_STATS[run_id].update(
                 tf_index=tf_index, tf_total=len(tfs), current_tf=tf,

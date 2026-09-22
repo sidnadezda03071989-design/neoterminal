@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Аудит look-ahead bias в CBR k-NN (Этап 2): scripts/cbr_lookahead_audit.py.
 
 Проверяет, что get_similar_summary возвращает в соседи только бары, чей
@@ -37,11 +36,11 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 if str(_BASE_DIR) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR))
 
-from app_pkg import config  # noqa: E402
-from app_pkg.cbr import index as cbr_index  # noqa: E402
-from app_pkg.cbr import normalize as cbr_norm  # noqa: E402
-from app_pkg.cbr import query_api, schema, store  # noqa: E402
-from scripts.cbr_backtest_abc import load_db, snap_from_features  # noqa: E402
+from app_pkg import config
+from app_pkg.cbr import index as cbr_index
+from app_pkg.cbr import normalize as cbr_norm
+from app_pkg.cbr import query_api, schema
+from scripts.cbr_backtest_abc import load_db, snap_from_features
 
 # Порог спреда вероятностей для направления (та же конвенция, что в
 # cbr_backtest_abc.SIG_SPREAD): |up - down| > 0.15 -> сделка L/S.

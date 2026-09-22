@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты Market Snapshot: честные данные для ИИ (app_pkg/data/market_snapshot.py).
 
 Проверяем:

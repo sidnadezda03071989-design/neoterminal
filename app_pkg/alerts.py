@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Алерты: проверка условий по последней свече и доставка уведомлений.
 
 Каналы: browser (SSE через ws._ws_push), webhook (requests POST),
@@ -10,10 +9,12 @@ import threading
 import time
 
 from app_pkg import config
-from app_pkg.db import (
-    db_get_alerts, db_mark_alert_triggered, db_commit,
-)
 from app_pkg.data.fetch import get_series_df
+from app_pkg.db import (
+    db_commit,
+    db_get_alerts,
+    db_mark_alert_triggered,
+)
 from app_pkg.ws import _ws_push
 
 log = logging.getLogger(__name__)

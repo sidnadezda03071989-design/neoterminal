@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: заметки по активу + торговый журнал (/api/notes, /api/journal).
 
 GET  /api/notes/<symbol>  → заметка актива {content, screenshots, updated_at}
@@ -17,8 +16,13 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from app_pkg.db import (db_get_journal, db_get_note, db_list_notes,
-                        db_save_journal, db_save_note)
+from app_pkg.db import (
+    db_get_journal,
+    db_get_note,
+    db_list_notes,
+    db_save_journal,
+    db_save_note,
+)
 
 bp = Blueprint("notes", __name__)
 log = logging.getLogger(__name__)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Сентимент новостей по активу: lexicon-скоринг заголовков (без LLM).
 
 get_news_sentiment(symbol, limit=30) -> dict

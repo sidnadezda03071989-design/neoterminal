@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Blueprint: /api/backtest, /api/backtest/strategies."""
 
 import logging
@@ -7,7 +6,7 @@ import time
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, db
-from app_pkg.ai.backtest import run_backtest, STRATEGY_MAP
+from app_pkg.ai.backtest import STRATEGY_MAP, run_backtest
 
 bp = Blueprint("backtest", __name__)
 log = logging.getLogger(__name__)

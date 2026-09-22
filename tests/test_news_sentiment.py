@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты lexicon-сентимента новостей (app_pkg/data/news_sentiment.py).
 
 Лента подменяется (get_symbol_news монкипатчится) — сети нет. Ветки: успех /
@@ -8,8 +7,7 @@
 import pytest
 
 from app_pkg.data import news_sentiment as ns
-from app_pkg.data.news_sentiment import (_score_headline,
-                                         get_news_sentiment)
+from app_pkg.data.news_sentiment import _score_headline, get_news_sentiment
 
 
 @pytest.fixture(autouse=True)

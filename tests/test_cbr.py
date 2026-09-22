@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Тесты CBR-базы Харона (Этап 1+): schema/store/backfill/query_api + хуки.
 
 Покрытие:
@@ -17,7 +16,6 @@
 """
 
 import json
-import os
 from pathlib import Path
 
 import numpy as np

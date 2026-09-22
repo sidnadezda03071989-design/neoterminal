@@ -10,11 +10,9 @@ symbol/timeframe.
 import pandas as pd
 import pytest
 
-from app_pkg import config
-from app_pkg import create_app
+from app_pkg import config, create_app
 from app_pkg.data import fetch
 from app_pkg.indicators import compute_indicators
-
 
 _ROWS = [
     (1700000000, 1.0, 2.0, 0.5, 1.5, 10.0),

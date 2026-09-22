@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Мультиагентный анализ рынка через Groq.
 
 Порядок в модуле: header, imports, log, def.
@@ -12,10 +11,12 @@ import statistics
 from concurrent.futures import ThreadPoolExecutor
 
 from app_pkg import config
+from app_pkg.ai.llm import _extract_json, _llm_request
 from app_pkg.ai.prompts import (
-    QWEN_SYSTEM_PROMPT, AGENT1_SYSTEM_PROMPT, AGENT2_SYSTEM_PROMPT,
+    AGENT1_SYSTEM_PROMPT,
+    AGENT2_SYSTEM_PROMPT,
+    QWEN_SYSTEM_PROMPT,
 )
-from app_pkg.ai.llm import _llm_request, _extract_json
 
 log = logging.getLogger(__name__)
 
