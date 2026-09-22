@@ -8,6 +8,18 @@
 get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None) -> dict:
     technicals   — RSI(14), ATR(14), BB %B, SMA20 diff %, ATR-перцентиль,
                    дистанции до 50-барных экстремумов, последняя цена;
+    volume       — rel_vol/obv_slope/vol_zscore/vol_percentile/vwap_dev (локально по OHLCV);
+    trend        — adx/plus_di/minus_di/di_spread/ema20_50_ratio/reg_slope_20;
+    momentum     — macd/macd_signal/macd_hist/macd_hist_slope/rsi_slope;
+    volatility   — bb_width/bb_width_pct/hv20/atr_change_pct/atr_ratio_short_long;
+    regime       — hurst/autocorr_lag1/efficiency_ratio (режим рынка);
+    divergence   — rsi_price/macd_price/obv_price (дивергенции цены против
+                   индикатора за 20 баров: -1 bearish / +1 bullish / 0 none);
+    candle       — body_ratio/upper_wick_ratio/lower_wick_ratio/engulfing/pinbar
+                   по последней свече (feature, не правило);
+    context      — corr_btc_30 + eth_btc_corr_30 (крипта, локально по OHLCV
+                   BTCUSDT/ETHUSDT) и null-заглушки
+                   btc_dominance/corr_dxy_30/beta_index/index_return_1d/index_rsi;
     scanner_edge — лучшая комбинация сканера
                    (winrate/sharpe/max_dd/profit_factor/trades/test_sharpe/params);
     sentiment    — crowd: ls_ratio/long_pct/short_pct/taker_buy_sell/fear_greed
@@ -17,6 +29,8 @@ get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None) -> dict:
     calendar     — экономический календарь (Finnhub) для валюты пары;
     derivatives  — open_interest/oi_change_1h_pct/funding_rate/basis_pct/
                    top_ls_ratio (крипта);
+    micro        — микроструктура стакана (Binance spot, крипта):
+                   spread_norm/ob_imb_10/bid_sum_10/ask_sum_10/large_trades_ratio;
     news_sentiment — lexicon-скоринг заголовков ленты актива (без LLM);
     clock        — сессии по времени ПОСЛЕДНЕЙ свечи среза (реплей-безопасно,
                    не по системным часам), кроме случаев ts_override для тестов.
@@ -24,18 +38,25 @@ get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None) -> dict:
 Единое правило блоков: при ошибке/отсутствии источника поля = null и
 "ok": false — без exception и без опасных 0/50-заглушек; "не применимо"
 к активу ({} от геттера) -> {"applicable": false, "ok": false}.
+
+Единая шкала значений: ВСЕ процентные/долевые поля — в долях 0-1 (long_pct,
+short_pct, winrate, max_dd и все новые *_pct); fear_greed из crowd (0-100)
+и taker_buy_sell из crowd (binance buySellRatio, ratio -> r/(1+r)) приводятся
+к 0-1 уже в get_raw_market_data (копия, без мутации кеша геттера).
 """
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 from app_pkg import config, db, utils
 from app_pkg.data.derivatives import get_derivatives_snapshot
 from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.data.macro import get_econ_calendar, get_macro_snapshot
+from app_pkg.data.micro import get_micro_snapshot
 from app_pkg.data.news_sentiment import get_news_sentiment
 from app_pkg.data.sentiment import get_crowd_snapshot
 from app_pkg.indicators import _atr, rsi_wilder
@@ -118,10 +139,12 @@ def _atr_percentile(df):
 
 
 def _dist_to_extremes(df):
-    """Дистанции close до 50-барных экстремумов, в %.
+    """Дистанции close до 50-барных экстремумов, в % от цены close.
 
-    dist_to_high_pct = (close - max_high_50) / max_high_50 * 100 (обычно <= 0);
-    dist_to_low_pct  = (close - min_low_50) / min_low_50 * 100 (обычно >= 0).
+    dist_to_high_pct = (close - max_high_50) / close * 100 (обычно <= 0);
+    dist_to_low_pct  = (close - min_low_50) / close * 100 (обычно >= 0).
+    Нормировка на close, а не на сам экстремум — фича = удалённость цены
+    от уровня в процентах от текущей цены.
     Меньше 50 баров или нулевой экстремум -> pair (None, None).
     """
     if df is None or len(df) < _LEVELS_WINDOW:
@@ -131,10 +154,10 @@ def _dist_to_extremes(df):
         return None, None
     high50 = utils._clean(df["high"].tail(_LEVELS_WINDOW).max())
     low50 = utils._clean(df["low"].tail(_LEVELS_WINDOW).min())
-    if not high50 or not low50:
+    if not high50 or not low50 or not last_close:
         return None, None
-    dist_high = _round((last_close - high50) / high50 * 100.0, 4)
-    dist_low = _round((last_close - low50) / low50 * 100.0, 4)
+    dist_high = _round((last_close - high50) / last_close * 100.0, 4)
+    dist_low = _round((last_close - low50) / last_close * 100.0, 4)
     return dist_high, dist_low
 
 
@@ -193,6 +216,590 @@ def _technicals_from_df(df):
         "dist_to_high_pct": dist_high, "dist_to_low_pct": dist_low,
         "ok": True,
     }
+
+
+# ----------------------------------------------- структурные блоки (Уровень 4)
+# 6 блоков считаются ЛОКАЛЬНО из OHLCV-среза (без внешних API). Единые
+# контракты: доля/перцентиль *_pct — в 0-1; "ok": false при пустом/малом df.
+
+def _slope(series, window):
+    """Наклон OLS (простой МНК) последних window значений, без scipy."""
+    try:
+        y = pd.Series(series, dtype="float64")
+        y = y.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(y) < 2:
+            return None
+        y = y.tail(window)
+        if len(y) < 2:
+            return None
+        x = np.arange(len(y), dtype="float64") - (len(y) - 1) / 2.0
+        denom = float(np.dot(x, x))
+        if not denom:
+            return None
+        return float(np.dot(x, y.to_numpy(dtype="float64")
+                            - y.to_numpy(dtype="float64").mean()) / denom)
+    except Exception:  # noqa: BLE001 — расчётный хелпер
+        return None
+
+
+def _rank_pct(hist, cur):
+    """Ранговая перцентиль cur в историческом ряду: (доля < + 0.5*f ==) / N."""
+    if cur is None or len(hist) < 2:
+        return None
+    less = float((hist < cur).sum())
+    equal = float((hist == cur).sum())
+    return (less + 0.5 * equal) / float(len(hist))
+
+
+def _di(high, low, close, period=14):
+    """plus_di / minus_di / adx (Wilder, период) как три pd.Series."""
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0),
+                        index=high.index)
+    minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0),
+                         index=low.index)
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low), (high - prev_close).abs(),
+                    (low - prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / period, adjust=False).mean()
+
+    def wmean(s):
+        return s.ewm(alpha=1.0 / period, adjust=False).mean()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = 100.0 * wmean(plus_dm) / atr
+        minus_di = 100.0 * wmean(minus_dm) / atr
+        dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    dx = dx.replace([np.inf, -np.inf], np.nan)
+    adx = dx.ewm(alpha=1.0 / period, adjust=False).mean()
+    return plus_di, minus_di, adx
+
+
+def _hurst_rs(series, window=100):
+    """Показатель Хёрста R/S (log-income ряда) по последним window барам."""
+    try:
+        y = pd.Series(series, dtype="float64")
+        y = y.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(y) < 50:
+            return None
+        clipped = np.clip(y.to_numpy(dtype="float64"), a_min=1e-12, a_max=None)
+        r = np.diff(np.log(clipped))
+        r = r[:window]
+        n = len(r)
+        if n < 50:
+            return None
+        lags = range(2, min(n // 2, 100) + 1)
+        xs, tau = [], []
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for lag in lags:
+                n_chunks = n // lag
+                if n_chunks < 1:
+                    continue
+                chunk = r[:n_chunks * lag].reshape(n_chunks, lag)
+                dev = np.cumsum(chunk - chunk.mean(axis=1, keepdims=True), axis=1)
+                rng = dev.max(axis=1) - dev.min(axis=1)
+                std = chunk.std(axis=1)
+                mask = std > 0
+                if not mask.any():  # весь чанк константен — лаг не информативен
+                    continue
+                rs = (rng[mask] / std[mask]).mean()
+                if rs is not None and rs > 0:
+                    xs.append(float(np.log(lag)))
+                    tau.append(float(np.log(rs)))
+        if len(xs) < 3:
+            return None
+        return float(np.polyfit(xs, tau, 1)[0])
+    except Exception:  # noqa: BLE001 — расчётный хелпер
+        return None
+
+
+def _corr_of_returns(df_a, df_b, window=30):
+    """Корреляция доходностей двух DF по общим таймстампам (последние window)."""
+    try:
+        a = df_a.set_index("timestamp")["close"].astype(float)
+        b = df_b.set_index("timestamp")["close"].astype(float)
+        joined = pd.concat([a.rename("a"), b.rename("b")], axis=1,
+                           join="inner").dropna()
+        if len(joined) < 3:
+            return None
+        joined = joined.tail(max(3, window))
+        ra = joined["a"].pct_change()
+        rb = joined["b"].pct_change()
+        pairs = pd.concat([ra.rename("a"), rb.rename("b")], axis=1).dropna()
+        if len(pairs) < 3:
+            return None
+        if pairs["a"].std() == 0.0 or pairs["b"].std() == 0.0:
+            return None  # константный ряд -> корреляция не определена
+        c = float(pairs["a"].corr(pairs["b"]))
+        return None if np.isnan(c) else c
+    except Exception:  # noqa: BLE001 — расчётный хелпер
+        return None
+
+
+def _volume_blank():
+    return {"rel_vol": None, "obv_slope": None, "vol_zscore": None,
+            "vol_percentile": None, "vwap_dev": None, "ok": False}
+
+
+def _volume_block(df):
+    """Объём: rel_vol, OBV-наклон, z-score, перцентиль, отклонение от VWAP20."""
+    if df is None or df.empty:
+        return _volume_blank()
+    try:
+        if len(df) < 20:
+            return _volume_blank()
+        vol = pd.Series(df["volume"], dtype="float64")
+        close = pd.Series(df["close"], dtype="float64")
+        last_vol = utils._clean(vol.iloc[-1])
+        sma20_vol = utils._clean(vol.rolling(20).mean().iloc[-1])
+        rel_vol = None
+        if last_vol is not None and sma20_vol:
+            rel_vol = _round(last_vol / sma20_vol, 2)
+
+        direction = np.sign(close.diff().fillna(0))
+        obv = (direction * vol).cumsum()
+        obv_slope = _round(_slope(obv, 20), 2)
+
+        vol_zscore = None
+        vol_percentile = None
+        if len(df) >= 100:
+            hist = vol.tail(100).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(hist) >= 20 and last_vol is not None:
+                sd = float(hist.std(ddof=1))
+                if sd and sd > 0:
+                    vol_zscore = _round(
+                        (last_vol - float(hist.mean())) / sd, 2)
+                vol_percentile = _round(_rank_pct(hist, last_vol), 2)
+
+        vwap_dev = None
+        seg = df.tail(20)
+        tp = ((seg["high"].astype(float) + seg["low"].astype(float)
+               + seg["close"].astype(float)) / 3.0).to_numpy(dtype="float64")
+        v20 = seg["volume"].astype(float).to_numpy(dtype="float64")
+        cum_vol = np.cumsum(v20)
+        last_close = utils._clean(close.iloc[-1])
+        if cum_vol[-1] > 0 and last_close is not None:
+            vwap20 = float(np.cumsum(tp * v20)[-1] / cum_vol[-1])
+            if vwap20 > 0:
+                vwap_dev = _round((last_close - vwap20) / vwap20 * 100.0, 2)
+
+        return {"rel_vol": rel_vol, "obv_slope": obv_slope,
+                "vol_zscore": vol_zscore, "vol_percentile": vol_percentile,
+                "vwap_dev": vwap_dev, "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("volume block failed: %s", exc)
+        return _volume_blank()
+
+
+def _trend_blank():
+    return {"adx": None, "plus_di": None, "minus_di": None,
+            "di_spread": None, "ema20_50_ratio": None, "reg_slope_20": None,
+            "ok": False}
+
+
+def _trend_block(df):
+    """Сила тренда: ADX/DM (14), EMA20/50-спред, регресс-наклон на ATR."""
+    if df is None or df.empty:
+        return _trend_blank()
+    try:
+        if len(df) < 50:
+            return _trend_blank()
+        high = pd.Series(df["high"], dtype="float64")
+        low = pd.Series(df["low"], dtype="float64")
+        close = pd.Series(df["close"], dtype="float64")
+        pdi, mdi, adx_s = _di(high, low, close, 14)
+        adx = _round(utils._clean(adx_s.iloc[-1]), 1)
+        plus_di = _round(utils._clean(pdi.iloc[-1]), 1)
+        minus_di = _round(utils._clean(mdi.iloc[-1]), 1)
+        di_spread = None
+        if plus_di is not None and minus_di is not None:
+            di_spread = _round(plus_di - minus_di, 1)
+
+        ema20 = utils._clean(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = utils._clean(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        ema20_50_ratio = None
+        if ema20 is not None and ema50:
+            ema20_50_ratio = _round(ema20 / ema50, 3)
+
+        atr_last = utils._clean(_atr(high, low, close, 14).iloc[-1])
+        slope = _slope(close, 20)
+        reg_slope_20 = None
+        if slope is not None and atr_last and atr_last > 0:
+            reg_slope_20 = _round(slope / atr_last, 2)
+        elif slope is not None:
+            reg_slope_20 = _round(slope, 2)
+
+        return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di,
+                "di_spread": di_spread, "ema20_50_ratio": ema20_50_ratio,
+                "reg_slope_20": reg_slope_20, "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("trend block failed: %s", exc)
+        return _trend_blank()
+
+
+def _momentum_blank():
+    return {"macd": None, "macd_signal": None, "macd_hist": None,
+            "macd_hist_slope": None, "rsi_slope": None, "ok": False}
+
+
+def _momentum_block(df):
+    """Импульс: MACD (12,26,9), наклон гистограммы и RSI."""
+    if df is None or df.empty:
+        return _momentum_blank()
+    try:
+        if len(df) < 40:
+            return _momentum_blank()
+        close = pd.Series(df["close"], dtype="float64")
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        hist = macd - signal
+
+        h_now = utils._clean(hist.iloc[-1])
+        h_prev = utils._clean(hist.iloc[-2])
+        macd_hist_slope = None
+        if h_now is not None and h_prev is not None:
+            macd_hist_slope = _round(h_now - h_prev, 2)
+
+        rsi = rsi_wilder(close, 14)
+        r_now = utils._clean(rsi.iloc[-1])
+        r_prev = utils._clean(rsi.iloc[-2])
+        rsi_slope = None
+        if r_now is not None and r_prev is not None:
+            rsi_slope = _round(r_now - r_prev, 2)
+
+        return {"macd": _round(utils._clean(macd.iloc[-1]), 2),
+                "macd_signal": _round(utils._clean(signal.iloc[-1]), 2),
+                "macd_hist": _round(utils._clean(hist.iloc[-1]), 2),
+                "macd_hist_slope": macd_hist_slope,
+                "rsi_slope": rsi_slope,
+                "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("momentum block failed: %s", exc)
+        return _momentum_blank()
+
+
+def _volatility_blank():
+    return {"bb_width": None, "bb_width_pct": None, "hv20": None,
+            "atr_change_pct": None, "atr_ratio_short_long": None, "ok": False}
+
+
+def _volatility_block(df):
+    """Динамика волатильности: BB-ширина, HV20, прирост/спред ATR."""
+    if df is None or df.empty:
+        return _volatility_blank()
+    try:
+        if len(df) < 30:
+            return _volatility_blank()
+        high = pd.Series(df["high"], dtype="float64")
+        low = pd.Series(df["low"], dtype="float64")
+        close = pd.Series(df["close"], dtype="float64")
+        bb_mid = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        bb_up = bb_mid + 2.0 * bb_std
+        bb_low = bb_mid - 2.0 * bb_std
+
+        width = (bb_up - bb_low) / bb_mid
+        width_cur = utils._clean(width.iloc[-1])
+        bb_width = _round(width_cur, 3) if width_cur is not None else None
+        bb_width_pct = None
+        if len(df) >= 100:
+            hist = width.replace([np.inf, -np.inf], np.nan).dropna().tail(100)
+            if len(hist) >= 20:
+                bb_width_pct = _round(_rank_pct(hist, width_cur), 2)
+
+        lr = np.log(close / close.shift(1))
+        lr = lr.replace([np.inf, -np.inf], np.nan).dropna().tail(20)
+        hv20 = None
+        if len(lr) >= 5:
+            hv20 = _round(float(lr.std(ddof=1)) * np.sqrt(252.0) * 100.0, 1)
+
+        atr14 = _atr(high, low, close, 14)
+        a_now = utils._clean(atr14.iloc[-1])
+        a_prev = utils._clean(atr14.iloc[-2])
+        atr_change_pct = None
+        if a_now is not None and a_prev is not None and a_prev:
+            atr_change_pct = _round((a_now - a_prev) / a_prev * 100.0, 2)
+
+        atr5 = utils._clean(_atr(high, low, close, 5).iloc[-1])
+        atr20 = utils._clean(_atr(high, low, close, 20).iloc[-1])
+        atr_ratio = None
+        if atr5 is not None and atr20:
+            atr_ratio = _round(atr5 / atr20, 2)
+
+        return {"bb_width": bb_width, "bb_width_pct": bb_width_pct,
+                "hv20": hv20, "atr_change_pct": atr_change_pct,
+                "atr_ratio_short_long": atr_ratio, "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("volatility block failed: %s", exc)
+        return _volatility_blank()
+
+
+def _regime_blank():
+    return {"hurst": None, "autocorr_lag1": None, "efficiency_ratio": None,
+            "ok": False}
+
+
+def _regime_block(df):
+    """Режим рынка: Хёрст (R/S), автокорреляция lag1, эффективность (Кауфман)."""
+    if df is None or df.empty:
+        return _regime_blank()
+    try:
+        if len(df) < 55:
+            return _regime_blank()
+        close = pd.Series(df["close"], dtype="float64")
+        hurst = _round(_hurst_rs(close, 100), 2)
+
+        lr = np.log(close / close.shift(1))
+        lr = lr.replace([np.inf, -np.inf], np.nan).dropna().tail(100)
+        autocorr_lag1 = None
+        if len(lr) >= 10:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                x = lr.to_numpy(dtype="float64")[:-1]
+                y = lr.to_numpy(dtype="float64")[1:]
+                sx, sy = float(x.std(ddof=1)), float(y.std(ddof=1))
+                if sx and sy and sx > 0 and sy > 0:
+                    sxy = float(((x - x.mean()) * (y - y.mean())).sum())
+                    ac = sxy / ((len(x) - 1) * sx * sy)
+                    autocorr_lag1 = _round(ac, 2)
+
+        prices = close.tail(21).replace([np.inf, -np.inf], np.nan).dropna()
+        er = None
+        if len(prices) >= 21:
+            net = float(abs(prices.iloc[-1] - prices.iloc[0]))
+            path = float(prices.diff().abs().sum())
+            if path and path > 0:
+                er = _round(net / path, 2)
+
+        return {"hurst": hurst, "autocorr_lag1": autocorr_lag1,
+                "efficiency_ratio": er, "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("regime block failed: %s", exc)
+        return _regime_blank()
+
+
+# ------------------------------------------- дивергенции price vs индикатор
+# Сравнение двух последних экстремумов (same-side) цены и индикатора за окно:
+# цена делает новый high, а индикатор нет -> bearish (-1); новый low без
+# подтверждения индикатора -> bullish (+1). 0 = расхождения нет.
+
+_DIV_WINDOW = 20
+_DIV_NEIGHBOR = 2
+
+
+def _extrema_indexes(vals, side, k=_DIV_NEIGHBOR):
+    """Индексы локальных пиков/впадин (в пределах ±k баров)."""
+    n = len(vals)
+    idx = []
+    for i in range(1, n - 1):
+        seg = vals[max(0, i - k):min(n, i + k + 1)]
+        m = np.max(seg) if side == "high" else np.min(seg)
+        if vals[i] == m:
+            idx.append(i)
+    return idx
+
+
+def _divergence_signal(closes, indicator, side, window=_DIV_WINDOW):
+    """Расхождение последних двух экстремумов side: -1/0/1 (чистая функция).
+
+    side="high": цена выше-побьёт, индикатор ниже-прогуляется -> -1 (bearish);
+    side="low":  цена ниже-побьёт, индикатор выше-прогуляется -> +1 (bullish).
+    """
+    c = np.asarray(closes, dtype="float64")[-window:]
+    v = np.asarray(indicator, dtype="float64")[-window:]
+    if len(c) < 10 or len(v) < 10:
+        return 0
+    idx = _extrema_indexes(v, side)
+    if len(idx) < 2:
+        return 0
+    i1, i2 = idx[-2], idx[-1]
+    if i1 == i2:
+        return 0
+    if side == "high":
+        # цена обновляет максимум, а индикатор нет -> бычий импульс слабеет
+        return -1 if (c[i1] < c[i2] and v[i1] > v[i2]) else 0
+    # side == "low": цена бьёт минимум, индикатор уже не бьёт -> бычья дива
+    return 1 if (c[i1] > c[i2] and v[i1] < v[i2]) else 0
+
+
+def _divergence_combined(closes, indicator, window=_DIV_WINDOW):
+    """-1 bearish / +1 bullish / 0 none. Бычья приоритетнее при конфликте."""
+    bull = _divergence_signal(closes, indicator, "low", window)
+    bear = _divergence_signal(closes, indicator, "high", window)
+    if bull == 1:
+        return 1
+    if bear == -1:
+        return -1
+    return 0
+
+
+def _divergence_blank():
+    return {"rsi_price": None, "macd_price": None, "obv_price": None,
+            "ok": False}
+
+
+def _divergence_block(df):
+    """Дивергенции RSI/MACD-hist/OBV против цены (последние 20 баров).
+
+    Значения: -1 bearish, +1 bullish, 0 no divergence. Меньше 40 баров
+    (нестабильные RSI/MACD) -> null-схема с ok:false.
+    """
+    if df is None or df.empty:
+        return _divergence_blank()
+    try:
+        if len(df) < 40:
+            return _divergence_blank()
+        close = pd.Series(df["close"], dtype="float64")
+        rsi = rsi_wilder(close, _RSI_PERIOD)
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        hist = ema12 - ema26 - (ema12 - ema26).ewm(span=9,
+                                                   adjust=False).mean()
+
+        vol = pd.Series(df["volume"], dtype="float64")
+        direction = np.sign(close.diff().fillna(0))
+        obv = (direction * vol).cumsum()
+
+        return {
+            "rsi_price": _divergence_combined(close, rsi),
+            "macd_price": _divergence_combined(close, hist),
+            "obv_price": _divergence_combined(close, obv),
+            "ok": True,
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("divergence block failed: %s", exc)
+        return _divergence_blank()
+
+
+def _candle_blank():
+    return {"body_ratio": None, "upper_wick_ratio": None,
+            "lower_wick_ratio": None, "engulfing": None, "pinbar": None,
+            "ok": False}
+
+
+def _candle_block(df):
+    """Свечные паттерны ПОСЛЕДНЕГО бара (feature, не правило).
+
+    body_ratio = |close-open|/range; upper/lower_wick_ratio = доля фитилей;
+    engulfing = +1 бычье поглощение, -1 медвежье, 0 нет; pinbar = +1 бычий
+    пин, -1 медвежий, 0 нет. Нулевой диапазон -> ratios None (доджи не врём).
+    """
+    if df is None or df.empty:
+        return _candle_blank()
+    try:
+        if len(df) < 2:
+            return _candle_blank()
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        o = utils._clean(last["open"])
+        h = utils._clean(last["high"])
+        l = utils._clean(last["low"])
+        c = utils._clean(last["close"])
+        if None in (o, h, l, c):
+            return _candle_blank()
+        rng = h - l
+        body_ratio = None
+        upper_wick_ratio = None
+        lower_wick_ratio = None
+        if rng and rng > 0:
+            body_ratio = _round(abs(c - o) / rng, 3)
+            upper_wick_ratio = _round((h - max(o, c)) / rng, 3)
+            lower_wick_ratio = _round((min(o, c) - l) / rng, 3)
+
+        engulfing = 0
+        po = utils._clean(prev["open"])
+        ph = utils._clean(prev["high"])
+        pl = utils._clean(prev["low"])
+        pc = utils._clean(prev["close"])
+        if None not in (po, ph, pl, pc):
+            prng = ph - pl
+            pbody = pc - po
+            body = c - o
+            if prng and rng:
+                if body > 0 > pbody and c >= po and o <= pc and abs(body) > abs(pbody):
+                    engulfing = 1
+                elif body < 0 < pbody and o >= pc and c <= po and abs(body) > abs(pbody):
+                    engulfing = -1
+
+        pinbar = 0
+        if rng and rng > 0:
+            body = abs(c - o)
+            if lower_wick_ratio is not None and upper_wick_ratio is not None:
+                lw = lower_wick_ratio * rng
+                uw = upper_wick_ratio * rng
+                if lw >= 2 * body and lw >= uw:
+                    pinbar = 1
+                elif uw >= 2 * body and uw >= lw:
+                    pinbar = -1
+
+        return {"body_ratio": body_ratio, "upper_wick_ratio": upper_wick_ratio,
+                "lower_wick_ratio": lower_wick_ratio, "engulfing": engulfing,
+                "pinbar": pinbar, "ok": True}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("candle block failed: %s", exc)
+        return _candle_blank()
+
+
+def _context_blank():
+    return {"corr_btc_30": None, "eth_btc_corr_30": None,
+            "btc_dominance": None, "corr_dxy_30": None,
+            "beta_index": None, "index_return_1d": None, "index_rsi": None,
+            "ok": False}
+
+
+def _context_block(df, symbol, timeframe=None, upto_sec=None):
+    """Контекст индекса: corr_btc_30 + eth_btc_corr_30 (крипта, локально).
+
+    corr_btc_30     — корреляция доходностей пары ↔ BTCUSDT (30 баров);
+    eth_btc_corr_30 — рыночный gauge: корреляция ETHUSDT ↔ BTCUSDT (30 баров,
+                      один на всех крипто-парах);
+    btc_dominance / corr_dxy_30 / beta_index / index_return_1d / index_rsi —
+    null-заглушки (требуют внешнего индекса/API). Только OHLCV-источник.
+    """
+    if df is None or df.empty:
+        return _context_blank()
+    try:
+        out = {"corr_btc_30": None, "eth_btc_corr_30": None,
+               "btc_dominance": None, "corr_dxy_30": None,
+               "beta_index": None, "index_return_1d": None,
+               "index_rsi": None}
+        s = str(symbol or "").upper()
+        is_crypto = s.endswith(("USDT", "BUSD", "USDC"))
+        if is_crypto and timeframe:
+            btc_df = None
+            try:
+                btc_df = _slice_df("BTCUSDT", timeframe, upto_sec)
+                if s != "BTCUSDT" and btc_df is not None and not btc_df.empty:
+                    corr = _corr_of_returns(df, btc_df, 30)
+                    out["corr_btc_30"] = (_round(corr, 2)
+                                          if corr is not None else None)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("context corr_btc_30(%s) failed: %s", s, exc)
+                out["corr_btc_30"] = None
+            try:
+                # Только в live: в реплее каждая досрезка ETH/BTC была бы
+                # отдельной сетевой пачкой на шаг бэктеста (get_replay_df без
+                # кеша) — это утроило бы запросы к Binance. В реплее поле null.
+                if upto_sec is None:
+                    eth_df = _slice_df("ETHUSDT", timeframe, upto_sec)
+                    if (btc_df is not None and not btc_df.empty
+                            and eth_df is not None and not eth_df.empty):
+                        corr = _corr_of_returns(eth_df, btc_df, 30)
+                        out["eth_btc_corr_30"] = (_round(corr, 2)
+                                                  if corr is not None else None)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("context eth_btc_corr_30(%s) failed: %s", s, exc)
+                out["eth_btc_corr_30"] = None
+        elif _is_forex_symbol(s):
+            out["corr_dxy_30"] = None
+        out["ok"] = True
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("context block failed: %s", exc)
+        return _context_blank()
 
 
 def _scanner_edge(symbol, timeframe):
@@ -317,6 +924,12 @@ def _derivatives_blank():
             "ok": False, "ts": None}
 
 
+def _micro_blank():
+    return {"spread_norm": None, "ob_imb_10": None, "bid_sum_10": None,
+            "ask_sum_10": None, "large_trades_ratio": None, "ok": False,
+            "ts": None}
+
+
 def _news_sentiment_blank():
     return {"avg_sentiment": None, "bullish_count": 0, "bearish_count": 0,
             "neutral_count": 0, "sample_size": 0, "worst_headline_score": None,
@@ -325,7 +938,7 @@ def _news_sentiment_blank():
 
 def _blank_for(block):
     return {"macro": _macro_blank, "calendar": _calendar_blank,
-            "derivatives": _derivatives_blank,
+            "derivatives": _derivatives_blank, "micro": _micro_blank,
             "news_sentiment": _news_sentiment_blank}.get(block, dict)()
 
 
@@ -353,6 +966,7 @@ def _build_extra_blocks(symbol, clock_ts):
     jobs = [
         ("macro", get_macro_snapshot, symbol),
         ("derivatives", get_derivatives_snapshot, symbol),
+        ("micro", get_micro_snapshot, symbol),
         ("news_sentiment", get_news_sentiment, symbol),
     ]
     ccy = symbol[:3] if _is_forex_symbol(symbol) else None
@@ -382,6 +996,31 @@ def _resolve_crowd(symbol):
     return data
 
 
+def _normalize_crowd_scale(sent):
+    """Единая шкала 0-1 (КОПИЯ блока — кеш get_crowd_snapshot не мутируем).
+
+    fear_greed 0-100 -> 0-1; taker_buy_sell (binance buySellRatio, ratio-шкала,
+    типично 0.3-3) -> доля покупок r/(1+r) в 0-1, чтобы пороги ''>0.6/''<0.4
+    в промпте читались как доля покупательского давления.
+    long_pct/short_pct/winrate/max_dd уже в долях — не трогаем. Остальные поля
+    (ls_ratio/ts/ok) проходят как есть.
+    """
+    if not isinstance(sent, dict):
+        return sent
+    out = dict(sent)
+    fg = utils._clean(out.get("fear_greed"))
+    if fg is not None:
+        out["fear_greed"] = _round(fg / 100.0, 4)
+    tb = utils._clean(out.get("taker_buy_sell"))
+    if tb is not None and tb > 0:
+        share = tb / (1.0 + tb)
+        # Клип на [0.05, 0.95]: редкие «магниты» (buySellRatio 0.1 / 10+ на
+        # низколиквидных парах) не должны сдвигать распределение входа модели.
+        share = max(0.05, min(0.95, share))
+        out["taker_buy_sell"] = _round(share, 4)
+    return out
+
+
 def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
     """Чистый словарь с цифрами для ИИ (без единого текстового пояснения).
 
@@ -397,6 +1036,9 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
     из своих геттеров (внутри у них кеши; снимок НЕ кэшируется). Каждый вызов
     обёрнут: ошибка -> null-схема блока с ok:false, "не применимо" ({} от
     геттера) -> {"applicable": false, "ok": false}.
+
+    Единая шкала: все процентные/долевые поля — доли 0-1 (fear_greed из
+    crowd 0-100 приводится к 0-1 через _normalize_crowd_scale).
     """
     symbol = str(symbol or "").upper()
     timeframe = str(timeframe or "").strip()
@@ -409,16 +1051,25 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
         else _clock_blank()
 
     blocks = _build_extra_blocks(symbol, clock_ts)
-    blocks["sentiment"] = _resolve_crowd(symbol)
+    blocks["sentiment"] = _normalize_crowd_scale(_resolve_crowd(symbol))
 
     return {
         "technicals": _technicals_from_df(df),
+        "volume": _volume_block(df),
+        "trend": _trend_block(df),
+        "momentum": _momentum_block(df),
+        "volatility": _volatility_block(df),
+        "regime": _regime_block(df),
+        "divergence": _divergence_block(df),
+        "candle": _candle_block(df),
+        "context": _context_block(df, symbol, timeframe, upto_sec),
         "scanner_edge": _scanner_edge(symbol, timeframe),
         "sentiment": blocks["sentiment"],
         "clock": clock,
         "macro": blocks["macro"],
         "calendar": blocks["calendar"],
         "derivatives": blocks["derivatives"],
+        "micro": blocks["micro"],
         "news_sentiment": blocks["news_sentiment"],
     }
 
@@ -427,7 +1078,8 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
 # Максимально сжатый снимок для LLM: короткие ключи, округление до значимых
 # разрядов, ОТСУТСТВИЕ блоков без данных (missing = no data) и НИКОГДА не
 # отдаём "ok": true. Сырые OHLC-массивы по ТФ заменены агрегатами mtf:
-# {"1h": {"tr": 1|-1|0, "rsi": int}, "4h": {...}} (tr — знак close - sma50).
+# {"tf": {"tr", "trend", "rsi", "adx"}} (trend — ema20/50-определение, см.
+# _mtf_compact: up/down/flat с мёртвой зоной 0.1% и подтверждением close>ema20).
 _MTF_TFS = ("15m", "1H", "4H", "1D")
 
 
@@ -475,13 +1127,17 @@ def _block_has_data(block):
 
 
 def _compact_technicals(raw):
-    """technicals -> t{rsi,atr,bb,sma,ap,dh,dl,close} (2dp; atr/close 1dp)."""
+    """technicals -> t{rsi,atr,atr_pct,bb,sma,ap,dh,dl,close} (2dp; atr/close 1dp)."""
     t = raw.get("technicals") or {}
     if not _block_has_data(t):
         return None
     out = {}
     _put(out, "rsi", _r2(t.get("rsi")))
     _put(out, "atr", _r1(t.get("atr")))
+    atr_val = utils._clean(t.get("atr"))
+    close_val = utils._clean(t.get("close"))
+    if atr_val and close_val:
+        _put(out, "atr_pct", _r2(atr_val / close_val))
     _put(out, "bb", _r2(t.get("bb_pct_b")))
     _put(out, "sma", _r2(t.get("sma20_diff_pct")))
     _put(out, "ap", _r2(t.get("atr_percentile")))
@@ -513,14 +1169,15 @@ def _compact_scanner(raw):
 
 
 def _compact_sentiment(raw):
-    """sentiment -> s{ls,long_pct,fng} (ls 2dp; long_pct 1dp; fng int)."""
+    """sentiment -> s{ls,long_pct,fng,tbs} (ls 2dp; long_pct 1dp; fng/tbs 2dp в 0-1)."""
     s = raw.get("sentiment") or {}
     if not _block_has_data(s):
         return None
     out = {}
     _put(out, "ls", _r2(s.get("ls_ratio")))
     _put(out, "long_pct", _r1(s.get("long_pct")))
-    _put(out, "fng", _rint(s.get("fear_greed")))
+    _put(out, "fng", _r2(s.get("fear_greed")))
+    _put(out, "tbs", _r2(s.get("taker_buy_sell")))
     return out or None
 
 
@@ -589,11 +1246,142 @@ def _compact_news(raw):
     return out or None
 
 
-def _mtf_compact(symbol, upto_sec=None):
-    """Агрегаты по ТФ вместо сырых свечей: {tf: {tr, rsi}}.
+def _compact_volume(raw):
+    """volume -> v{rv,obv,vz,vp,vwd} (2dp)."""
+    v = raw.get("volume") or {}
+    if not _block_has_data(v):
+        return None
+    out = {}
+    _put(out, "rv", _r2(v.get("rel_vol")))
+    _put(out, "obv", _r2(v.get("obv_slope")))
+    _put(out, "vz", _r2(v.get("vol_zscore")))
+    _put(out, "vp", _r2(v.get("vol_percentile")))
+    _put(out, "vwd", _r2(v.get("vwap_dev")))
+    return out or None
 
-    tr = знак (close - sma50): 1 выше, -1 ниже, 0 равен/нет данных.
-    rsi — int (Wilder 14 по срезу с барьером upto_sec).
+
+def _compact_trend(raw):
+    """trend -> tr{adx,pdi,mdi,ds,er,rs} (adx/di 1dp; er 3dp; rs 2dp)."""
+    t = raw.get("trend") or {}
+    if not _block_has_data(t):
+        return None
+    out = {}
+    _put(out, "adx", _r1(t.get("adx")))
+    _put(out, "pdi", _r1(t.get("plus_di")))
+    _put(out, "mdi", _r1(t.get("minus_di")))
+    _put(out, "ds", _r1(t.get("di_spread")))
+    _put(out, "er", _round(t.get("ema20_50_ratio"), 3))
+    _put(out, "rs", _r2(t.get("reg_slope_20")))
+    return out or None
+
+
+def _compact_momentum(raw):
+    """momentum -> mo{macd,ms,mh,mhs,rsi_s} (2dp)."""
+    m = raw.get("momentum") or {}
+    if not _block_has_data(m):
+        return None
+    out = {}
+    _put(out, "macd", _r2(m.get("macd")))
+    _put(out, "ms", _r2(m.get("macd_signal")))
+    _put(out, "mh", _r2(m.get("macd_hist")))
+    _put(out, "mhs", _r2(m.get("macd_hist_slope")))
+    _put(out, "rsi_s", _r2(m.get("rsi_slope")))
+    return out or None
+
+
+def _compact_volatility(raw):
+    """volatility -> vl{bw,bwp,hv,atc,atr_r} (bw 3dp; pct/change/ratio 2dp; hv 1dp)."""
+    v = raw.get("volatility") or {}
+    if not _block_has_data(v):
+        return None
+    out = {}
+    _put(out, "bw", _round(v.get("bb_width"), 3))
+    _put(out, "bwp", _r2(v.get("bb_width_pct")))
+    _put(out, "hv", _r1(v.get("hv20")))
+    _put(out, "atc", _r2(v.get("atr_change_pct")))
+    _put(out, "atr_r", _r2(v.get("atr_ratio_short_long")))
+    return out or None
+
+
+def _compact_regime(raw):
+    """regime -> rg{h,ac1,er} (2dp)."""
+    r = raw.get("regime") or {}
+    if not _block_has_data(r):
+        return None
+    out = {}
+    _put(out, "h", _r2(r.get("hurst")))
+    _put(out, "ac1", _r2(r.get("autocorr_lag1")))
+    _put(out, "er", _r2(r.get("efficiency_ratio")))
+    return out or None
+
+
+def _compact_context(raw):
+    """context -> cg{cbtc,ebc,dom,dxy,beta,ir1,irsi} (2dp; заглушки null)."""
+    c = raw.get("context") or {}
+    if not _block_has_data(c):
+        return None
+    out = {}
+    _put(out, "cbtc", _r2(c.get("corr_btc_30")))
+    _put(out, "ebc", _r2(c.get("eth_btc_corr_30")))
+    _put(out, "dom", _r2(c.get("btc_dominance")))
+    _put(out, "dxy", _r2(c.get("corr_dxy_30")))
+    _put(out, "beta", _r2(c.get("beta_index")))
+    _put(out, "ir1", _r2(c.get("index_return_1d")))
+    _put(out, "irsi", _r2(c.get("index_rsi")))
+    return out or None
+
+
+def _compact_divergence(raw):
+    """divergence -> div{rsi,macd,obv} (-1 bear / +1 bull / 0 none, int)."""
+    d = raw.get("divergence") or {}
+    if not _block_has_data(d):
+        return None
+    out = {}
+    _put(out, "rsi", _rint(d.get("rsi_price")))
+    _put(out, "macd", _rint(d.get("macd_price")))
+    _put(out, "obv", _rint(d.get("obv_price")))
+    return out or None
+
+
+def _compact_candle(raw):
+    """candle -> cnd{br,uw,lw,eng,pin} (ratios 3dp; eng/pin int)."""
+    c = raw.get("candle") or {}
+    if not _block_has_data(c):
+        return None
+    out = {}
+    _put(out, "br", _round(c.get("body_ratio"), 3))
+    _put(out, "uw", _round(c.get("upper_wick_ratio"), 3))
+    _put(out, "lw", _round(c.get("lower_wick_ratio"), 3))
+    _put(out, "eng", _rint(c.get("engulfing")))
+    _put(out, "pin", _rint(c.get("pinbar")))
+    return out or None
+
+
+def _compact_micro(raw):
+    """micro -> mcr{sp,obi,bs,as,ltr} (sp 6dp; obi/ltr 4dp; bs/as int)."""
+    m = raw.get("micro") or {}
+    if not _block_has_data(m):
+        return None
+    out = {}
+    _put(out, "sp", _round(m.get("spread_norm"), 6))
+    _put(out, "obi", _round(m.get("ob_imb_10"), 4))
+    _put(out, "bs", _rint(m.get("bid_sum_10")))
+    _put(out, "as", _rint(m.get("ask_sum_10")))
+    _put(out, "ltr", _round(m.get("large_trades_ratio"), 4))
+    return out or None
+
+
+def _mtf_compact(symbol, upto_sec=None):
+    """Агрегаты по ТФ вместо сырых свечей: {tf: {tr, trend, rsi, adx}}.
+
+    trend — ФИКСИРОВАННОЕ определение для правила 9 (единое на всех ТФ):
+        "up"    если ema20 > ema50*1.001  и close > ema20
+        "down"  если ema20 < ema50*0.999  и close < ema20
+        "flat"  иначе (мёртвая зона ±0.1% + подтверждение close>ema20 —
+                иначе разница H1 vs H4 на «прошивке» EMA путается в шум).
+    tr = 1 для up, -1 для down, 0 для flat (совпадает с trend);
+    rsi — int (Wilder 14 по срезу с барьером upto_sec);
+    adx — int (Wilder 14), None если индикатор не сосчитался.
     """
     out = {}
     for tf in _MTF_TFS:
@@ -616,14 +1404,29 @@ def _mtf_compact(symbol, upto_sec=None):
             continue
         close = pd.Series(df["close"], dtype="float64")
         last = utils._clean(close.iloc[-1])
-        sma50 = utils._clean(close.rolling(50).mean().iloc[-1])
-        if last is None or sma50 is None or last == sma50:
+        ema20 = utils._clean(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = utils._clean(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        if (last is None or ema20 is None or ema50 is None
+                or not ema50):
             tr = 0
+        elif ema20 > ema50 * 1.001 and last > ema20:
+            tr = 1
+        elif ema20 < ema50 * 0.999 and last < ema20:
+            tr = -1
         else:
-            tr = 1 if last > sma50 else -1
+            tr = 0
+        trend = "flat" if tr == 0 else ("up" if tr == 1 else "down")
         rsi = utils._clean(rsi_wilder(close, _RSI_PERIOD).iloc[-1])
-        out[tf.lower()] = {"tr": tr,
-                           "rsi": int(round(rsi)) if rsi is not None else None}
+        try:
+            high = pd.Series(df["high"], dtype="float64")
+            low = pd.Series(df["low"], dtype="float64")
+            adx_last = utils._clean(_di(high, low, close, 14)[2].iloc[-1])
+            adx = int(round(adx_last)) if adx_last is not None else None
+        except Exception:  # noqa: BLE001 — adx необязателен, не роняем блок
+            adx = None
+        out[tf.lower()] = {"tr": tr, "trend": trend,
+                           "rsi": int(round(rsi)) if rsi is not None else None,
+                           "adx": adx}
     return out
 
 
@@ -641,6 +1444,11 @@ def compact_snapshot(symbol, timeframe, upto_sec=None):
         ("s", _compact_sentiment), ("c", _compact_clock),
         ("m", _compact_macro), ("cal", _compact_calendar),
         ("d", _compact_derivatives), ("ns", _compact_news),
+        ("v", _compact_volume), ("tr", _compact_trend),
+        ("mo", _compact_momentum), ("vl", _compact_volatility),
+        ("rg", _compact_regime), ("cg", _compact_context),
+        ("div", _compact_divergence), ("cnd", _compact_candle),
+        ("mcr", _compact_micro),
     ):
         block = builder(raw)
         if block:

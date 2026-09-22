@@ -4,7 +4,7 @@
 Проверяем:
   - compact_snapshot: короткие ключи схемы v3, округление по полям,
     отсутствие "ok" и блоков без данных (missing = no data);
-  - mtf-агрегаты вместо сырых свечей: {tf: {tr, rsi}}, trend по знаку close-sma50;
+  - mtf-агрегаты вместо сырых свечей: {tf: {tr, trend, rsi, adx}};
   - llm: passthrough max_tokens/temperature и учёт usage-токенов;
   - триггеры адаптивного шага (a-e) на синтетике;
   - кэш вердиктов (cache_hits) и carry-forward (confidence *= 0.9);
@@ -59,8 +59,8 @@ def _raw(**over):
             "profit_factor": 2.234, "trades": 80.0, "test_sharpe": 3.999,
             "params": {"oversold": 30, "overbought": 70}, "ok": True,
         },
-        "sentiment": {"ls_ratio": 1.234, "long_pct": 55.67,
-                      "fear_greed": 42.4, "ok": True},
+        "sentiment": {"ls_ratio": 1.234, "long_pct": 0.5567,
+                      "fear_greed": 0.424, "ok": True},
         "clock": {"hour_utc": 14.0, "dow": 0.0, "session": "london_ny",
                   "london_ny_overlap": 1.0, "market_open": 1.0, "ok": True},
         "macro": {"us10y": {"value": 4.123}, "fed_rate": {"value": 5.5},
@@ -114,8 +114,8 @@ def test_compact_keys_and_rounding(monkeypatch):
 
     assert set(snap) <= {"t", "se", "s", "c", "m", "cal", "d", "ns", "mtf"}
     assert "ok" not in json.dumps(snap)
-    assert set(snap["t"]) == {"rsi", "atr", "bb", "sma", "ap", "dh", "dl",
-                              "close"}
+    assert set(snap["t"]) == {"rsi", "atr", "atr_pct", "bb", "sma", "ap", "dh",
+                              "dl", "close"}
     t = snap["t"]
     assert t["rsi"] == 62.35          # 2dp
     assert t["bb"] == 0.88
@@ -124,14 +124,15 @@ def test_compact_keys_and_rounding(monkeypatch):
     assert t["dh"] == -2.35
     assert t["dl"] == 3.46
     assert t["atr"] == 1.2            # 1dp
+    assert t["atr_pct"] == 0.01       # atr/close, 2dp
     assert t["close"] == 100.1        # 1dp
     se = snap["se"]
     assert se["wr"] == 0.61 and se["sharpe"] == 4.57 and se["pf"] == 2.23
     assert se["dd"] == 0.01 and se["tsh"] == 4.0
     assert se["n"] == 80 and isinstance(se["n"], int)
     assert se["p"]["oversold"] == 30
-    assert snap["s"]["ls"] == 1.23 and snap["s"]["long_pct"] == 55.7
-    assert snap["s"]["fng"] == 42
+    assert snap["s"]["ls"] == 1.23 and snap["s"]["long_pct"] == 0.6
+    assert snap["s"]["fng"] == 0.42
     assert snap["c"]["ses"] == "london_ny" and snap["c"]["h"] == 14
     assert snap["m"] == {"us10y": 4.12, "fed": 5.5, "dxy": 104.57}
     assert snap["cal"] == {"hi2h": 1, "next_min": 42}
@@ -160,7 +161,7 @@ def test_compact_omits_missing_blocks(monkeypatch):
 
 
 def test_mtf_aggregates_no_raw_candles(monkeypatch):
-    """Сырые свечи заменены агрегатами {tf:{tr,rsi}}; trend по знаку close-sma50."""
+    """Сырые свечи заменены агрегатами {tf:{tr,trend,rsi,adx}}."""
     monkeypatch.setattr(ms, "get_raw_market_data",
                         lambda *a, **k: _blank_raw())
     up = _bars_df(80)
@@ -172,13 +173,17 @@ def test_mtf_aggregates_no_raw_candles(monkeypatch):
     assert set(snap) == {"mtf"}
     assert set(snap["mtf"]) == {"15m", "1h", "4h", "1d"}
     assert snap["mtf"]["1h"]["tr"] == 1
+    assert snap["mtf"]["1h"]["trend"] == "up"
     assert isinstance(snap["mtf"]["1h"]["rsi"], int)
+    assert snap["mtf"]["1h"]["adx"] is None or isinstance(
+        snap["mtf"]["1h"]["adx"], int)
 
     down = _bars_df(80)
     down["close"] = [100.0 - i for i in range(80)]   # close < sma50
     monkeypatch.setattr(ms, "get_series_df", lambda *a, **k: down)
     assert ms.compact_snapshot("BTCUSDT", "1H")["mtf"]["4h"]["tr"] == -1
-    # Никаких OHLC-массивов в снимке — только tr/rsi.
+    assert ms.compact_snapshot("BTCUSDT", "1H")["mtf"]["4h"]["trend"] == "down"
+    # Никаких OHLC-массивов в снимке — только tr/trend/rsi/adx.
     assert "high" not in json.dumps(snap) and "low" not in json.dumps(snap)
 
 

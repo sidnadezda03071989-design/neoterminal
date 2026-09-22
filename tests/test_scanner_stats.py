@@ -51,6 +51,7 @@ def client():
 
 
 # ------------------------------------------------------------------ пусто
+@pytest.mark.debt
 def test_scanner_stats_empty_returns_empty_dict(client):
     """Без прогона сканера — 200 и {}: карточка просто скрыта."""
     resp = client.get(
@@ -89,6 +90,7 @@ def test_scanner_stats_best_by_combined_sharpe(client):
     assert d["symbol"] == _SYM and d["timeframe"] == _TF
 
 
+@pytest.mark.debt
 def test_scanner_stats_timeframe_isolated(client):
     """Есть результат на 15m — запрос по 1H возвращает {}."""
     _seed("tfiso" + "0" * 26)

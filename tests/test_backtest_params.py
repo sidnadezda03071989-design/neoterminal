@@ -147,6 +147,7 @@ def _mk_tpsl_df():
     })
 
 
+@pytest.mark.debt
 def test_tp_sl_adds_exit_reason():
     """tp_atr / sl_atr: сделки закрываются по стопу/профиту до SELL-сигнала."""
     df = _mk_tpsl_df()
@@ -170,6 +171,7 @@ def test_tp_only_never_uses_sl():
     assert all(t["exit_reason"] != "sl" for t in r["trades_full"])
 
 
+@pytest.mark.debt
 def test_sl_only_never_uses_tp():
     """Только sl_atr: exit_reason только sl, ни одной 'tp'."""
     df = _mk_tpsl_df()
@@ -197,6 +199,7 @@ def test_trades_full_returns_every_trade():
 
 
 # --------------------------------------------------------------- scanner flow
+@pytest.mark.debt
 def test_run_scan_fetches_data_once_per_symbol(monkeypatch):
     """run_scan: get_replay_df 1 раз на символ (2 символа → 2, не 90)."""
     replay_symbols = []

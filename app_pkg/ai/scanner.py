@@ -165,8 +165,37 @@ def _metrics(res):
     }
 
 
+def _wf_window_slices(n, test_frac, train_per_test, max_folds, purge=0):
+    """Rolling walk-forward окна по ПОЗИЦИОННЫМ индексам df (чистый расчёт).
+
+    Каждый фолд — train-окно и идущее ПРЯМО за ним тест-окно: техника
+    «rolling window» из Лопеса де Прадо. train = train_per_test × test
+    (6 → «6 месяцев трейн на 1 месяц тест»), между ними — purge баров
+    эмбарго (метки/сделки у границы не пересекают сплит). Тест-окна
+    непересекающиеся, идут слева направо с шагом test; train-окна
+    перекрываются (сдвигаются на test).
+
+    n — длина ряда; возвращает список ((train_start, train_end),
+    (test_start, test_end)) или [] — данных меньше одного фолда.
+    """
+    test = max(1, int(n * float(test_frac)))
+    train = int(test) * int(train_per_test or 1)
+    purge = max(0, int(purge or 0))
+    total = train + purge + test
+    if total > n:
+        return []
+    folds = []
+    start = 0
+    while start + total <= n and (not max_folds or len(folds) < int(max_folds)):
+        train_end = start + train
+        test_end = start + total
+        folds.append(((start, train_end), (train_end + purge, test_end)))
+        start += test  # сдвиг окна = размер тест-окна
+    return folds
+
+
 def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
-                ind_train=None, ind_test=None):
+                ind_train=None, ind_test=None, wf_slices=None):
     """Один прогон комбинации: бэктест на train и на test.
 
     df_train/df_test — готовые окна (уже нарезаны в run_scan): передаются
@@ -185,6 +214,11 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
     посчитанные ОДИН раз на пару (symbol, tf) в run_scan; если не переданы
     (внешние вызовы _run_single напрямую) — считаются здесь.
 
+    wf_slices — список rolling-окон ((train_slice, test_slice) по позициям
+    df): walk-forward режим. df_train/df_test тогда — ПОЛНЫЙ df (индикаторы
+    тоже по полному ряду); окна режутся прямо здесь, прогоняется 2×фолдов
+    бэктестов, агрегация — в _run_single_wf.
+
     Отсев: меньше SCAN_MIN_TRADES сделок хотя бы на одном окне.
     Возвращает dict или None.
     """
@@ -196,12 +230,15 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
         ind_train = compute_indicators(df_train)
     if ind_test is None:
         ind_test = compute_indicators(df_test)
+    if wf_slices:
+        return _run_single_wf(
+            symbol, tf, strategy_name, params, df_train, ind_train, wf_slices)
 
-        # BLOCK-42: сканер оценивает стратегию с ВЫХОДОМ ТОЛЬКО по линиям TP/SL
-        # (config.BACKTEST_SL_ATR × ATR для риска, config.BACKTEST_RR для R/R).
-        # Тот же самый прогон отдаёт /api/backtest/trades — поэтому число
-        # сделок в панели и число блоков на графике совпадают 1:1, а у каждой
-        # сделки есть tp_price/sl_price (IN/OUT/TP/SL на графике).
+    # BLOCK-42: сканер оценивает стратегию с ВЫХОДОМ ТОЛЬКО по линиям TP/SL
+    # (config.BACKTEST_SL_ATR × ATR для риска, config.BACKTEST_RR для R/R).
+    # Тот же самый прогон отдаёт /api/backtest/trades — поэтому число
+    # сделок в панели и число блоков на графике совпадают 1:1, а у каждой
+    # сделки есть tp_price/sl_price (IN/OUT/TP/SL на графике).
     res_train = run_backtest(symbol, tf, None, None, strategy_name, params,
                              df=df_train, ind=ind_train,
                              sl_atr=config.BACKTEST_SL_ATR,
@@ -225,6 +262,78 @@ def _run_single(symbol, tf, strategy_name, params, df_train, df_test,
         "test": m_test,
         "combined_sharpe": min(m_train["sharpe"], m_test["sharpe"]),
         "total_trades": m_train["trades"] + m_test["trades"],
+    }
+
+
+def _run_single_wf(symbol, tf, strategy_name, params, df_full, ind_full,
+                   wf_slices):
+    """Walk-forward: прогон на каждом rolling-окне (train+test), агрегация.
+
+    Контракт результата тот же, что у _run_single (params/train/test/
+    combined_sharpe/total_trades) — пайплайн сохранения и вердикты работают
+    без изменений:
+      - train/test — метрики «худшего» фолда (мин. combined по фолдам):
+        честная out-of-sample карточка;
+      - combined_sharpe = min по фолдам min(train_sharpe, test_sharpe):
+        консервативно — стратегия должна быть стабильна на ВСЕХ окнах;
+      - total_trades — сумма сделок по тест-окнам всех фолдов;
+      - wf — детали (срезы, метрики каждого фолда, средние по фолдам).
+
+    df_full/ind_full — полный ряд и его индикаторы; срезы нарезаются по
+    позициям. Rolling/ewm-индикаторы смотрят только в прошлое, поэтому
+    значения полного ряда на окне валидны и тест-окна получают «тёплый
+    старт» (без cold-start NaN первых баров).
+    """
+    fold_rows = []
+    for train_sl, test_sl in wf_slices:
+        dft = df_full.iloc[train_sl[0]:train_sl[1]].reset_index(drop=True)
+        dtes = df_full.iloc[test_sl[0]:test_sl[1]].reset_index(drop=True)
+        ind_t = (ind_full.iloc[train_sl[0]:train_sl[1]].reset_index(drop=True)
+                 if ind_full is not None else None)
+        ind_te = (ind_full.iloc[test_sl[0]:test_sl[1]].reset_index(drop=True)
+                  if ind_full is not None else None)
+        r_train = run_backtest(symbol, tf, None, None, strategy_name, params,
+                               df=dft, ind=ind_t,
+                               sl_atr=config.BACKTEST_SL_ATR,
+                               rr=db.get_scan_rr())
+        r_test = run_backtest(symbol, tf, None, None, strategy_name, params,
+                              df=dtes, ind=ind_te,
+                              sl_atr=config.BACKTEST_SL_ATR,
+                              rr=db.get_scan_rr())
+        if "error" in r_train or "error" in r_test:
+            log.warning("scan wf %s %s %s: фолд вернул ошибку",
+                        symbol, strategy_name, params)
+            return None
+        fold_rows.append((_metrics(r_train), _metrics(r_test)))
+    if not fold_rows:
+        return None
+    for m_train, m_test in fold_rows:
+        if min(m_train["trades"], m_test["trades"]) < config.SCAN_MIN_TRADES:
+            return None
+    combined = [min(m_tr["sharpe"], m_te["sharpe"])
+                for m_tr, m_te in fold_rows]
+    worst = min(range(len(combined)), key=combined.__getitem__)
+    best_tr, best_te = fold_rows[worst]
+    n_folds = len(fold_rows)
+    return {
+        "params": params,
+        "train": best_tr,
+        "test": best_te,
+        "combined_sharpe": float(min(combined)),
+        "total_trades": sum(m_tr["trades"] + m_te["trades"]
+                            for m_tr, m_te in fold_rows),
+        "wf": {
+            "folds": n_folds,
+            "slices": [[list(s) for s in sl] for sl in wf_slices],
+            "per_fold": [{"train": m_tr, "test": m_te}
+                         for m_tr, m_te in fold_rows],
+            "train_sharpe": (sum(m_tr["sharpe"] for m_tr, _ in fold_rows)
+                             / n_folds),
+            "test_sharpe": (sum(m_te["sharpe"] for _, m_te in fold_rows)
+                            / n_folds),
+            "test_winrate": (sum(m_te["winrate"] for _, m_te in fold_rows)
+                             / n_folds),
+        },
     }
 
 
@@ -401,14 +510,44 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                 df = df.iloc[-fetch_limit:].reset_index(drop=True)
             log.info("scan: %s/%s df rows=%d", symbol, tf, len(df))
 
-            # Сплит 70/30 по времени (df отсортирован по timestamp) и
-            # индикаторы окон — ОДИН раз на пару: run_backtest больше не
-            # пересчитывает compute_indicators на каждую комбинацию.
-            split = int(len(df) * config.SCAN_TRAIN_SPLIT)
-            df_train = df.iloc[:split].reset_index(drop=True)
-            df_test = df.iloc[split:].reset_index(drop=True)
-            ind_train = compute_indicators(df_train)
-            ind_test = compute_indicators(df_test)
+            # Сплит по времени (df отсортирован по timestamp) и индикаторы
+            # окон — ОДИН раз на пару: run_backtest больше не пересчитывает
+            # compute_indicators на каждую комбинацию.
+            # Walk-forward (SCAN_WALK_FORWARD): rolling-окна на полном ряду,
+            # индикаторы — один compute на весь df (срез по фолдам валиден:
+            # rolling/ewm смотрят только в прошлое). Иначе — purge-срез хвоста
+            # train (SCAN_PURGE_BARS): сделки у границы не «не доживают» до
+            # TP/SL внутри окна и не создают ghost-позиций (Лопес де Прадо).
+            wf_slices = None
+            if config.SCAN_WALK_FORWARD:
+                wf_slices = _wf_window_slices(
+                    len(df), config.SCAN_WF_TEST_FRACTION,
+                    config.SCAN_WF_TRAIN_PER_TEST, config.SCAN_WF_FOLDS,
+                    config.SCAN_PURGE_BARS)
+                if not wf_slices:
+                    log.warning("scan: %s/%s walk-forward не влезает в данные "
+                                "(%d баров) — откат на простой сплит",
+                                symbol, tf, len(df))
+                else:
+                    df_train = df
+                    df_test = df
+                    ind_train = compute_indicators(df)
+                    ind_test = ind_train
+                    RUN_STATS[run_id].update(wf_folds=len(wf_slices),
+                                             wf_test_bars=int(
+                                                 len(df) *
+                                                 config.SCAN_WF_TEST_FRACTION))
+            if not wf_slices:
+                split = int(len(df) * config.SCAN_TRAIN_SPLIT)
+                purge = min(config.SCAN_PURGE_BARS,
+                            max(0, int(len(df) * 0.05)))
+                df_train = df.iloc[:max(1, split - purge)].reset_index(
+                    drop=True)
+                df_test = df.iloc[split:].reset_index(drop=True)
+                ind_train = compute_indicators(df_train)
+                ind_test = compute_indicators(df_test)
+                if purge:
+                    RUN_STATS[run_id].update(purge_bars=purge)
 
             for strategy, params_list in strategies.items():
                 if is_cancelled(run_id):
@@ -427,7 +566,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                     futures = {
                         executor.submit(_run_single, symbol, tf, strategy,
                                         params, df_train, df_test,
-                                        ind_train, ind_test): params
+                                        ind_train, ind_test, wf_slices): params
                         for params in params_list
                     }
                     for fut in as_completed(futures):

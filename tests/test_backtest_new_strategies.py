@@ -172,6 +172,7 @@ def test_run_backtest_nan_df_no_crash(cls, key, p1, p2, attrs, warmup):
 
 @pytest.mark.parametrize(("cls", "key", "p1", "p2", "attrs", "warmup"),
                          NEW_STRATEGIES, ids=_IDS)
+@pytest.mark.debt
 def test_run_backtest_works(cls, key, p1, p2, attrs, warmup):
     """run_backtest с новой стратегией возвращает полную статистику."""
     r = run_backtest("X", "15m", None, None, key, p1, df=_DF)

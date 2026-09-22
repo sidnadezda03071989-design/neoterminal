@@ -32,6 +32,7 @@ from app_pkg import config, db, utils
 from app_pkg.ai.context import build_multi_tf_context
 from app_pkg.ai.llm import _llm_request, _extract_json
 from app_pkg.ai.prompts import charon_prompt_text
+from app_pkg.ai.signal_filter import filter_levels, filter_verdict
 from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.data.market_snapshot import compact_snapshot
 from app_pkg.ws import _ws_push
@@ -324,6 +325,9 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
     if not levels:
         return [], current_price, ("LLM вернула ответ без валидных уровней: "
                                    + str(raw)[:200])
+    # Детерминированный пост-фильтр: MTF/ADX/VWAP+OBV правила поверх
+    # вероятностей уровней (тот же compact_snapshot, что ушёл в промпт).
+    levels = filter_levels(levels, snapshot)
     return levels, current_price, None
 
 
@@ -649,18 +653,19 @@ def _flush_pending(pending, results, cache, totals, model, system):
         return
     if len(pending) > 1:
         usage = {}
-        payload = json.dumps([snap for _, snap, _ in pending],
+        payload = json.dumps([snap for _, _, snap, _ in pending],
                              ensure_ascii=False, separators=(",", ":"))
         raw = _llm_verdict(system, payload, model, usage)
         totals["llm_calls"] += 1
         _add_usage(totals, usage)
         verdicts = parse_verdict_batch(raw, len(pending))
         if verdicts is not None and all(verdicts):
-            for (idx, _snap, key), verdict in zip(pending, verdicts):
-                results[idx] = dict(verdict)
-                cache[key] = dict(verdict)
+            for (idx, ts, snap, key), verdict in zip(pending, verdicts):
+                filtered = filter_verdict(verdict, snap, generated_at=ts)
+                results[idx] = dict(filtered)
+                cache[key] = dict(filtered)
             return
-    for idx, snap, key in pending:
+    for idx, ts, snap, key in pending:
         usage = {}
         payload = json.dumps(snap, ensure_ascii=False, separators=(",", ":"))
         raw = _llm_verdict(system, payload, model, usage)
@@ -668,8 +673,9 @@ def _flush_pending(pending, results, cache, totals, model, system):
         _add_usage(totals, usage)
         verdict = parse_verdict(raw)
         if verdict is not None:
-            results[idx] = verdict
-            cache[key] = dict(verdict)
+            filtered = filter_verdict(verdict, snap, generated_at=ts)
+            results[idx] = filtered
+            cache[key] = dict(filtered)
 
 
 def _carry_forward(prev_verdict):
@@ -722,13 +728,13 @@ def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
             last_call = {"rsi": _snap_t(snap).get("rsi"),
                          "close": _snap_t(snap).get("close")}
         elif trigger:
-            pending.append((idx, snap, key))
+            pending.append((idx, ts, snap, key))
         else:
             last_verdict = _carry_forward(last_verdict)
             results[idx] = last_verdict
         if len(pending) >= batch:
             _flush_pending(pending, results, cache, totals, model, system)
-            for pidx, psnap, _pk in pending:
+            for pidx, _pts, psnap, _pk in pending:
                 if results.get(pidx):
                     last_verdict = results[pidx]
                 last_call = {"rsi": _snap_t(psnap).get("rsi"),
@@ -737,7 +743,7 @@ def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
         prev = snap
     if pending:
         _flush_pending(pending, results, cache, totals, model, system)
-        for pidx, psnap, _pk in pending:
+        for pidx, _pts, psnap, _pk in pending:
             if results.get(pidx):
                 last_verdict = results[pidx]
             last_call = {"rsi": _snap_t(psnap).get("rsi"),
@@ -748,7 +754,8 @@ def run_verdict_backtest(symbol, timeframe, bars=50, batch=BATCH_SIZE_DEFAULT,
         signals.append(sig)
         steps.append({"i": idx, "upto_sec": ts, "sig": sig,
                       "conf": verdict.get("conf"),
-                      "carried": bool(verdict.get("carried"))})
+                      "carried": bool(verdict.get("carried")),
+                      "filter": verdict.get("filter")})
     n = len(stamps)
     metrics = dict(totals)
     metrics["steps"] = n

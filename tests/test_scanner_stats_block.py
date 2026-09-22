@@ -74,6 +74,7 @@ def _cleanup_db():
 
 
 # --------------------------------------------------- format_scanner_stats
+@pytest.mark.debt
 def test_format_scanner_stats_empty_without_data():
     """Скана не было — секция пустая (не попадает в промпт)."""
     assert ctx.format_scanner_stats("BTCUSDT", "15m") == ""
@@ -115,6 +116,7 @@ def test_multi_tf_context_includes_scanner_stats(monkeypatch):
     assert "Доверяй сигналам rsi_reversal" in out
 
 
+@pytest.mark.debt
 def test_multi_tf_context_no_section_without_scan(monkeypatch):
     df = _mk_df()
     monkeypatch.setattr(ctx, "get_series_df", lambda *a, **k: df)
@@ -150,6 +152,7 @@ def test_ai_backtest_scanner_block_distrust():
     assert "НЕ доверяй сигналам rsi_reversal" in out
 
 
+@pytest.mark.debt
 def test_ai_backtest_scanner_block_empty_without_scan():
     assert aibt._scanner_block("BTCUSDT", "15m") == ""
 

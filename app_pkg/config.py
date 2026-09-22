@@ -142,6 +142,22 @@ SCAN_ETA_PUSH_EVERY = 10
 SCAN_SYMBOL_TIMEOUT_SECONDS = 600
 # Доля истории на train; остаток (30%) — out-of-sample test.
 SCAN_TRAIN_SPLIT = 0.7
+# Purge/эмбарго между train и test (Лопес де Прадо): хвост train-окна
+# срезается целиком. Без среза сделка, вошедшая за purge баров до границы,
+# либо «не доживает» до TP/SL внутри окна и молча выпадает из метрик
+# (ghost-позиция искажает winrate), либо результат её зависел бы от баров
+# у теста. Срез = 0 — отключить. Дополнительно клипается до 5% длины ряда,
+# чтобы маленький df не выродился в пустое окно.
+SCAN_PURGE_BARS = 50
+# Walk-forward (rolling-окна) вместо одного сплита 70/30. Дорого: каждый
+# фолд = train+test бэктест, т.е. число прогонов ≈ 2×фолдов на комбо.
+SCAN_WALK_FORWARD = False
+# Доля данных на тест-окно одного фолда (0.10 → 10% истории).
+SCAN_WF_TEST_FRACTION = 0.10
+# Отношение train к test в фолде: 6 → «6 месяцев трейн, 1 месяц тест».
+SCAN_WF_TRAIN_PER_TEST = 6
+# Максимум rolling-окон (потолок стоимости прогона).
+SCAN_WF_FOLDS = 3
 # Глубина истории скана в днях от текущего момента (1 год вместо 2):
 # 730 дней давали 20k+ свечей и ~40 сек фетча на символ.
 SCAN_PERIOD_DAYS = 365
@@ -545,6 +561,32 @@ LLM_REASON_MAX_CHARS = 250
 # (та же последняя свеча) в течение TTL идёт из кеша, без похода в сеть.
 LLM_RESPONSE_CACHE_TTL = 300
 AI_MAX_CANDLES_BY_TF = {"1m": 50, "5m": 100, "15m": 150, "1H": 200, "4H": 120, "1D": 80}
+
+# --------------------------------------- детерминированный фильтр сигналов
+# Пост-фильтр вердикта LLM (app_pkg/ai/signal_filter.py): применяется ПОСЛЕ
+# ответа модели к {sig,pu,pd,pf,conf} на исходном compact_snapshot. Правила:
+#   1. MTF — обязательный фильтр (4h против сигнала режет сторону в 0.7);
+#   2. MTF consensus — +0.05 pu/pd за каждый согласный ТФ (из 4);
+#   3. горизонт сигнала — на сколько баров он актуален + метка generated_at;
+#   4. confidence — агрегат правил; ниже порога сигнал НЕ торгуем (sig=F),
+#      даже если pu/pd > 0.6;
+#   5. ADX<20 (флэт) — режем обе стороны в 0.6;
+#   6. VWAP + OBV — подтверждение направления (вероятность +0.05).
+SIGNAL_FILTER_HORIZON_BARS = 20            # 3: бары актуальности сигнала
+SIGNAL_FILTER_CONFIDENCE_MIN = 0.5         # 4: ниже — сигнал не торговать
+SIGNAL_FILTER_CONFIDENCE_BASE = 0.5        # 4: нейтральная база агрегата
+SIGNAL_FILTER_MTF_AGAINST_MULT = 0.7       # 1: 4h против сигнала
+SIGNAL_FILTER_MTF_CONSENSUS_STEP = 0.05    # 2: за каждый согласный ТФ
+SIGNAL_FILTER_CONF_AGAINST_4H = -0.15      # 4: вклад «4h против»
+SIGNAL_FILTER_CONF_MTF_AGREE = 0.05        # 4: вклад согласного ТФ
+SIGNAL_FILTER_CONF_ALIGNMENT_DIVERGE = -0.10  # 4: 1h ≠ 4h (расхождение)
+SIGNAL_FILTER_CONF_ADX_FLAT = -0.10        # 4: вклад «флэт ADX<20»
+SIGNAL_FILTER_CONF_ADX_TREND = 0.05        # 4: вклад «сильный ADX>=25»
+SIGNAL_FILTER_CONF_VWAP_OBV = 0.05         # 4: вклад подтверждения VWAP+OBV
+SIGNAL_FILTER_ADX_FLAT_THRESHOLD = 20.0    # 5: ниже — флэт
+SIGNAL_FILTER_ADX_FLAT_MULT = 0.6          # 5: режем обе стороны
+SIGNAL_FILTER_ADX_TREND_THRESHOLD = 25.0   # 5/4: порог сильного тренда
+SIGNAL_FILTER_VWAP_OBV_STEP = 0.05         # 6: бонус подтверждённого направления
 
 # ------------------------------------------------------------- метрики
 METRICS_QUANTILES = (0.5, 0.95)

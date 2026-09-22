@@ -97,6 +97,7 @@ def test_generate_combinations_respects_limit_and_seed():
 
 
 # ------------------------------------------------------------ _run_single
+@pytest.mark.debt
 def test_run_single_returns_none_when_too_few_trades(monkeypatch):
     """total_trades < SCAN_MIN_TRADES -> комбинация отбрасывается (None)."""
     df = _mk_df(1000)
@@ -108,6 +109,7 @@ def test_run_single_returns_none_when_too_few_trades(monkeypatch):
     assert res is None
 
 
+@pytest.mark.debt
 def test_run_single_combined_sharpe_is_min(monkeypatch):
     """combined_sharpe = min(train_sharpe, test_sharpe)."""
     df = _mk_df(1000)
@@ -130,6 +132,7 @@ def test_run_single_combined_sharpe_is_min(monkeypatch):
 
 
 # ---------------------------------------------------------------- run_scan
+@pytest.mark.debt
 def test_run_scan_writes_rows_to_db(monkeypatch):
     """2 символа × 1 стратегия × 5 параметров = 10 записей в БД."""
     monkeypatch.setattr(scanner, "get_replay_df",

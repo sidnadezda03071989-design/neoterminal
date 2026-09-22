@@ -589,6 +589,7 @@ def _run_scan_capture_fetch(monkeypatch, use_full_history, df_rows=2500,
     return calls, caps
 
 
+@pytest.mark.debt
 def test_run_scan_full_history_fetch_limit(monkeypatch):
     """use_full_history=True: фетч берёт HISTORY_LIMITS[tf] (НЕ
     SCAN_REPLAY_LIMIT), избыточный df обрезается до этого лимита."""
@@ -598,6 +599,7 @@ def test_run_scan_full_history_fetch_limit(monkeypatch):
     assert caps["df_rows"] == int(1500 * config.SCAN_TRAIN_SPLIT) == 1050
 
 
+@pytest.mark.debt
 def test_run_scan_fast_mode_fetch_limit(monkeypatch):
     """use_full_history=False: фетч берёт SCAN_REPLAY_LIMIT (старый 5000)."""
     calls, caps = _run_scan_capture_fetch(monkeypatch, False)

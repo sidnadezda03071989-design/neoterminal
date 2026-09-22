@@ -43,8 +43,15 @@ def hermetic(monkeypatch):
 
 
 def _crowd_ok():
-    return {"ls_ratio": 2.2, "long_pct": 68.9, "short_pct": 31.1,
+    """Крауд как от провайдера: fear_greed в исходной шкале 0-100."""
+    return {"ls_ratio": 2.2, "long_pct": 0.689, "short_pct": 0.311,
             "taker_buy_sell": 1.05, "fear_greed": 52, "ok": True, "ts": 1}
+
+
+def _crowd_norm():
+    """Крауд после унификации шкалы: fear_greed -> 0-1, taker_buy_sell ratio
+    -> доля покупок r/(1+r)=1.05/2.05 (контракт снимка)."""
+    return {**_crowd_ok(), "fear_greed": 0.52, "taker_buy_sell": 0.5122}
 
 
 def _macro_ok():
@@ -94,7 +101,7 @@ def test_crypto_blocks_success(hermetic, monkeypatch):
     """BTCUSDT: crowd/derivatives/news_sentiment/macro — живые данные."""
     _patch_ok_getters(monkeypatch)
     raw = ms.get_raw_market_data("BTCUSDT", "15m")
-    assert raw["sentiment"] == _crowd_ok()
+    assert raw["sentiment"] == _crowd_norm()
     assert raw["derivatives"] == _derivatives_ok()
     assert raw["news_sentiment"] == _news_ok()
     assert raw["macro"] == _macro_ok()
@@ -225,7 +232,7 @@ def test_raw_route_returns_all_blocks(monkeypatch):
         "/api/ai-data/raw?symbol=BTCUSDT&timeframe=15m")
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["sentiment"] == _crowd_ok()
+    assert data["sentiment"] == _crowd_norm()
     assert data["derivatives"] == _derivatives_ok()
     assert data["news_sentiment"] == _news_ok()
     assert data["calendar"] == _NOT_APPLICABLE
