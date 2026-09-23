@@ -175,7 +175,7 @@ def _human_seconds(seconds):
     seconds = int(seconds)
     if seconds < 60:
         return f"{seconds} сек"
-    minutes = int(round(seconds / 60))
+    minutes = round(seconds / 60)
     if minutes < 60:
         return f"{minutes} мин"
     hours, mins = divmod(minutes, 60)
@@ -194,13 +194,13 @@ def _estimate_seconds(total_combinations, symbols_count, timeframes_count=1):
     стоимость бэктестов от разбивки не зависит — важен общий объём.
     """
     timeframes = max(1, int(timeframes_count))
-    combos_per_tf = total_combinations / timeframes
+    total_combinations / timeframes
     workers = max(1, int(config.SCAN_WORKERS))
     backtests = (total_combinations * config.SCAN_SECONDS_PER_COMBINATION
                  / workers)
     fetch = (symbols_count * timeframes
              * config.SCAN_FETCH_SECONDS_PER_SYMBOL)
-    return int(round(backtests + fetch))
+    return round(backtests + fetch)
 @bp.route("/api/scan", methods=["POST"])
 def api_scan_start():
     """Запуск grid-search скана по массиву ТФ. Возвращает {run_id, status: "started"}.

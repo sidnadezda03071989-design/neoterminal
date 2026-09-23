@@ -354,7 +354,7 @@ def _eta_seconds(start, done, total, elapsed_factor=1.0):
     rate = done / elapsed
     if rate <= 0:
         return None
-    return int(round((total - done) / rate))
+    return round((total - done) / rate)
 
 
 def _task_key(task):
@@ -466,7 +466,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
         plan_by_pair.setdefault(key, {}).setdefault(task[2], []).append(task[3])
     timeout = config.SCAN_SYMBOL_TIMEOUT_SECONDS
 
-    for (symbol, tf), strategies in plan_by_pair.items():
+    for (symbol, tf), plan in plan_by_pair.items():
         if is_cancelled(run_id):
             break
         tf_index = tf_index_by_name.get(tf, 1)
@@ -494,7 +494,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                                 "не покрывают историю", symbol, tf, rows)
             if df is None or df.empty:
                 log.warning("scan: %s/%s empty df, skip", symbol, tf)
-                done += sum(len(combs) for combs in strategies.values())
+                done += sum(len(combs) for combs in plan.values())
                 RUN_STATS[run_id].update(
                     tf_index=tf_index, tf_total=len(tfs), current_tf=tf,
                     current_symbol=symbol)
@@ -548,7 +548,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                 if purge:
                     RUN_STATS[run_id].update(purge_bars=purge)
 
-            for strategy, params_list in strategies.items():
+            for strategy, params_list in plan.items():
                 if is_cancelled(run_id):
                     break
                 if time.time() - pair_start > timeout:
@@ -654,7 +654,7 @@ def run_scan(symbols, timeframes, strategies, run_id=None, grids=None,
                 log.info("scan: %s/%s strategy=%s done (%d saved)",
                          symbol, tf, strategy, strategy_kept)
         except Exception as exc:
-            log.exception("scan: %s/%s crashed: %s", symbol, tf, exc)
+            log.exception("scan: %s/%s crashed", symbol, tf)
             RUN_STATS[run_id].update(
                 tf_index=tf_index, tf_total=len(tfs), current_tf=tf,
                 current_symbol=symbol)

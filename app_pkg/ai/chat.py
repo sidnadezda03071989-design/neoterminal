@@ -30,7 +30,7 @@ from app_pkg.utils import _clean, epoch_secs
 log = logging.getLogger(__name__)
 
 
-def append_chat_message(role: str, content: str, symbol: str = None) -> int:
+def append_chat_message(role: str, content: str, symbol: str | None = None) -> int:
     """Хелпер записи сообщения в историю чата."""
     return db_append_chat(role, content, symbol)
 

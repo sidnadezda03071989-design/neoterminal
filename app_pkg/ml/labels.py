@@ -469,13 +469,13 @@ def charon_features(df, symbol=None, lookback=None):
 
     # ---- сборка: гейты (прогрев блока), округление (цифры снимка)
     out = pd.DataFrame(index=df2.index)
-    for prefix in _CHARON_DIGITS:
+    for prefix, digits in _CHARON_DIGITS.items():
         gate = _CHARON_BLOCK_GATE[prefix]
         mask = idx >= gate - 1
-        for field in _CHARON_DIGITS[prefix]:
+        for field in digits:
             arr = cols[prefix + "." + field]
             arr = np.where(mask, arr, np.nan)
-            arr = _round_col(arr, _CHARON_DIGITS[prefix][field])
+            arr = _round_col(arr, digits[field])
             out[prefix + "." + field] = arr
     if has_ts:
         for f in list(_CLOCK_NUM_FIELDS) + ["session_code"]:

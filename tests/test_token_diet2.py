@@ -284,7 +284,7 @@ def test_verdict_calls_request_reasoning_effort_none(monkeypatch):
     monkeypatch.setattr(aibt, "compact_snapshot", lambda *a, **k: {})
 
     aibt._llm_verdict("sys", "payload", None, {})
-    levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H",
+    levels, _price, err = aibt.levels_for_slice("BTCUSDT", "1H",
                                                current_price=100.0)
 
     assert seen == ["none", "none"]

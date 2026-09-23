@@ -38,7 +38,7 @@ _KLINES_PAGE_LIMIT = 1000
 _PAGE_SLEEP_SECONDS = 0.1
 
 
-def _binance_get(path: str, params: dict = None) -> requests.Response:
+def _binance_get(path: str, params: dict | None = None) -> requests.Response:
     """GET на Binance с fallback на api1.binance.com."""
     last_err = None
     for base in _BASE_URLS:
@@ -73,7 +73,7 @@ def _klines_to_df(rows_json) -> pd.DataFrame:
 
 
 def fetch_binance(symbol: str, interval: str, limit: int = 1000,
-                  start_sec: float = None, end_sec: float = None) -> pd.DataFrame:
+                  start_sec: float | None = None, end_sec: float | None = None) -> pd.DataFrame:
     """Возвращает DataFrame с колонками timestamp/open/high/low/close/volume.
 
     timestamp — datetime64 в UTC; пустой результат — пустой DataFrame
@@ -90,7 +90,7 @@ def fetch_binance(symbol: str, interval: str, limit: int = 1000,
 
 
 def fetch_binance_paged(symbol: str, interval: str, total: int = _KLINES_PAGE_LIMIT,
-                        start_sec: float = None, end_sec: float = None) -> pd.DataFrame:
+                        start_sec: float | None = None, end_sec: float | None = None) -> pd.DataFrame:
     """Постраничная загрузка до `total` свечей (максимум 1000 за запрос).
 
     Пагинация идёт назад во времени: первая страница берётся с endTime

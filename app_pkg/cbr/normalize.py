@@ -111,7 +111,7 @@ def normalize_matrix(features, ts, stats):
     """
     x = np.asarray(features, dtype="float64")
     if x.ndim != 2:
-        raise ValueError("features must be (N, F), got %s" % (x.shape,))
+        raise ValueError(f"features must be (N, F), got {x.shape}")
     ts_arr = np.asarray(stats.get("ts"), dtype="int64")
     mean = np.asarray(stats.get("mean", 0.0), dtype="float64")
     std = np.asarray(stats.get("std", 1.0), dtype="float64")

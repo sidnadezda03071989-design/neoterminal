@@ -203,7 +203,7 @@ def _row_to_drawing(row) -> dict:
     return d
 
 
-def db_add_drawing(d: dict, created_by: str = None) -> None:
+def db_add_drawing(d: dict, created_by: str | None = None) -> None:
     conn = _get_db()
     with _db_lock:
         ts = utils.now_iso()
@@ -261,7 +261,7 @@ def db_delete_drawing(drawing_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def db_clear_drawings(created_by: str = None) -> int:
+def db_clear_drawings(created_by: str | None = None) -> int:
     conn = _get_db()
     with _db_lock:
         if created_by:
@@ -272,7 +272,7 @@ def db_clear_drawings(created_by: str = None) -> int:
         return cur.rowcount
 
 
-def db_get_all_drawings(symbol: str = None, timeframe: str = None) -> list:
+def db_get_all_drawings(symbol: str | None = None, timeframe: str | None = None) -> list:
     """Все рисунки.
 
     Важно: если задан symbol/timeframe — фильтруем, но глобальные записи
@@ -295,7 +295,7 @@ def db_get_all_drawings(symbol: str = None, timeframe: str = None) -> list:
     return [_row_to_drawing(r) for r in rows]
 
 # ---------------------------------------------------------------- чат
-def db_append_chat(role: str, content: str, symbol: str = None) -> int:
+def db_append_chat(role: str, content: str, symbol: str | None = None) -> int:
     conn = _get_db()
     with _db_lock:
         cur = conn.execute(

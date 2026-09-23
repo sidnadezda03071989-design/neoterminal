@@ -114,21 +114,19 @@ def _normalize_model_drawings(raw_drawings, candles, visible_range=None):
             pts_clean = pts_clean[:10]
         # trendline/ray: точки на одной свече не рисуются — сдвигаем вторую
         # на следующую свечу, развести некуда (данные кончились) — отбрасываем.
-        if dtype in ("trendline", "ray") and len(pts_clean) >= 2:
-            if pts_clean[0]["time"] == pts_clean[1]["time"]:
-                nxt = _next_time(pts_clean[0]["time"])
-                if nxt is None:
-                    continue
-                pts_clean[1] = {**pts_clean[1], "time": nxt}
+        if dtype in ("trendline", "ray") and len(pts_clean) >= 2 and pts_clean[0]["time"] == pts_clean[1]["time"]:
+            nxt = _next_time(pts_clean[0]["time"])
+            if nxt is None:
+                continue
+            pts_clean[1] = {**pts_clean[1], "time": nxt}
         # fib: совпали по времени — разносим по границам видимого окна.
-        if dtype == "fib" and len(pts_clean) >= 2:
-            if pts_clean[0]["time"] == pts_clean[1]["time"]:
-                if not window:
-                    continue
-                pts_clean[0] = {**pts_clean[0],
-                                "time": _nearest_time(int(window[0]["time"]), candles)}
-                pts_clean[1] = {**pts_clean[1],
-                                "time": _nearest_time(int(window[-1]["time"]), candles)}
+        if dtype == "fib" and len(pts_clean) >= 2 and pts_clean[0]["time"] == pts_clean[1]["time"]:
+            if not window:
+                continue
+            pts_clean[0] = {**pts_clean[0],
+                            "time": _nearest_time(int(window[0]["time"]), candles)}
+            pts_clean[1] = {**pts_clean[1],
+                            "time": _nearest_time(int(window[-1]["time"]), candles)}
         label = (d.get("label") or "")[:40]
         result.append({
             "type": dtype,
@@ -259,7 +257,7 @@ def _filter_candles_only(context):
     filtered = []
     block = None
     for l in lines:
-        if l.startswith("=== Indicators") or l.startswith("=== Trends ==="):
+        if l.startswith(("=== Indicators", "=== Trends ===")):
             block = "skip"
             continue
         if l.startswith("=== "):
@@ -275,7 +273,7 @@ def _filter_indicators_only(context):
     filtered = []
     capture = False
     for l in lines:
-        if l.startswith("=== Indicators") or l.startswith("=== Trends ==="):
+        if l.startswith(("=== Indicators", "=== Trends ===")):
             capture = True
         elif l.startswith("=== Candles"):
             capture = False

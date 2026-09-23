@@ -177,7 +177,7 @@ def main() -> None:
     base_db = base_dir / "base.db"
     if not args.quiet:
         print(f"[cbr_grid] строю base.db из {args.csv} ...")
-    bars, price_fn, stored, dup = build_base_db(
+    _bars, price_fn, stored, dup = build_base_db(
         args.csv, args.symbol, args.tf, base_db)
     symbol = str(args.symbol).upper()
     timeframe = canonical_tf(args.tf)

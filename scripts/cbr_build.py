@@ -44,7 +44,7 @@ def build_stage2_artifacts(conn, symbol, timeframe):
     import datetime
     symbol = str(symbol).upper()
     timeframe = str(timeframe).strip()
-    X, ts, regimes, y = cbr_index.load_feature_matrix(conn, symbol, timeframe)
+    X, ts, _regimes, _y = cbr_index.load_feature_matrix(conn, symbol, timeframe)
     stats = cbr_norm.compute_rolling_stats(X, ts=ts)
     stats_path = str(config.CBR_NORMALIZE_STATS_PATH)
     index_path = str(config.CBR_FAISS_INDEX_PATH)
@@ -182,7 +182,7 @@ def main() -> None:
     if not args.quiet:
         print(f"[cbr_build] записано={stored} дубликатов={dup}")
 
-    pending_before = conn.execute(
+    conn.execute(
         "SELECT COUNT(*) c FROM snapshots WHERE symbol=? AND timeframe=? "
         "AND outcome IS NULL", (symbol, timeframe)).fetchone()["c"]
     backfilled = backfill.backfill_outcomes(

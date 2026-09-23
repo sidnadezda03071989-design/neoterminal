@@ -270,7 +270,7 @@ def test_levels_for_slice_applies_filter(monkeypatch):
     monkeypatch.setattr(aibt, "compact_snapshot",
                         lambda *a, **k: _mtf({"4h": "down"}))
 
-    levels, price, err = aibt.levels_for_slice("BTCUSDT", "1H")
+    levels, _price, err = aibt.levels_for_slice("BTCUSDT", "1H")
     assert err is None
     by_side = {lv["side"]: lv for lv in levels}
     assert by_side["UP"]["probability"] == pytest.approx(0.42)

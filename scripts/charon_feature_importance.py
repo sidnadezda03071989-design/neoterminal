@@ -54,11 +54,11 @@ from app_pkg.ml.labels import (
 
 _LABELS = [-1, 0, 1]
 
-_LGB_PARAMS = dict(
-    n_estimators=500, learning_rate=0.03, num_leaves=31,
-    min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
-    class_weight="balanced", random_state=42, verbosity=-1,
-)
+_LGB_PARAMS = {
+    "n_estimators": 500, "learning_rate": 0.03, "num_leaves": 31,
+    "min_child_samples": 50, "subsample": 0.8, "colsample_bytree": 0.8,
+    "class_weight": "balanced", "random_state": 42, "verbosity": -1,
+}
 
 
 def _parse_args(argv):
@@ -368,29 +368,28 @@ def main(argv=None):
     print("\n=== per-fold (walk-forward) ===")
     for res in (charon, ohlcv):
         for fs in res["fold_stats"]:
-            print("  %-18s Fold %d: acc=%.3f f1=%.3f n_train=%d n_test=%d"
-                  % (res["name"], fs["fold"], fs["acc"], fs["f1"],
-                     fs["n_train"], fs["n_test"]))
-        accs = [fs["acc"] for fs in res["fold_stats"]]
-        f1s = [fs["f1"] for fs in res["fold_stats"]]
-        print("  %-18s Pooled:   acc=%.3f f1=%.3f"
-              % (res["name"], res["acc"], res["f1"]))
-        print("  %-18s mean±std: acc=%.3f±%.3f f1=%.3f±%.3f"
-              % (res["name"], float(np.mean(accs)), float(np.std(accs)),
-                 float(np.mean(f1s)), float(np.std(f1s))))
+            print(f"  {res['name']:<18s} Fold {fs['fold']}: "
+                  f"acc={fs['acc']:.3f} f1={fs['f1']:.3f} "
+                  f"n_train={fs['n_train']} n_test={fs['n_test']}")
+        print(f"  {res['name']:<18s} Pooled:   acc={res['acc']:.3f} "
+              f"f1={res['f1']:.3f}")
+        accs_cf = [fs['acc'] for fs in res['fold_stats']]
+        f1s_cf = [fs['f1'] for fs in res['fold_stats']]
+        print(f"  {res['name']:<18s} mean±std: "
+              f"acc={float(np.mean(accs_cf)):.3f}±{float(np.std(accs_cf)):.3f} "
+              f"f1={float(np.mean(f1s_cf)):.3f}±{float(np.std(f1s_cf)):.3f}")
 
     print("\n=== метрики по walk-forward (pooled) ===")
-    print("  %-18s %-6s %-6s %s" % ("model", "acc", "f1_macro", "confusion"))
+    print(f"  {'model':<18s} {'acc':<6s} {'f1_macro':<6s} confusion")
     for res in table_models:
-        print("  %-18s %-6s %-6s %s" % (res["name"], f"{res['acc']:.3f}",
-                                         f"{res['f1']:.3f}",
-                                         res["cm"].tolist()))
+        print(f"  {res['name']:<18s} {res['acc']:.3f} "
+              f"{res['f1']:.3f} {res['cm'].tolist()}")
         if res["name"] == "charon":
-            print("  %-18s %-6s %-6s  (baseline majority на test)"
-                  % ("baseline maj", f"{res['maj_acc']:.3f}", ""))
-    print("  %-18s %-6s %-6s  (baseline majority на test)"
-          % ("baseline maj ohlcv", f"{ohlcv['maj_acc']:.3f}", ""))
-    print("  %-18s %-6s %-6s" % ("baseline random", "0.333", "0.333"))
+            print(f"  {'baseline maj':<18s} {res['maj_acc']:.3f} "
+                  f"{'':<6s}  (baseline majority на test)")
+    print(f"  {'baseline maj ohlcv':<18s} {ohlcv['maj_acc']:.3f} "
+          f"{'':<6s}  (baseline majority на test)")
+    print(f"  {'baseline random':<18s} {'0.333':<6s} {'0.333':<6s}")
     gain_vs_floor = charon["acc"] - max(ohlcv["acc"], 1 / 3.0)
     print(f"[вывод] charon acc={charon['acc']:.3f} vs floor(ohlcv)="
           f"{ohlcv['acc']:.3f}: delta={gain_vs_floor:+.3f}")
@@ -405,7 +404,7 @@ def main(argv=None):
                     key=lambda x: -x[1])
     print(f"\n=== top-{top_k} фич по gain ===")
     for i, (f, g) in enumerate(ranked[:top_k], 1):
-        print("  %2d %-28s %.4f" % (i, f, g))
+        print(f"  {i:2d} {f:<28s} {g:.4f}")
 
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -420,7 +419,7 @@ def main(argv=None):
                              key=lambda x: -x[1])
         print(f"\n=== top-{top_k} фич по permutation ===")
         for i, (f, g) in enumerate(ranked_perm[:top_k], 1):
-            print("  %2d %-28s %.4f" % (i, f, g))
+            print(f"  {i:2d} {f:<28s} {g:.4f}")
         intersect = len({f for f, _ in ranked[:10]}
                         & {f for f, _ in ranked_perm[:10]})
         print(f"overlap top-10 (gain ∩ permutation) = {intersect}/10")

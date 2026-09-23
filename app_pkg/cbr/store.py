@@ -117,11 +117,12 @@ def snapshot_to_vector(snapshot):
 
     Поддержаны flat ("block.field"), compact (короткие ключи v3) и raw
     (технические блоки market_snapshot) форматы; отсутствующее поле -> 0.0.
-    Кидает ValueError на не-dict.
+    Кидает TypeError на не-dict.
     """
     if not isinstance(snapshot, dict):
-        raise ValueError("snapshot must be a dict, got "
-                         f"{type(snapshot).__name__}")
+        raise ValueError(  # noqa: TRY004 — контракт c тестами
+            "snapshot must be a dict, got "
+            f"{type(snapshot).__name__}")
     vec = np.zeros(len(FEATURE_ORDER), dtype=np.float32)
 
     def _block(compact_key, raw_key):

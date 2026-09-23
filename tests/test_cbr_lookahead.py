@@ -81,7 +81,7 @@ def env():
              int(12 + j % 8), rid))
     conn.commit()
 
-    X, ts, regimes, y = cbr_index.load_feature_matrix(conn, "BTCUSDT", "1H")
+    X, ts, _regimes, y = cbr_index.load_feature_matrix(conn, "BTCUSDT", "1H")
     stats = cbr_norm.compute_rolling_stats(X, ts=ts)
     Xn = cbr_norm.normalize_matrix(X, ts, stats)
     index = cbr_index.build_faiss_index(Xn)

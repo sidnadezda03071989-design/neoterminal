@@ -10,6 +10,7 @@ import io
 import json
 import subprocess
 import sys
+from typing import ClassVar
 
 import pytest
 
@@ -37,8 +38,8 @@ class _FakePopen:
     stdout = ""
     stderr = ""
     raise_timeout = False
-    script = []
-    instances = []
+    script: ClassVar[list] = []
+    instances: ClassVar[list] = []
 
     def __init__(self, argv, **kwargs):
         index = len(_FakePopen.instances)

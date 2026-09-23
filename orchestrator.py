@@ -177,6 +177,7 @@ def _run_cline_task(task: str, cwd: str | None = None) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=CLINE_TASK_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return json.dumps(
@@ -228,6 +229,7 @@ def _run_command(command: str, cwd: str | None = None) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=COMMAND_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return json.dumps(

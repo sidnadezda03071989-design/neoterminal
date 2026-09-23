@@ -84,8 +84,7 @@ def backfill_outcomes(conn, symbol, timeframe, price_fn, horizon=20,
         atr_pct = float(row["atr_pct"])
         if entry <= 0 or atr_pct <= 0:
             raise ValueError(
-                "cannot backfill: degenerate atr_pct on ts=%s (%s %s)"
-                % (int(row["ts"]), symbol, timeframe))
+                "cannot backfill: degenerate atr_pct on ts={} ({} {})".format(int(row["ts"]), symbol, timeframe))
         upper = entry * (1.0 + atr_k * atr_pct)
         lower = entry * (1.0 - atr_k * atr_pct)
 

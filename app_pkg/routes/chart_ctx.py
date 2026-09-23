@@ -66,7 +66,7 @@ def api_chart_context():
         mask = utils.epoch_secs(df["timestamp"]) <= visible_to
         df = df[mask]
 
-    candles, indicators, last_price, total = slice_payload(
+    candles, indicators, last_price, _total = slice_payload(
         df, replay_index if mode == "replay" else None)
 
     # Replay: ИИ не должен видеть данные после replay_index. upto_sec —

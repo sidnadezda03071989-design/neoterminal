@@ -121,7 +121,7 @@ def main(argv=None):
     print(f"model:    {args.model}")
 
     session = requests.Session()
-    ok_models, models_msg = _probe_models(session, base_url, key, args.timeout)
+    _ok_models, models_msg = _probe_models(session, base_url, key, args.timeout)
     print(f"[1/2] GET  /models           -> {models_msg}")
     ok_chat, chat_msg, answer = _probe_chat(
         session, base_url, key, args.model, args.timeout

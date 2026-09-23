@@ -1105,7 +1105,7 @@ def _rint(v):
     if v is None:
         return None
     try:
-        return int(round(v))
+        return round(v)
     except (TypeError, ValueError):
         return None
 
@@ -1414,6 +1414,7 @@ def _mtf_compact(symbol, upto_sec=None):
                 df = get_series_df(symbol, tf, limit=80,
                                    history_limit=config.TRENDS_HISTORY)
         except Exception:  # noqa: BLE001 — источник недоступен -> пропуск
+            log.debug("historical %s %s недоступен для реплея", symbol, tf)
             continue
         if df is None or df.empty:
             continue
@@ -1442,11 +1443,11 @@ def _mtf_compact(symbol, upto_sec=None):
             high = pd.Series(df["high"], dtype="float64")
             low = pd.Series(df["low"], dtype="float64")
             adx_last = utils._clean(_di(high, low, close, 14)[2].iloc[-1])
-            adx = int(round(adx_last)) if adx_last is not None else None
+            adx = round(adx_last) if adx_last is not None else None
         except Exception:  # noqa: BLE001 — adx необязателен, не роняем блок
             adx = None
         out[tf.lower()] = {"tr": tr, "trend": trend,
-                           "rsi": int(round(rsi)) if rsi is not None else None,
+                           "rsi": round(rsi) if rsi is not None else None,
                            "adx": adx}
     return out
 

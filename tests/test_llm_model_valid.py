@@ -114,9 +114,8 @@ def test_http_400_both_attempts_logs_warning(monkeypatch, caplog):
         llm._LLM_SESSION, "post",
         lambda *a, **k: _FakeResp(400, '{"error": "invalid model"}'))
 
-    with caplog.at_level(logging.WARNING, logger="app_pkg.ai.llm"):
-        with pytest.raises(HTTPError):
-            llm._llm_request("system", [{"role": "user", "content": "hi"}])
+    with caplog.at_level(logging.WARNING, logger="app_pkg.ai.llm"), pytest.raises(HTTPError):
+        llm._llm_request("system", [{"role": "user", "content": "hi"}])
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any(

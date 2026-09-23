@@ -564,7 +564,7 @@ def test_stats_by_regime_only_when_no_filter(filled_db):
 
 def test_stats_window_relative_to_max(conn):
     # 5 «старых» строк за пределами окна (max-90d) и 10 свежих
-    now_max = BASE + 100 * 86400
+    BASE + 100 * 86400
     for i in range(10):
         store.store_snapshot(conn, _compact(i, ts=BASE + i * 3600))
     for i in range(5):

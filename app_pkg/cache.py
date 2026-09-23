@@ -4,10 +4,13 @@
 публичные функции разделены на context и verdict.
 """
 
+import logging
 import threading
 import time
 
 from app_pkg import config
+
+log = logging.getLogger(__name__)
 
 _CONTEXT_CACHE = {}
 _CONTEXT_CACHE_LOCK = threading.Lock()
@@ -26,8 +29,8 @@ def _record(mtype, value, labels=None):
     try:
         from app_pkg.metrics import _record_metric
         _record_metric(mtype, value, labels)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("metrics record failed (%s): %s", mtype, exc)
 
 
 def _get(cache: dict, lock: threading.Lock, key, ttl: float, cache_name: str = ""):

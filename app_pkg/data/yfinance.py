@@ -28,9 +28,9 @@ def _empty_df() -> pd.DataFrame:
     return pd.DataFrame(columns=_EMPTY_COLUMNS)
 
 
-def fetch_yfinance(symbol: str, interval: str, period: str = None,
-                   limit: int = None, start_sec: float = None,
-                   end_sec: float = None) -> pd.DataFrame:
+def fetch_yfinance(symbol: str, interval: str, period: str | None = None,
+                   limit: int | None = None, start_sec: float | None = None,
+                   end_sec: float | None = None) -> pd.DataFrame:
     """Скачивает данные и приводит к схеме timestamp/open/high/low/close/volume.
 
     Период выбирается по таймфрейму: 1m->2d, 5m->5d, 15m->1mo,

@@ -192,7 +192,7 @@ def structure_levels_from_df(df, current_price, max_per_side=5,
             p = cp - FILL_STEPS_ATR[k] * atr if below else cp + FILL_STEPS_ATR[k] * atr
             if p > 0 and all(abs(p - q) > tol for q in p_list):
                 p_list.append(p)
-                p_list = (sorted(p_list, reverse=False if not below else True)
+                p_list = (sorted(p_list, reverse=bool(below))
                           )[:max_per_side]
             k += 1
         return _mk_side(side, p_list[:max_per_side], cp)

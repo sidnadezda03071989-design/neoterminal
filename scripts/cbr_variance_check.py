@@ -380,20 +380,20 @@ def format_report(res, symbol, tf_label):
         f"N samples:                    {res['n']}",
         f"Feature dim:                  {res['feature_dim']}",
         "──",
-        f"1. Low-variance features:  {metrics['low_variance']['value']:>4} "
+        (f"1. Low-variance features:  {metrics['low_variance']['value']:>4} "
         f"/ {metrics['low_variance']['total']}  "
-        f"{format_status(metrics['low_variance'])}",
-        f"2. Pairwise dist ratio:    "
+        f"{format_status(metrics['low_variance'])}"),
+        (f"2. Pairwise dist ratio:    "
         f"{metrics['pairwise_ratio']['value']:>8.4f}  "
-        f"{format_status(metrics['pairwise_ratio'])}",
-        f"3. PCA components (80%):   "
-        f"{metrics['pca']['value']:>8}  {format_status(metrics['pca'])}",
-        f"4. k-NN up_std (K={metrics['knn_up_std']['k']}): "
+        f"{format_status(metrics['pairwise_ratio'])}"),
+        (f"3. PCA components (80%):   "
+        f"{metrics['pca']['value']:>8}  {format_status(metrics['pca'])}"),
+        (f"4. k-NN up_std (K={metrics['knn_up_std']['k']}): "
         f"{metrics['knn_up_std']['value']:>8.4f}  "
-        f"{format_status(metrics['knn_up_std'])}",
-        f"5. Regime winrate spread:  "
+        f"{format_status(metrics['knn_up_std'])}"),
+        (f"5. Regime winrate spread:  "
         f"{metrics['regime_winrate']['value']:>8.4f}  "
-        f"{format_status(metrics['regime_winrate'])}",
+        f"{format_status(metrics['regime_winrate'])}"),
     ]
     if res["verdict"] == "GO":
         lines.append("ВЕРДИКТ: ✅ GO — Этап 2 (FAISS) имеет смысл")

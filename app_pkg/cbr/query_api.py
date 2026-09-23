@@ -202,7 +202,7 @@ def get_similar_summary(conn, index_or_symbol, snapshot_or_tf, symbol=None,
         _tf = snapshot_or_tf
         _snap = symbol
         if not isinstance(_snap, dict):
-            raise ValueError("current_snapshot must be a dict")
+            raise TypeError("current_snapshot must be a dict")
         features = snapshot_to_vector(_snap)
         regime = classify_regime(features)
         wd = int(config.CBR_QUERY_WINDOW_DAYS if window_days is None
@@ -216,7 +216,7 @@ def get_similar_summary(conn, index_or_symbol, snapshot_or_tf, symbol=None,
     index = index_or_symbol
     current_snapshot = snapshot_or_tf
     if not isinstance(current_snapshot, dict):
-        raise ValueError("current_snapshot must be a dict")
+        raise TypeError("current_snapshot must be a dict")
     if bar_ts is None:
         raise ValueError(
             "get_similar_summary (k-NN) requires bar_ts: neighbours must "
@@ -394,7 +394,7 @@ def _similar_summary_knn(conn, index, snapshot, symbol, tf, bar_ts, K=50,
         "winrate_down": _r2(float(np.mean(outcomes == -1))),
         "winrate_flat": _r2(float(np.mean(outcomes == 0))),
         "avg_pnl_pct": _r2(avg_pnl),
-        "median_bars_to_outcome": int(round(median_bars))
+        "median_bars_to_outcome": round(median_bars)
         if np.isfinite(median_bars) else None,
         "confidence": round(confidence, 4),
         "avg_distance": round(avg_dist, 2),
@@ -444,14 +444,14 @@ def format_for_prompt(stats, max_chars=250):
         regime_tag = max(by_regime,
                          key=lambda k: by_regime[k].get("share", 0.0))
     parts = [
-        f"CBR {stats.get('symbol')} {stats.get('timeframe')} "
-        f"n={stats.get('n')}",
-        f"up={_pct(ratio.get('up'))} dn={_pct(ratio.get('down'))} "
-        f"flat={_pct(ratio.get('flat'))}",
-        f"pnl_avg={stats.get('avg_pnl')}% "
-        f"bars_avg={stats.get('avg_bars')}",
-        f"max_up={stats.get('max_up_avg')}% "
-        f"max_dn={stats.get('max_dn_avg')}%",
+        (f"CBR {stats.get('symbol')} {stats.get('timeframe')} "
+        f"n={stats.get('n')}"),
+        (f"up={_pct(ratio.get('up'))} dn={_pct(ratio.get('down'))} "
+        f"flat={_pct(ratio.get('flat'))}"),
+        (f"pnl_avg={stats.get('avg_pnl')}% "
+        f"bars_avg={stats.get('avg_bars')}"),
+        (f"max_up={stats.get('max_up_avg')}% "
+        f"max_dn={stats.get('max_dn_avg')}%"),
     ]
     if regime_tag:
         parts.append(f"reg={regime_tag}")

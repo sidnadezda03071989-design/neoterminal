@@ -32,7 +32,7 @@ def _quantile(values, q):
     if not values:
         return 0.0
     sv = sorted(values)
-    pos = min(len(sv) - 1, max(0, int(round(q * (len(sv) - 1)))))
+    pos = min(len(sv) - 1, max(0, round(q * (len(sv) - 1))))
     return sv[pos]
 
 

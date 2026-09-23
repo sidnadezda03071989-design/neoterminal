@@ -147,7 +147,7 @@ def test_chat_flow_truncates_old_messages(monkeypatch):
     monkeypatch.setattr(ai_chat, "db_get_chat_history", fake_history)
     monkeypatch.setattr(ai_chat, "_llm_request", fake_llm_request)
 
-    reply, model, fallback = ai_chat._chat_flow(
+    reply, _model, _fallback = ai_chat._chat_flow(
         "привет", "BTCUSDT", "15m")
     assert reply == "ok"
     msgs = captured["msgs"]

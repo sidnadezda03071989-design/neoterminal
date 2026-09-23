@@ -67,7 +67,7 @@ def main():
 
     results = []
     for i, (K, min_dist) in enumerate(GRID_COMBOS):
-        rows, engines, by_regime, coverage, info = run_backtest(
+        _rows, engines, _by_regime, _coverage, _info = run_backtest(
             conn, db_rows, csv_data, K=K, min_distance=min_dist,
             regime_match=True, window_days=args.window_days,
             start_fraction=args.start_fraction, max_bars=args.max_bars)

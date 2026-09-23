@@ -565,7 +565,7 @@ def main():
 
     # ---- 5: permutation (gross; издержки постоянны, на ratio не влияют).
     with tempfile.TemporaryDirectory(prefix="cbr_perm_") as tmp:
-        conn2, tmp_db_path = build_shuffled_db(conn, tmp, args.seed)
+        conn2, _tmp_db_path = build_shuffled_db(conn, tmp, args.seed)
         try:
             trades_sh = run_b_only(conn2, db_rows, index, stats, csv_data,
                                    symbol, timeframe, args.K, args.min_distance,
@@ -632,8 +632,7 @@ def main():
     line(f"avg_pnl = {(s_gross['avg_pnl_pct'] or 0):.2f}% (gross)", "")
     print("Валидация 2 — Sharpe after fees:", _status(check_fees))
     line(f"gross = {s_gross['sharpe']:.2f}  net = {s_net['sharpe']:.2f}",
-         "(fees %.2f%% + slippage %.2f%% per side)" %
-         (FEE_PER_SIDE * 100, SLIPPAGE * 100))
+         f"(fees {FEE_PER_SIDE * 100:.2f}% + slippage {SLIPPAGE * 100:.2f}% per side)")
     print("Валидация 3 — Walk-forward (3 periods):",
           _status(check_wf))
     for p in wf_periods:

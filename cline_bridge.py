@@ -92,7 +92,7 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=30)
+                           capture_output=True, timeout=30, check=True)
             return
         except Exception as exc:  # noqa: BLE001
             log.warning("taskkill не сработал для pid=%s: %s", proc.pid, exc)

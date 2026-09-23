@@ -82,7 +82,7 @@ def load_csv(csv_path):
             h.append(float(row[pos["high"]]))
             l.append(float(row[pos["low"]]))
             c.append(float(row[pos["close"]]))
-    idx = np.searchsorted(np.asarray(ts_list, dtype="int64"), ts_list)
+    np.searchsorted(np.asarray(ts_list, dtype="int64"), ts_list)
     order = np.argsort(np.asarray(ts_list, dtype="int64"))
     ts = np.asarray(ts_list, dtype="int64")[order]
     o = np.asarray(o)[order]
@@ -136,12 +136,11 @@ def offline_charon_verdict(fv):
     adx = f("trend.adx")
     pdi = f("trend.plus_di")
     mdi = f("trend.minus_di")
-    if adx is not None and adx > 25.0:
-        if pdi is not None and mdi is not None:
-            if pdi > mdi:
-                pu += 0.1
-            elif mdi > pdi:
-                pd += 0.1
+    if adx is not None and adx > 25.0 and pdi is not None and mdi is not None:
+        if pdi > mdi:
+            pu += 0.1
+        elif mdi > pdi:
+            pd += 0.1
     ds = f("trend.di_spread")
     if ds is not None and ds > 10.0:
         k *= 1.2
@@ -350,7 +349,7 @@ def run_backtest(conn, db_rows, csv_name, K, min_distance, regime_match,
                 "B_cbr": _coverage(rows, "B_cbr"),
                 "C_blended": _coverage(rows, "C_blend")}
     by_regime = {}
-    for regime in sorted(set(r["regime"] for r in rows)):
+    for regime in sorted({r["regime"] for r in rows}):
         sub = [r for r in rows if r["regime"] == regime]
         by_regime[regime] = {
             "A_charon": metrics([r["A_charon"] for r in sub]),
@@ -378,8 +377,7 @@ def build_verdict(engines):
             else 0.0)
     any_winrate = a.get("winrate") is not None and c.get("winrate") is not None
     is_pass = any_winrate and (d_wr >= 0.03 or d_sh >= 0.3)
-    note = ("C превосходит A: winrate+%.2f, sharpe+%.2f"
-            % (d_wr, d_sh))
+    note = (f"C превосходит A: winrate+{d_wr:.2f}, sharpe+{d_sh:.2f}")
     if not any_winrate:
         note += " (A или C без сделок — метрика не определена)"
     return {

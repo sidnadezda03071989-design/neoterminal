@@ -350,7 +350,6 @@ def test_config_stage2_defaults_off():
 
 
 def test_ai_backtest_hook_gated_off(env):
-    monkeypatch = None  # эталонный вызов без stage2
     verdict = {"sig": "L", "pu": 0.6, "pd": 0.3, "pf": 0.1, "tg": [], "conf": 0.6}
     out = aibt._cbr_blend_verdict(verdict, _query_snap(200), "BTCUSDT", "1H",
                                   ts=BASE_TS + 200 * 3600)

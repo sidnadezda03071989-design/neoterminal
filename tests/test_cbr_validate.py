@@ -5,12 +5,13 @@
 вызываются. 8 тестов по ТЗ.
 """
 
+import itertools
 import math
 
 import numpy as np
 import pytest
 
-from scripts.cbr_validate_B import (
+from scripts.cbr_validate_b import (
     FEE_PER_SIDE,
     SLIPPAGE,
     annualized_sharpe,
@@ -63,7 +64,7 @@ def test_walk_forward_split():
     assert periods[0][0] == ts_min
     assert periods[-1][1] == ts_max
     # непрерывность: e[i] == s[i+1]
-    for (_, e), (s, _) in zip(periods, periods[1:]):
+    for (_, e), (s, _) in itertools.pairwise(periods):
         assert abs(e - s) <= 1
 
 

@@ -143,13 +143,13 @@ def run_audit(conn, index, stats, symbol, tf, K=10, min_distance=1.0,
 
     rng = np.random.RandomState(int(seed))
     sample_size = max(1, min(int(sample_size), n))
-    sample_ts = set(all_ts[i] for i in rng.choice(
-        n, size=sample_size, replace=False))
+    sample_ts = {all_ts[i] for i in rng.choice(
+        n, size=sample_size, replace=False)}
 
     if int(coverage_sample) > 0:
         cov_n = max(1, min(int(coverage_sample), n))
-        cov_ts = set(all_ts[i] for i in rng.choice(
-            n, size=cov_n, replace=False))
+        cov_ts = {all_ts[i] for i in rng.choice(
+            n, size=cov_n, replace=False)}
     else:
         cov_ts = set(all_ts)
     wanted = sample_ts | cov_ts
@@ -157,7 +157,7 @@ def run_audit(conn, index, stats, symbol, tf, K=10, min_distance=1.0,
     pairs = []
     cov_directions = []
     for ts in wanted:
-        vec, regime = bars[ts]
+        vec, _regime = bars[ts]
         snap = snap_from_features(vec, symbol, tf, ts)
         res = query_api.get_similar_summary(
             conn, index, snap, symbol, tf, bar_ts=int(ts),
@@ -205,7 +205,7 @@ def run_audit(conn, index, stats, symbol, tf, K=10, min_distance=1.0,
         "deltas": deltas_stats,
         "coverage": (round(cov, 4) if cov is not None else None),
         "coverage_n": len(cov_directions),
-        "coverage_traded": int(round((cov or 0.0) * len(cov_directions))),
+        "coverage_traded": round((cov or 0.0) * len(cov_directions)),
         "coverage_selective": bool(cov is not None and cov < COVERAGE_WARN),
         "verdict": verdict,
     }

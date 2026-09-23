@@ -73,8 +73,8 @@ def _mt5_ensure() -> bool:
                             attempt, config.MT5_PATH)
                 try:
                     mt5_module.shutdown()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MT5 shutdown before re-init failed: %s", exc)
                 ok = _try_init(path=config.MT5_PATH)
                 logger.info("MT5 init attempt %d... ok: %s",
                             attempt, str(ok).lower())
@@ -95,11 +95,12 @@ def _mt5_ensure() -> bool:
             logger.warning("MT5 symbols_get error: %s", exc)
         mt5_state.update(ok=True, detail="connected", symbols=names)
         try:
-            info = mt5_module.terminal_info()
-            if info is not None:
-                logger.info("MT5 terminal: %s (%s)", info.path, info.company)
-        except Exception:  # noqa: BLE001
-            pass
+            t_info = mt5_module.terminal_info()
+            if t_info is not None:
+                logger.info("MT5 terminal: %s (%s)",
+                            t_info.path, t_info.company)
+        except Exception as exc:  # noqa: BLE001, RUF100
+            logger.warning("MT5 terminal_info error: %s", exc)
         logger.info("MT5 connected, %d symbols", len(names))
         return True
 
@@ -127,7 +128,8 @@ def _empty_df() -> pd.DataFrame:
 
 
 def fetch_mt5(symbol: str, tf: str, limit: int = 1000,
-              start_sec: float = None, end_sec: float = None) -> pd.DataFrame:
+              start_sec: float | None = None,
+              end_sec: float | None = None) -> pd.DataFrame:
     """Копирует котировки из MT5. При недоступности MT5 — пустой DF."""
     if not _mt5_ensure():
         return _empty_df()

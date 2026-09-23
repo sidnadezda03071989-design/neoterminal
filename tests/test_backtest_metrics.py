@@ -2,6 +2,8 @@
 
 Синтетический df без сетевого доступа: run_backtest(df=...) данные не ходит.
 """
+import itertools
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -102,6 +104,6 @@ def test_trades_do_not_overlap():
     открывается только после закрытия предыдущей (exit < следующий entry)."""
     r = _result()
     trades = sorted(r["trades"], key=lambda t: t["entry_time"])
-    for a, b in zip(trades, trades[1:]):
+    for a, b in itertools.pairwise(trades):
         assert a["exit_time"] is not None
         assert a["exit_time"] < b["entry_time"], "перекрытие сделок"

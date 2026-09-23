@@ -97,7 +97,7 @@ def save_charon_prompt(text) -> str:
     Кидает ValueError на пустом/нестроковом тексте — роут отвечает 400.
     """
     if not isinstance(text, str):
-        raise ValueError("prompt must be a string")
+        raise ValueError("prompt must be a string")  # noqa: TRY004
     cleaned = text.strip()
     if not cleaned:
         raise ValueError("prompt is empty")

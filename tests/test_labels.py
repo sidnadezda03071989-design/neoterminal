@@ -145,7 +145,7 @@ def test_meta_geometry():
 def test_empty_df():
     empty = pd.DataFrame({
         "open": [], "high": [], "low": [], "close": [], "volume": []})
-    labels, meta = triple_barrier_labels(empty)
+    labels, _meta = triple_barrier_labels(empty)
     assert len(labels) == 0
     X, y, meta2 = build_labeled_dataset(empty)
     assert len(X) == 0 and len(y) == 0
@@ -182,7 +182,7 @@ def test_build_dataset_consistency():
 def test_build_dataset_ohlcv_baseline_explicit():
     """OHLCV-baseline остаётся доступным явно (сравнительный «пол»)."""
     df = _df(100.0 + np.arange(N))
-    X, y, meta = build_labeled_dataset(
+    X, y, _meta = build_labeled_dataset(
         df, k=2.0, horizon=HORIZON, features_fn=default_features)
     assert len(X.columns) <= 8
     assert set(np.unique(y)) == {1}
@@ -190,7 +190,7 @@ def test_build_dataset_ohlcv_baseline_explicit():
 
 def test_build_dataset_csv_roundtrip(tmp_path):
     df = _df(100.0 + np.arange(N))
-    X, y, meta = build_labeled_dataset(
+    X, _y, _meta = build_labeled_dataset(
         df, k=2.0, horizon=HORIZON, out_dir=str(tmp_path),
         csv_name="labels.csv")
     path = tmp_path / "labels.csv"
@@ -207,7 +207,7 @@ def test_build_dataset_csv_roundtrip(tmp_path):
 def test_custom_features_callable():
     df = _df(100.0 + np.arange(N))
     feat = lambda d: pd.DataFrame({"trend": np.asarray(d["close"])})
-    X, y, meta = build_labeled_dataset(
+    X, _y, _meta = build_labeled_dataset(
         df, k=2.0, horizon=HORIZON, features_fn=feat)
     assert list(X.columns) == ["trend"]
 

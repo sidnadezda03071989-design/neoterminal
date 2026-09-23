@@ -40,7 +40,7 @@ def _ttl_for(symbol: str, tf: str) -> float:
 
 
 def fetch_ohlcv(symbol: str, tf: str, limit: int = 1000,
-                start_sec: float = None, end_sec: float = None) -> pd.DataFrame:
+                start_sec: float | None = None, end_sec: float | None = None) -> pd.DataFrame:
     """Крипта -> binance; форекс -> mt5 (fallback yfinance). Всегда DataFrame."""
     if symbol in config.CRYPTO_SYMBOLS:
         try:
@@ -156,7 +156,7 @@ def _topup_older(symbol: str, tf: str, cached: pd.DataFrame, need: int,
 
 
 def get_series_df(symbol: str, tf: str, limit: int = 1000,
-                  force: bool = False, history_limit: int = None) -> pd.DataFrame:
+                  force: bool = False, history_limit: int | None = None) -> pd.DataFrame:
     """Кешированный OHLCV с live-мержем и дозагрузкой истории.
 
     limit — сколько свечей нужно вызывающему СЕЙЧАС; history_limit — до
@@ -227,8 +227,8 @@ def get_series_df(symbol: str, tf: str, limit: int = 1000,
     return _tail(df, limit)
 
 
-def get_replay_df(symbol: str, tf: str, from_sec: float = None,
-                  to_sec: float = None, limit: int = 1200) -> pd.DataFrame:
+def get_replay_df(symbol: str, tf: str, from_sec: float | None = None,
+                  to_sec: float | None = None, limit: int = 1200) -> pd.DataFrame:
     """Исторические данные для бэктеста (без live-мержа)."""
     limit = int(limit or config.REPLAY_LIMIT)
     df = fetch_ohlcv(symbol, tf, limit=limit, start_sec=from_sec, end_sec=to_sec)

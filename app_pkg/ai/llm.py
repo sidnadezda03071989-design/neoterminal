@@ -93,7 +93,7 @@ def _extract_json(text):
     if not text:
         return None
     text = text.strip()
-    if text.startswith("{") or text.startswith("["):
+    if text.startswith(("{", "[")):
         try:
             return json.loads(text)
         except (json.JSONDecodeError, ValueError):
