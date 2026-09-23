@@ -650,8 +650,9 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     (BLOCK-42).
 
     Сделки не открываются одна внутри другой: выход (касание TP/SL) закрывает
-    позицию, после чего бар пропускается (continue) — новая сделка может
-    войти только со следующего бара, поэтому entry_time > exit_time прошлой.
+    позицию, после чего сигнал стратегии на этом баре не обрабатывается —
+    новая сделка может войти только со следующего бара, поэтому
+    entry_time > exit_time прошлой.
 
     dataset — "full" (вся история), "train" (первые SCAN_TRAIN_SPLIT=70%) или
     "test" (последние 30%, out-of-sample). При train/test история делится на
@@ -659,6 +660,11 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
     добавляются train_range/test_range — временные диапазоны обоих окон
     (BLOCK-33). Сканер по-прежнему зовёт df=... с dataset по умолчанию
     "full" — его поведение не меняется.
+
+    equity_curve — mark-to-market на КАЖДОМ баре: len(equity_curve) ==
+    candles_used == len(df), кроме баров с NaN-ценой (они пропускаются).
+    Sharpe и max_drawdown считаются по этой кривой (годовая нормировка — по
+    длительности бара из timestamps, а не по константе sqrt(365)).
     """
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if not strategy_cls:
@@ -797,9 +803,8 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 })
                 cash = value
                 position = None
-                equity = cash
-                equity_log.append({"time": tstamp, "equity": round(equity, 2)})
-                continue  # бар закрыт TP/SL — сигнал стратегии не обрабатываем
+                # Сигнал стратегии на этом баре не обрабатываем: mark-to-market
+                # ниже зафиксирует бар с equity = value.
         if sig and sig["action"] == "BUY" and not position:
             atr_entry = utils._clean(atr_arr[i]) if atr_arr is not None else None
             tp_price, sl_price, _risk = rr_levels(
@@ -821,12 +826,20 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
                 cash = 0
             # else: нет ATR/риска (или TP↔SL короче трёх средних свечей) —
             # уровни не построить/сделка микроразмера — не открываем
+        # Mark-to-market: эквити фиксируется на КАЖДОМ баре (не только при
+        # закрытии сделки). Позиция в этот момент уже либо закрыта по TP/SL
+        # (тогда cash — выручка выхода), либо открыта (cash + стоимость
+        # позиции по close бара), либо отсутствует (equity = cash). Только
+        # так кривая покрывает всю историю и Sharpe/max_dd считаются по
+        # риск-скорректированной доходности во времени, а не по числу сделок.
+        equity = cash + (position["shares"] * price if position else 0.0)
+        equity_log.append({"time": tstamp, "equity": round(equity, 2)})
 
     if not equity_log:
-        # Ни одной закрытой сделки: сигналов не было либо все отфильтрованы
-        # (TP↔SL короче трёх средних свечей). Валидный прогон с нулевыми
-        # метриками, а НЕ ошибка — иначе скан пометит комбинацию ошибкой,
-        # хотя это просто «0 сделок» (отсев SCAN_MIN_TRADES и так её выкинет).
+        # Недостижимо при непустом df: последний бар всегда добавляет точку
+        # mark-to-market (см. конец цикла). Оставлено как защита от пустого df
+        # (сюда приходит только len(df) < 50 -> выше уже отдан error).
+        # Семантика «0 сделок» — валидный прогон с equity = initial_cash.
         return {
             "total_return": 0.0,
             "sharpe_ratio": 0.0,
@@ -853,11 +866,13 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
 
     # BLOCK-42: позиция, открытая, но не коснувшаяся ни TP, ни SL к концу
     # данных, НЕ попадает в сделки: результат — это линия, которую цена
-    # коснулась первой. Открытая позиция = не результат. Чтобы эквити-кривая
-    # не «запрыгивала» последней позицией по цене закрытия, вычитаем её
-    # нереализованную прибыль/убыток из final equity, а в equity_log не
-              # не добавляем ничего (она уже сформирована на момент открытия позиции).
+    # коснулась первой. Открытая позиция = не результат.
     total_return = (equity_log[-1]["equity"] - initial_cash) / initial_cash
+    # Шарп считается по ЭКВИТИ-КРИВОЙ (mark-to-market на каждом баре), а не по
+    # доходностям отдельных сделок: иначе он зависел бы от того, сколько сделок
+    # случилось, а не от риск-скорректированной доходности во времени.
+    # Годовая нормировка считается по числу баров, реально покрытых кривой
+    # (длина кривой × длительность бара в секундах × avg), а не по «365».
     daily_returns = []
     for i in range(1, len(equity_log)):
         prev = equity_log[i - 1]["equity"]
@@ -865,8 +880,16 @@ def run_backtest(symbol, tf, from_sec, to_sec, strategy_name, params,
             daily_returns.append(
                 (equity_log[i]["equity"] - prev) / prev)
     sharpe = 0
-    if daily_returns and np.std(daily_returns) > 0:
-        sharpe = np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(365)
+    if daily_returns and np.std(daily_returns) > 0 and len(equity_log) > 1:
+        # Бары, покрытые equity-кривой: (n-1) интервалов по bar_sec секунд.
+        bar_sec = 0
+        if len(ts) > 1:
+            bar_sec = float(np.median(np.diff(ts[:min(len(ts), 2000)])))
+        periods_per_year = 365.0
+        if bar_sec > 0 and len(ts) > 1:
+            periods_per_year = (365.0 * 86400.0) / bar_sec
+        sharpe = (np.mean(daily_returns) / np.std(daily_returns)
+                  * np.sqrt(periods_per_year))
 
     max_dd = 0
     peak = equity_log[0]["equity"]
