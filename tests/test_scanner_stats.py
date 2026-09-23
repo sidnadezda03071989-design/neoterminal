@@ -1,16 +1,27 @@
 """Тесты GET /api/scanner/stats (карточка «Статистика стратегий» во вкладке
 «Новости»).
 
-Синтетические строки scan_results в общую SQLite (как в test_scanner.py),
-после каждого теста — чистка. Без сети. Проверяем:
+Без сети. Проверяем:
   - {} (200) когда скана по паре symbol+timeframe ещё не было;
   - выбор ЛУЧШЕЙ комбинации по combined_sharpe;
   - изоляцию по symbol/timeframe (другой ТФ -> {});
   - убыточную пару (combined_sharpe < 0) — для карточки USDJPY;
   - валидацию параметров (400 на мусор).
+
+Герметичность: DataDir/DB_PATH вычисляются в app_pkg.config ПРИ ИМПОРТЕ
+(os.getenv("DATA_DIR")), поэтому до импорта модулей приложения DATA_DIR
+переключается на временную папку. Тесты работают на изолированной SQLite и
+проходят при ЛЮБОМ содержимом dev-БД (data/data.db) — иначе «скана ещё не
+было» неотличимо от реальных 455 строк BTCUSDT/15m в dev-БД.
 """
 
+import os
+import tempfile
+
 import pytest
+
+_DATA_DIR = tempfile.mkdtemp(prefix="neoterminal_test_")
+os.environ["DATA_DIR"] = _DATA_DIR
 
 from app_pkg import create_app, db
 
@@ -35,7 +46,9 @@ def _seed(run_id, symbol=_SYM, tf=_TF, train_sharpe=5.0, test_sharpe=4.0,
 
 @pytest.fixture(autouse=True)
 def _cleanup_db():
-    """Чистим scan_results после каждого теста (общая SQLite)."""
+    """Изолированная SQLite: инициализируем схему (init_db), после теста
+    чистим засеянные run_id — каждый тест стартует с пустой БД."""
+    db._get_db()
     yield
     for run_id in _RUN_IDS:
         db.db_clear_scan_run(run_id)
@@ -50,7 +63,6 @@ def client():
 
 
 # ------------------------------------------------------------------ пусто
-@pytest.mark.debt
 def test_scanner_stats_empty_returns_empty_dict(client):
     """Без прогона сканера — 200 и {}: карточка просто скрыта."""
     resp = client.get(
@@ -89,7 +101,6 @@ def test_scanner_stats_best_by_combined_sharpe(client):
     assert d["symbol"] == _SYM and d["timeframe"] == _TF
 
 
-@pytest.mark.debt
 def test_scanner_stats_timeframe_isolated(client):
     """Есть результат на 15m — запрос по 1H возвращает {}."""
     _seed("tfiso" + "0" * 26)

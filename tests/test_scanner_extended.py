@@ -84,7 +84,7 @@ def _fake_run_backtest(train_sharpe=1.5, test_sharpe=0.8, trades=50):
     """Мок run_backtest: train-окно (len(df) > 500 из 1000) -> train_sharpe."""
     def fake(symbol, tf, from_sec, to_sec, strategy_name, params,
              initial_cash=10000, replay_limit=None, df=None, ind=None,
-             tp_atr=None, sl_atr=None):
+             tp_atr=None, sl_atr=None, rr=None, dataset="full"):
         sharpe = train_sharpe if (df is not None and len(df) > 500) \
             else test_sharpe
         return {
@@ -555,6 +555,18 @@ def test_eta_seconds_elapsed_factor_x4(monkeypatch):
 
 
 # ------------------------------------------------- fetch_limit / режим истории
+def _train_rows(n):
+    """Сколько рядов train доходит до backtest: сплит 70% минус purge-эмбарго.
+
+    Копия расчёта из scanner.run_scan (split = n×SCAN_TRAIN_SPLIT,
+    purge = min(SCAN_PURGE_BARS, n×0.05)) — тест падает, если формула
+    разойдётся с продакшеном.
+    """
+    split = int(n * config.SCAN_TRAIN_SPLIT)
+    purge = min(config.SCAN_PURGE_BARS, max(0, int(n * 0.05)))
+    return max(1, split - purge)
+
+
 def _run_scan_capture_fetch(monkeypatch, use_full_history, df_rows=2500,
                             history_limit=1500, replay_limit=999):
     """Запуск run_scan с замером limit у get_replay_df и строк df в run_backtest.
@@ -572,11 +584,11 @@ def _run_scan_capture_fetch(monkeypatch, use_full_history, df_rows=2500,
 
     def fake_bt(symbol, tf, from_sec, to_sec, strategy_name, params,
                 initial_cash=10000, replay_limit=None, df=None, ind=None,
-                tp_atr=None, sl_atr=None):
+                tp_atr=None, sl_atr=None, rr=None, dataset="full"):
         caps.setdefault("df_rows", len(df) if df is not None else None)
         return _fake_run_backtest()(symbol, tf, from_sec, to_sec,
                                     strategy_name, params, initial_cash,
-                                    replay_limit, df, ind)
+                                    replay_limit, df, ind, tp_atr, sl_atr)
 
     monkeypatch.setattr(scanner_mod, "get_replay_df", fake_replay)
     monkeypatch.setattr(scanner_mod, "run_backtest", fake_bt)
@@ -592,22 +604,23 @@ def _run_scan_capture_fetch(monkeypatch, use_full_history, df_rows=2500,
     return calls, caps
 
 
-@pytest.mark.debt
 def test_run_scan_full_history_fetch_limit(monkeypatch):
     """use_full_history=True: фетч берёт HISTORY_LIMITS[tf] (НЕ
     SCAN_REPLAY_LIMIT), избыточный df обрезается до этого лимита."""
     calls, caps = _run_scan_capture_fetch(monkeypatch, True)
     assert calls == [("BTCUSDT", "15m", 1500)]
-    # 2500 рядов обрезаны до 1500, до backtest доходит лишь train-часть (70%).
-    assert caps["df_rows"] == int(1500 * config.SCAN_TRAIN_SPLIT) == 1050
+    # 2500 рядов обрезаны до 1500, до backtest доходит лишь train-часть (70%)
+    # минус purge-эмбарго между train и test (SCAN_PURGE_BARS).
+    expect = _train_rows(1500)
+    assert caps["df_rows"] == expect == 1000
 
 
-@pytest.mark.debt
 def test_run_scan_fast_mode_fetch_limit(monkeypatch):
     """use_full_history=False: фетч берёт SCAN_REPLAY_LIMIT (старый 5000)."""
     calls, caps = _run_scan_capture_fetch(monkeypatch, False)
     assert calls == [("BTCUSDT", "15m", 999)]
-    assert caps["df_rows"] == int(999 * config.SCAN_TRAIN_SPLIT) == 699
+    expect = _train_rows(999)
+    assert caps["df_rows"] == expect == 650
 
 
 def test_run_scan_warns_short_history(monkeypatch, caplog):

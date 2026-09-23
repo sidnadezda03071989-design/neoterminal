@@ -11,7 +11,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from app_pkg import config
 from app_pkg.ai import backtest as bt
@@ -130,12 +129,17 @@ def test_run_backtest_with_df_skips_get_replay_df(monkeypatch):
 
 # ------------------------------------------------------- TP/SL и полный список
 def _mk_tpsl_df():
-    """Плато -> рост (BUY) -> резкий обвал: TP/SL срабатывают детерминированно."""
+    """Плато -> рост (BUY) -> медленный дрейф: цена топчется между TP и SL.
+
+    После входа цена НЕ доходит ни до TP, ни до SL: размах баров мал, а
+    уровни построены от ATR. Нужен для проверки, что сделки без касания
+    линии в trades не попадают (BLOCK-42).
+    """
     n = 300
     ts = [T - i * STEP for i in range(n)][::-1]
     closes = ([100.0] * 100
               + [100.0 + i * 4.0 for i in range(1, 11)]  # быстрый рост — BUY
-              + [140.0 - j * 8.0 for j in range(1, 191)])  # обвал — SL
+              + [140.0 - j * 0.1 for j in range(1, 191)])  # плавный дрейф
     return pd.DataFrame({
         "timestamp": pd.to_datetime(ts, unit="s", utc=True),
         "open": closes,
@@ -146,14 +150,55 @@ def _mk_tpsl_df():
     })
 
 
-@pytest.mark.debt
+def _mk_sl_df():
+    """Плато -> один бар вверх (BUY) -> обвал: цена пробивает SL.
+
+    Рост ровно на один бар даёт BUY-сигнал на нём же, а следующий бар падает
+    ниже стопа (TP в rr раз дальше — до него цена не доходит).
+    """
+    n = 300
+    ts = [T - i * STEP for i in range(n)][::-1]
+    closes = ([100.0] * 100
+              + [104.0]                                  # 1 бар вверх -> BUY
+              + [104.0 - j * 8.0 for j in range(1, 200)])  # обвал -> SL
+    return pd.DataFrame({
+        "timestamp": pd.to_datetime(ts, unit="s", utc=True),
+        "open": closes,
+        "high": [c + 1.5 for c in closes],
+        "low": [c - 1.5 for c in closes],
+        "close": closes,
+        "volume": [10.0] * n,
+    })
+
+
+def _mk_tp_df():
+    """Плато -> один бар вверх (BUY) -> продолжение роста: цена доходит до TP."""
+    n = 300
+    ts = [T - i * STEP for i in range(n)][::-1]
+    closes = ([100.0] * 100
+              + [104.0]                                  # 1 бар вверх -> BUY
+              + [104.0 + j * 8.0 for j in range(1, 200)])  # рост -> TP
+    return pd.DataFrame({
+        "timestamp": pd.to_datetime(ts, unit="s", utc=True),
+        "open": closes,
+        "high": [c + 1.5 for c in closes],
+        "low": [c - 1.5 for c in closes],
+        "close": closes,
+        "volume": [10.0] * n,
+    })
+
+
 def test_tp_sl_adds_exit_reason():
-    """tp_atr / sl_atr: сделки закрываются по стопу/профиту до SELL-сигнала."""
-    df = _mk_tpsl_df()
+    """Сделка закрывается по касанию линии: SL — на развороте, TP — на росте.
+
+    Стороны уровня задаёт НЕ tp_atr (он игнорируется, см. config.BACKTEST_RR):
+    SL = sl_atr×ATR, TP = entry + rr×(entry−SL). Поэтому для SL и TP берутся
+    разные ряды: с разворотом вниз и с продолжением роста.
+    """
     r_sl = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
-                        {"fast": 5, "slow": 20}, df=df, sl_atr=1.0)
+                        {"fast": 5, "slow": 20}, df=_mk_sl_df(), sl_atr=1.0)
     r_tp = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
-                        {"fast": 5, "slow": 20}, df=df, tp_atr=0.5)
+                        {"fast": 5, "slow": 20}, df=_mk_tp_df(), sl_atr=1.0)
     assert "error" not in r_sl and "error" not in r_tp
     assert r_sl["total_trades"] == 1 and r_tp["total_trades"] == 1
     assert r_sl["trades_full"][0]["exit_reason"] == "sl"
@@ -163,21 +208,41 @@ def test_tp_sl_adds_exit_reason():
 
 
 def test_tp_only_never_uses_sl():
-    """Только tp_atr: exit_reason только tp, ни одной 'sl'."""
+    """Рост после входа: exit_reason только tp, ни одной 'sl'."""
     r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
                      {"fast": 5, "slow": 10}, df=_DF, tp_atr=2.0)
     assert "error" not in r
     assert all(t["exit_reason"] != "sl" for t in r["trades_full"])
 
 
-@pytest.mark.debt
 def test_sl_only_never_uses_tp():
-    """Только sl_atr: exit_reason только sl, ни одной 'tp'."""
-    df = _mk_tpsl_df()
+    """Разворот вниз после входа: exit_reason только sl, ни одной 'tp'."""
     r = run_backtest("BTCUSDT", "15m", None, None, "sma_cross",
-                     {"fast": 5, "slow": 20}, df=df, sl_atr=1.0)
+                     {"fast": 5, "slow": 20}, df=_mk_sl_df(), sl_atr=1.0)
     assert "error" not in r
+    assert r["total_trades"] > 0
     assert all(t["exit_reason"] != "tp" for t in r["trades_full"])
+
+
+def test_tp_atr_is_ignored_tp_built_from_rr():
+    """tp_atr оставлен для совместимости и НЕ влияет на уровень (BLOCK-42).
+
+    TP строится от стопа: TP = entry + rr×(entry−SL), поэтому разные tp_atr
+    дают идентичные сделки, а разные rr — разные.
+    """
+    p = {"fast": 5, "slow": 20}
+    a = run_backtest("BTCUSDT", "15m", None, None, "sma_cross", p,
+                     df=_DF, sl_atr=1.0, tp_atr=0.5, rr=2.0)
+    b = run_backtest("BTCUSDT", "15m", None, None, "sma_cross", p,
+                     df=_DF, sl_atr=1.0, tp_atr=5.0, rr=2.0)
+    assert "error" not in a and "error" not in b
+    key = lambda r: [(t["entry_time"], t["exit_time"], t["tp_price"],
+                      t["sl_price"]) for t in r["trades_full"]]
+    assert key(a) == key(b)  # tp_atr не влияет
+
+    c = run_backtest("BTCUSDT", "15m", None, None, "sma_cross", p,
+                     df=_DF, sl_atr=1.0, rr=3.0)
+    assert key(a) != key(c)  # rr влияет
 
 
 def test_trades_full_returns_every_trade():
@@ -198,7 +263,6 @@ def test_trades_full_returns_every_trade():
 
 
 # --------------------------------------------------------------- scanner flow
-@pytest.mark.debt
 def test_run_scan_fetches_data_once_per_symbol(monkeypatch):
     """run_scan: get_replay_df 1 раз на символ (2 символа → 2, не 90)."""
     replay_symbols = []

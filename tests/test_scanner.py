@@ -41,8 +41,9 @@ def _fake_run_backtest(train_sharpe=1.5, test_sharpe=0.8, trades=50,
     """
     def fake(symbol, tf, from_sec, to_sec, strategy_name, params,
              initial_cash=10000, replay_limit=None, df=None, ind=None,
-             tp_atr=None, sl_atr=None):
-        """tp_atr/sl_atr — BLOCK-37: сканер всегда передаёт уровни из config."""
+             tp_atr=None, sl_atr=None, rr=None, dataset="full"):
+        """tp_atr/sl_atr — BLOCK-37, rr — BLOCK-42: сканер передаёт уровни
+        и R/R из config/db. dataset — BLOCK-33."""
         if calls is not None:
             calls.append(len(df) if df is not None else -1)
         sharpe = train_sharpe if (df is not None and len(df) > 500) \
@@ -96,7 +97,6 @@ def test_generate_combinations_respects_limit_and_seed():
 
 
 # ------------------------------------------------------------ _run_single
-@pytest.mark.debt
 def test_run_single_returns_none_when_too_few_trades(monkeypatch):
     """total_trades < SCAN_MIN_TRADES -> комбинация отбрасывается (None)."""
     df = _mk_df(1000)
@@ -108,7 +108,6 @@ def test_run_single_returns_none_when_too_few_trades(monkeypatch):
     assert res is None
 
 
-@pytest.mark.debt
 def test_run_single_combined_sharpe_is_min(monkeypatch):
     """combined_sharpe = min(train_sharpe, test_sharpe)."""
     df = _mk_df(1000)
@@ -131,7 +130,6 @@ def test_run_single_combined_sharpe_is_min(monkeypatch):
 
 
 # ---------------------------------------------------------------- run_scan
-@pytest.mark.debt
 def test_run_scan_writes_rows_to_db(monkeypatch):
     """2 символа × 1 стратегия × 5 параметров = 10 записей в БД."""
     monkeypatch.setattr(scanner, "get_replay_df",
