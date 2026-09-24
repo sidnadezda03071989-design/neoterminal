@@ -3,6 +3,7 @@ let _retryCount = 0;
 let _retryTimer = null;
 
 import { loadAlerts } from '../ui/alerts.js';
+import { applyLiveCandleUpdate } from '../data/live.js';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY_SEC = 5;
@@ -37,7 +38,11 @@ export function sseConnect() {
       try { data = JSON.parse(e.data); } catch { data = null; }
       if (window.__aiBacktestProgress) window.__aiBacktestProgress(data);
     });
-    _sse.addEventListener('candle_update', () => { /* placeholder */ });
+    _sse.addEventListener('candle_update', (e) => {
+      let data = null;
+      try { data = JSON.parse(e.data); } catch { data = null; }
+      if (data) applyLiveCandleUpdate(data);
+    });
     _sse.addEventListener('ai_analysis_done', () => { /* placeholder */ });
     _sse.onerror = () => {
       // readyState === 2 (CLOSED): браузер сам уже не переподключится —

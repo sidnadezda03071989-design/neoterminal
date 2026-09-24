@@ -755,5 +755,7 @@ def db_get_ai_backtest(run_id):
     # Уровни вероятностей лежат в signals_json (пишем в run_ai_backtest).
     # Отдаём и как "levels" — новая схема ответа (панель рисует только их).
     d["levels"] = d["signals_log"] if isinstance(d["signals_log"], list) else []
+    # Вероятность простого ЛОНГ/ШОРТ лежит в metrics.direction (новые прогоны).
+    d["direction"] = (d.get("metrics") or {}).get("direction")
     d.setdefault("status", "finished")
     return d

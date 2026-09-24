@@ -190,6 +190,26 @@ def df_to_ohlcv(df: pd.DataFrame) -> list:
     return rows
 
 
+def df_last_candle(df: pd.DataFrame):
+    """Последняя свеча в формате фронта {time, open, high, low, close, volume}.
+
+    time — int Unix-секунды. Пустой df/None -> None (без исключений).
+    Используется в /api/last-bar и в live-пуше (app_pkg.data.live).
+    """
+    if df is None or df.empty:
+        return None
+    ts = utils.epoch_secs(df["timestamp"].iloc[-1:])
+    last = df.iloc[-1]
+    return {
+        "time": int(ts[0]),
+        "open": utils._clean(last["open"]),
+        "high": utils._clean(last["high"]),
+        "low": utils._clean(last["low"]),
+        "close": utils._clean(last["close"]),
+        "volume": utils._clean(last["volume"]),
+    }
+
+
 def df_to_indicators(df: pd.DataFrame, ind: pd.DataFrame) -> dict:
     """СЛОВАРЬ индикаторов: {name: [{time, value}, ...]}.
 

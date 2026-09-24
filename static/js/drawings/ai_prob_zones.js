@@ -2,8 +2,9 @@
 // Паттерн (paneViews/attached/detach) — как BacktestTradesRenderer: рисуем в
 // media-координатах canvas.
 //
-// Показывает ВСЕ уровни последнего расчёта: несколько уровней UP (выше цены,
-// зелёные) и DOWN (ниже цены, красные). Каждый уровень:
+// Показывает СТАТИЧНЫЙ набор уровней последнего расчёта: ровно 2 линии UP
+// (выше цены, зелёные) и 2 линии DOWN (ниже цены, красные), строго на
+// 1·ATR и 2·ATR от текущей цены. Каждый уровень:
 //   • тонкая горизонтальная линия на цене уровня;
 //   • пилюля у правой кромки зоны «+{diff} {prob}%» (diff — расстояние от
 //     текущей цены, prob — вероятность дойти);
@@ -17,6 +18,9 @@
 // Зоны проецируются ПРАВЕЕ последней видимой свечи (якорь — срез реплея в
 // replay, последний бар в live), до правой кромки графика. Никаких
 // сделок/вход-выходов — только уровни.
+//
+// В левом верхнем углу зоны — вероятности простого ЛОНГ/ШОРТ (сумма не
+// больше 100%), расчёт по метрикам снимка и уровням.
 
 const UP_FILL = 'rgba(38, 166, 154, 0.40)';      // зона вверх
 const DOWN_FILL = 'rgba(239, 83, 80, 0.40)';     // зона вниз
@@ -118,6 +122,32 @@ function _capTo100(list) {
   }));
 }
 
+/* Вероятность простого ЛОНГ/ШОРТ по уровням (fallback, если бэкенд не
+   отдал direction): ЛОНГ = сумма вероятностей UP-уровней, ШОРТ = сумма
+   DOWN. Каждая сторона не выше 100%, сумма — не больше 100% (при перекосе
+   нормируем на сумму). Бэкенд считает то же самое после filter_levels
+   (метрики MTF/ADX/VWAP+OBV уже в вероятностях уровней), поэтому
+   результат един для панели и графика. */
+export function computeDirectionProb(levels) {
+  let long = 0, short = 0;
+  for (const lv of (Array.isArray(levels) ? levels : [])) {
+    if (!lv) continue;
+    const p = Number(lv.probability);
+    if (!Number.isFinite(p) || p < 0) continue;
+    if (String(lv.side || '').toUpperCase() === 'DOWN') short += p;
+    else long += p;
+  }
+  long = Math.min(1, long);
+  short = Math.min(1, short);
+  const total = long + short;
+  if (total > 1.0) {
+    const k = 1.0 / total;
+    long *= k;
+    short *= k;
+  }
+  return { long: long, short: short };
+}
+
 /* ATR(period) в ценах актива по свечам ДО uptoTime включительно (Wilder).
    При нехватке баров или нечисловых данных — null. Нужен, чтобы потенциальные
    TP/SL не липли к цене: позиция не должна быть «мелочью» в 0.1·ATR. */
@@ -153,63 +183,48 @@ export function atrOf(candles, uptoTime, period) {
   return atr;
 }
 
-/* Минимальный разрыв между соседними линиями одного направления в долях ATR:
-   вторая линия (TP/SL) не должна липнуть к первой. */
-const MIN_GAP_ATR = 0.4;
+/* Дистанции линий от цены в долях ATR: СТРОГО 1·ATR и 2·ATR. */
+const LEVEL_ATR_1 = 1.0;
+const LEVEL_ATR_2 = 2.0;
+const PER_SIDE_MAX = 2;   // ровно 2 линии на сторону: ЛОНГ и ШОРТ
 
-/* Дистанция «фиксированного» ближнего уровня от цены в долях ATR. */
-const NEAR_ATR = 1.0;
-
-/* Фиксация ближних уровней и гарантия разрывов. Проблема: первые (самые
-   вероятные) уровни из структуры стоят «почти вплотную» к цене / друг к
-   другу, и самая насыщенная полоса вырождается. Шаги на каждую сторону:
-   1. ближайший уровень (первая линия) СТРОГО ставится ровно на NEAR_ATR·ATR
-      от цены (выше/ниже) — независимо от того, где реальная структура;
-   2. остальные линии жадным проходом: каждая следующая не ближе
-      MIN_GAP_ATR·ATR к предыдущей, иначе выносится точно на этот разрыв
-      (упорядоченность стороны и «не меньше» гарантируются для всех пар).
-   Идемпотентно: повторный проход уже выровненного списка ничего не меняет. */
+/* Статичные уровни AI Backtest: на каждую сторону ровно PER_SIDE_MAX линий
+   на СТРОГО фиксированных дистанциях от цены — первая ровно на 1·ATR,
+   вторая ровно на 2·ATR (выше для UP, ниже для DOWN), независимо от того,
+   где стоят «реальные» уровни структуры. Порядок стороны (ближний →
+   дальний) сохраняется, вероятности остаются как были у уровней. */
 export function pinNearLevels(levels, refPrice, atr) {
   if (!Array.isArray(levels) || !levels.length) return levels;
   if (!(atr > 0)) return levels;
   const ref = Number.isFinite(Number(refPrice)) ? Number(refPrice) : null;
   if (ref == null) return levels;
-  const near = atr * NEAR_ATR;
-  const gap = atr * MIN_GAP_ATR;
   const ups = levels.filter((l) => l.side === 'UP')
-    .sort((a, b) => a.price - b.price);          // ближний → дальний
+    .sort((a, b) => a.price - b.price)          // ближний → дальний
+    .slice(0, PER_SIDE_MAX);
   const downs = levels.filter((l) => l.side === 'DOWN')
-    .sort((a, b) => b.price - a.price);
-  _pinSide(ups, ref, near, gap, 1);     // UP: следующие выше
-  _pinSide(downs, ref, near, gap, -1);  // DOWN: следующие ниже
-  return levels;
+    .sort((a, b) => b.price - a.price)
+    .slice(0, PER_SIDE_MAX);
+  _pinStatic(ups, ref, atr, 1);      // UP:  +1·ATR, +2·ATR
+  _pinStatic(downs, ref, atr, -1);   // DOWN: −1·ATR, −2·ATR
+  return ups.concat(downs);
 }
 
-function _pinSide(side, ref, near, gap, dir) {
-  const n = side.length;
-  if (!n) return;
-  const first = side[0];
-  // Строго: первая линия ровно на NEAR_ATR·ATR от цены (выше/ниже), всегда.
-  first.price = ref + dir * near;
-  first.diff = first.price - ref;
-  let prev = first.price;
-  for (let i = 1; i < n; i++) {
-    const want = prev + dir * gap;
-    if ((dir > 0 && side[i].price < want) || (dir < 0 && side[i].price > want)) {
-      side[i].price = want;
-      side[i].diff = side[i].price - ref;
-    }
-    prev = side[i].price;
+function _pinStatic(side, ref, atr, dir) {
+  for (let i = 0; i < side.length; i++) {
+    const lv = side[i];
+    if (lv == null) continue;
+    lv.price = ref + dir * atr * (i === 0 ? LEVEL_ATR_1 : LEVEL_ATR_2);
+    lv.diff = lv.price - ref;
   }
 }
 
 /* Потенциальные TP/SL с выбором направления по вероятности:
    • сравниваются вероятности ПЕРВЫХ линий (обе закреплены на 1·ATR): куда
      выше вероятность дойти — туда и цель;
-   • ЛОНГ (UP вероятнее): TP = вторая линия UP, SL = вторая линия DOWN;
-   • ШОРТ (DOWN вероятнее): TP = вторая линия DOWN, SL = вторая линия UP.
-   После pinNearLevels вторая линия отнесена от первой минимум на
-   MIN_GAP_ATR·ATR, дальше — сколько реально, главное не ближе.
+   • ЛОНГ (UP вероятнее): TP = вторая линия UP (2·ATR), SL = вторая линия
+     DOWN (2·ATR);
+   • ШОРТ (DOWN вероятнее): TP = вторая линия DOWN (2·ATR), SL = вторая
+     линия UP (2·ATR).
    При нехватке линий — первая; null, если направлений нет. */
 export function pickTpsl(levels, refPrice, atr) {
   const ups = levels.filter((l) => l.side === 'UP')
@@ -245,6 +260,7 @@ export class AIProbZonesRenderer {
     this.primitive = null;
     this.tpsl = null;
     this.enableTpsl = false;
+    this.direction = null;   // {long, short} — вероятности ЛОНГ/ШОРТ
   }
 
   /* Вкл/выкл TP/SL поверх уровней: перерисовывает текущие зоны без нового
@@ -273,6 +289,14 @@ export class AIProbZonesRenderer {
     this.levels = levels;
     this.anchor = anchor;
     this.tpsl = this.enableTpsl ? pickTpsl(levels, anchor.price, atr) : null;
+    // direction: из ответа бэкенда (метрики+уровни) или расчёт по уровням.
+    this.direction = (result && result.direction && result.direction.long != null
+      && result.direction.short != null)
+      ? {
+          long: Math.min(1, Math.max(0, Number(result.direction.long) || 0)),
+          short: Math.min(1, Math.max(0, Number(result.direction.short) || 0)),
+        }
+      : computeDirectionProb(levels);
     this.primitive = new AIProbZonesPrimitive(
       this.levels, this.anchor, this.tpsl, this);
     this.series.attachPrimitive(this.primitive);
@@ -293,6 +317,7 @@ export class AIProbZonesRenderer {
     this.levels = [];
     this.anchor = null;
     this.tpsl = null;
+    this.direction = null;
   }
 
   /* Якорь зоны: последняя свеча ПЕРЕДАННОГО якоря (replay-барьер ставится
@@ -369,6 +394,11 @@ class AIProbZonesRendererImpl {
     this.manager = manager;
   }
 
+  /* Вероятность простого ЛОНГ/ШОРТ из менеджера (back runtime). */
+  _direction() {
+    return (this.manager && this.manager.direction) || null;
+  }
+
   draw(target) {
     target.useMediaCoordinateSpace((scope) => {
       const ctx = scope.context, size = scope.mediaSize;
@@ -407,6 +437,47 @@ class AIProbZonesRendererImpl {
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, ups, true);
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, downs, false);
     this._drawTpsl(ctx, x0, x1, size);
+    this._drawDirection(ctx, x0, x1, size);
+  }
+
+  /* Вероятность простого ЛОНГ/ШОРТ («на рисунке»): две пилюли в верхнем
+     левом углу зоны — «ЛОНГ {p}%» зелёная и «ШОРТ {p}%» красная. Сумма
+     вероятностей не может быть больше 100% (нормирована ещё на бэкенде и
+     в computeDirectionProb). Если вероятностей нет — не рисуем ничего. */
+  _drawDirection(ctx, x0, x1, size) {
+    const dir = this._direction();
+    if (!dir) return;
+    const longP = Number(dir.long);
+    const shortP = Number(dir.short);
+    if (!Number.isFinite(longP) || !Number.isFinite(shortP)) return;
+    if (longP <= 0 && shortP <= 0) return;
+
+    const longLbl = 'ЛОНГ ' + (longP * 100).toFixed(0) + '%';
+    const shortLbl = 'ШОРТ ' + (shortP * 100).toFixed(0) + '%';
+    ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
+    const padX = 6;
+    const h = 15;
+    const gap = 4;
+    const longW = ctx.measureText(longLbl).width + padX * 2;
+    const shortW = ctx.measureText(shortLbl).width + padX * 2;
+    const totalW = longW + gap + shortW;
+    const x = Math.max(1, Math.min(x0 + 4, size.width - totalW - 2));
+    const y = 18;   // под хедером графика, чтобы не пересекаться с TP/SL
+
+    ctx.fillStyle = UP_PILL;
+    this._roundRect(ctx, x, y, longW, h, 4);
+    ctx.fill();
+    ctx.fillStyle = PILL_TEXT;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(longLbl, x + padX, y + h / 2 + 0.5);
+
+    const x2 = x + longW + gap;
+    ctx.fillStyle = DOWN_PILL;
+    this._roundRect(ctx, x2, y, shortW, h, 4);
+    ctx.fill();
+    ctx.fillStyle = PILL_TEXT;
+    ctx.fillText(shortLbl, x2 + padX, y + h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
   }
 
   /* Полосы одной стороны: от текущей цены до ПЕРВОГО уровня, затем между

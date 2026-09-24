@@ -143,6 +143,14 @@ def fetch_mt5(symbol: str, tf: str, limit: int = 1000,
         # Независимо от варианта окна — tz-aware UTC datetime: без tzinfo SDK
         # трактует его как локальное время ПК и сдвигает период.
         dt_from = dt_to = None
+        # copy_rates_from_pos ВОЗВРАЩАЕТ время бара в смещении брокерского
+        # сервера как будто это UTC (на многих брокерах +3ч от истинного UTC).
+        # Симптом: последний бар в будущем -> таймер закрытия свечи «⏱ —»,
+        # а дальше график «прыгает»/«улетает», когда +3ч-бар мержится с
+        # корректными UTC-барами из copy_rates_range (_extend_newer).
+        # copy_rates_range с tz-aware UTC-границами отдаёт ИСТИННЫЙ UTC, поэтому
+        # даже запрос «без границ» делаем через него, окно = вокруг now.
+        slice_to_limit = False
         if start_sec is not None and end_sec is not None:
             # Задан полный период: copy_rates_range отдаёт максимально
             # возможную историю за окно; limit запрос не режет (это
@@ -169,7 +177,17 @@ def fetch_mt5(symbol: str, tf: str, limit: int = 1000,
                          resolved, tf, limit, dt_from, dt_to)
             rates = _mt5.copy_rates_range(resolved, mtf, dt_from, dt_to)
         else:
-            rates = _mt5.copy_rates_from_pos(resolved, mtf, 0, int(limit))
+            # Без границ: вместо copy_rates_from_pos (время в смещении
+            # брокерского сервера) — copy_rates_range(cейчас) и хвост в limit.
+            dt_from = pd.to_datetime(
+                int(time.time())
+                - int(limit * step * config.FOREX_CALENDAR_PADDING),
+                unit="s", utc=True).to_pydatetime()
+            dt_to = pd.to_datetime(int(time.time()), unit="s", utc=True).to_pydatetime()
+            logger.debug('MT5 auto-range %s %s: limit=%d -> [%s .. %s]',
+                         resolved, tf, limit, dt_from, dt_to)
+            rates = _mt5.copy_rates_range(resolved, mtf, dt_from, dt_to)
+            slice_to_limit = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("MT5 copy_rates %s error: %s", resolved, exc)
         return _empty_df()
@@ -194,5 +212,7 @@ def fetch_mt5(symbol: str, tf: str, limit: int = 1000,
     # Оставляем только нужные колонки (spread и прочее отбрасываем).
     df = df[["timestamp", "open", "high", "low", "close", "volume"]]
     df = df.sort_values("timestamp").reset_index(drop=True)
+    if slice_to_limit:
+        df = df.tail(int(limit)).reset_index(drop=True)
     logger.info("MT5 fetch %s %s: %d rows", resolved, tf, len(df))
     return df

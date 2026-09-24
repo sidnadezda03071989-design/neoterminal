@@ -507,12 +507,48 @@ def _slice_price(symbol, timeframe, upto_sec=None):
         return None
 
 
+def direction_probability(levels):
+    """Вероятности простого ЛОНГ/ШОРТ по уровням (после filter_levels).
+
+    ЛОНГ = сумма вероятностей UP-уровней, ШОРТ = сумма DOWN. Каждая сторона
+    не выше 1.0; если лонг + шорт > 1.0 — нормируем на сумму (гарантия
+    «общая вероятность не больше 100%»), иначе оставляем как есть (остаток
+    до 100% — «без сделки»). Вероятности уровней уже прошли filter_levels
+    (MTF/ADX/VWAP+OBV), поэтому результат объединяет и уровни, и метрики
+    снимка. Пустой список -> {long:0, short:0}.
+    """
+    long_p = short_p = 0.0
+    for lv in levels or []:
+        if not isinstance(lv, dict):
+            continue
+        side = str(lv.get("side") or "").upper()
+        try:
+            prob = float(lv.get("probability") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        prob = min(1.0, max(0.0, prob))
+        if side == "UP":
+            long_p += prob
+        elif side == "DOWN":
+            short_p += prob
+    long_p = min(1.0, long_p)
+    short_p = min(1.0, short_p)
+    total = long_p + short_p
+    if total > 1.0:
+        scale = 1.0 / total
+        long_p *= scale
+        short_p *= scale
+    return {"long": round(long_p, 4), "short": round(short_p, 4)}
+
+
 def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
                     model=None, run_id=None):
     """Расчёт уровней вероятностей для ТЕКУЩЕГО среза данных.
 
-    Возвращает полный результат (dict) со списком levels. Никаких сделок и
-    метрик стратегии — только уровни и вероятности (панель-помощник).
+    Возвращает полный результат (dict) со списком levels и сводкой
+    direction ({long, short} — вероятности простого ЛОНГ/ШОРТ). Никаких
+    сделок и метрик стратегии — только уровни и вероятности (панель-
+    помощник).
     """
     run_id = run_id or uuid.uuid4().hex
     started = utils.now_sec()
@@ -526,6 +562,9 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
                                             upto_sec=upto_sec, model=model)
 
     elapsed = round(utils.now_sec() - started, 2)
+    # Вероятность простого ЛОНГ/ШОРТ: агрегат вероятностей уровней каждой
+    # стороны (уровни уже прошли filter_levels с метриками MTF/ADX/VWAP+OBV).
+    direction = direction_probability(levels)
     result = {
         "run_id": run_id,
         "status": "finished",
@@ -535,6 +574,7 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
         "upto_sec": upto_sec,
         "price": round(price, 8) if price is not None else None,
         "levels": levels,
+        "direction": direction,
         "model": model,
         "error": error,
         "elapsed_seconds": elapsed,
@@ -545,15 +585,14 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
         # поясняем нейтральной заметкой вместо красного ⚠.
         result["notice"] = ("Уровней не найдено: рынок без явной сделки "
                             "(сигнал FLAT) — уровни не рисуем")
-    if levels:
-        try:
-            db.db_save_ai_backtest(
-                run_id, symbol, timeframe,
-                {"mode": mode, "upto_sec": upto_sec, "model": model,
-                 "price": result["price"]},
-                {}, levels, [])
-        except Exception:
-            log.exception("ai_backtest db save failed")
+    try:
+        db.db_save_ai_backtest(
+            run_id, symbol, timeframe,
+            {"mode": mode, "upto_sec": upto_sec, "model": model,
+             "price": result["price"]},
+            {"direction": direction}, levels, [])
+    except Exception:
+        log.exception("ai_backtest db save failed")
 
     _RUNS[run_id] = result
     _prune_runs()

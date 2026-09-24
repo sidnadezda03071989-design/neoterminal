@@ -31,8 +31,64 @@ import { openAiDataPanel, closeAiDataPanel, onSymbolTfChanged,
 import { chart, candleSeries, container, setReplayBarrier } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
+import { TZ_LIST, tzOptionLabel, getActiveTzId, setActiveTzId,
+  initTimezone, activeOffsetSeconds } from './ui/timezone.js';
+import { startCandleTimer } from './ui/candle_timer.js';
+import { updateLegend } from './ui/legend.js';
 
 const $ = (id) => document.getElementById(id);
+
+/* ————— Часовые пояса: форматтеры оси времени и crosshair —————
+   offsetApply() — ленивая подстановка активного смещения в каждый вызов,
+   чтобы при переключении селекта ось перерисовалась сразу же. */
+function _fmtTick(t, tickType, isUtc) {
+  const off = activeOffsetSeconds();
+  const d = new Date((t + off) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  if (tickType === 3 /* Year */) return String(d.getUTCFullYear());
+  if (tickType === 0 /* Month */) return pad(d.getUTCMonth() + 1) + '/' + pad(d.getUTCDate());
+  if (tickType === 1 /* DayOfMonth */) return pad(d.getUTCDate());
+  if (tickType === 4 /* Time */) return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+  return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+}
+
+function _fmtTime(t, isUtc) {
+  const off = activeOffsetSeconds();
+  const d = new Date((t + off) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getUTCDate()) + '.' + pad(d.getUTCMonth() + 1) + '.' + d.getUTCFullYear()
+    + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+}
+
+/* Селект пояса + навешивание форматтеров на уже созданный chart. */
+function initTimezoneUI() {
+  const sel = $('timezone-select');
+  if (!sel) return;
+  initTimezone();
+  sel.innerHTML = '';
+  const local = new Option('Локальный (по системе)', 'local');
+  sel.appendChild(local);
+  for (const tz of TZ_LIST) {
+    sel.appendChild(new Option(tzOptionLabel(tz), tz.id));
+  }
+  sel.value = getActiveTzId();
+  sel.addEventListener('change', () => {
+    setActiveTzId(sel.value);
+    applyChartFormatters();
+    updateLegend(null);
+  });
+  applyChartFormatters();
+}
+
+function applyChartFormatters() {
+  if (!chart) return;
+  try {
+    chart.applyOptions({
+      timeScale: { tickMarkFormatter: _fmtTick },
+      localization: { timeFormatter: _fmtTime, locale: 'ru-RU' },
+    });
+  } catch (e) { console.warn('[tz] applyFormatters:', e); }
+}
 
 /* Подсветка активного пресета скорости реплея (1x/2x/5x). */
 function _syncSpeedBtns(v) {
@@ -443,6 +499,8 @@ export function initUI() {
   initJournalUI();
   initAiDataUI();
   initReplayBarrierDrag();
+  initTimezoneUI();
+  startCandleTimer();
   setTool('cursor');
   syncToolbarUI();
 }

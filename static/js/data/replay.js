@@ -5,6 +5,7 @@ import {
 } from '../config.js';
 import { setAllData, showChartLoading, hideChartLoading, withPreservedView } from '../chart/series.js';
 import { setReplayBarrier, setReplayBarrierPixel, getReplayBarrierTime, getReplayBarrierPixel, chart, container } from '../chart/setup.js';
+import { formatInTz } from '../ui/timezone.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -39,7 +40,10 @@ export function replaySetData(index, skipBarrier) {
   const timeTxt = $('replay-time-text');
   if (timeTxt) {
     timeTxt.textContent = state.replay.time
-      ? new Date(state.replay.time * 1000).toISOString().slice(0, 16).replace('T', ' ')
+      ? formatInTz(state.replay.time, {
+          year:'numeric', month:'2-digit', day:'2-digit',
+          hour:'2-digit', minute:'2-digit', hour12:false,
+        }).replace(',', '')
       : '';
   }
   updateReplayPos(idx);

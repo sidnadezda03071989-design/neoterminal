@@ -5,6 +5,7 @@ export function saveAppState(state) {
       timeframe: state.timeframe,
       mode: state.mode,
       indicators: state.indicators,
+      timeZone: state.timeZone,
     };
     localStorage.setItem('neoterminal_state', JSON.stringify(data));
   } catch (e) { /* noop */ }

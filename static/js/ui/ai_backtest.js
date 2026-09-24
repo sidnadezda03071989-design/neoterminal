@@ -201,7 +201,7 @@ function _applyResult(data) {
   // тот же источник, что и линии на графике (единый набор).
   if (state.aiProbRenderer) {
     state.aiProbRenderer.enableTpsl = _tpslEnabled();
-    state.aiProbRenderer.render(levels, _anchorForUpto(upto));
+    state.aiProbRenderer.render(data, _anchorForUpto(upto));
   }
   _renderLevels(levels, data && data.error, data && data.notice);
   // Причину отказа показываем явно (квота/rate limit/нет JSON) — «уровни не
@@ -254,7 +254,32 @@ function _renderLevels(levels, error, notice) {
     row.append(left, right);
     box.appendChild(row);
   }
+  _renderDirection(box);
   _renderTpslSummary(box);
+}
+
+/* Сводка вероятностей простого ЛОНГ/ШОРТ в панели: читает renderer.direction
+   (тот же источник, что и пилюли на графике). Сумма не превышает 100%. */
+function _renderDirection(box) {
+  const r = state.aiProbRenderer;
+  const dir = r && r.direction;
+  if (!dir) return;
+  const longP = Number(dir.long);
+  const shortP = Number(dir.short);
+  if (!Number.isFinite(longP) || !Number.isFinite(shortP)) return;
+  if (longP <= 0 && shortP <= 0) return;
+  const longLbl = 'ЛОНГ ' + (longP * 100).toFixed(0) + '%';
+  const shortLbl = 'ШОРТ ' + (shortP * 100).toFixed(0) + '%';
+  const row = document.createElement('div');
+  row.className = 'aibt-dir-summary';
+  const up = document.createElement('span');
+  up.className = 'aibt-dir-pill up';
+  up.textContent = longLbl;
+  const dn = document.createElement('span');
+  dn.className = 'aibt-dir-pill down';
+  dn.textContent = shortLbl;
+  row.append(up, dn);
+  box.appendChild(row);
 }
 
 /* Сводка потенциальных TP/SL в панели: читает готовый renderer.tpsl

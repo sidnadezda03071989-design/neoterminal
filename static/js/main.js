@@ -8,6 +8,7 @@ import { chart } from './chart/setup.js';
 import { initDrawingsManager, initBacktestRenderer, initAiProbZonesRenderer,
   initUI } from './app_init.js';
 import { showAlertToast } from './ui/alerts.js';
+import { setActiveTzId } from './ui/timezone.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (saved.symbol) state.symbol = saved.symbol;
     if (saved.timeframe) state.timeframe = saved.timeframe;
     if (saved.indicators) Object.assign(state.indicators, saved.indicators);
+    if (saved.timeZone) { state.timeZone = saved.timeZone; setActiveTzId(saved.timeZone); }
        const ss = $('symbol-select'); if (ss) ss.value = state.symbol;
        const ts = $('timeframe-select'); if (ts) ts.value = state.timeframe;
   }

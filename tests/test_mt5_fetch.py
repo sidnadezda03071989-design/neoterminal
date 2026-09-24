@@ -153,6 +153,41 @@ def test_full_period_uses_range_and_ignores_limit(monkeypatch, fresh_state):
     assert end.timestamp() == 1_700_044_400.0
 
 
+def test_no_bounds_uses_range_anchored_to_now(monkeypatch, fresh_state):
+    """Без start/end: НЕ copy_rates_from_pos (время в серверном смещении),
+    а copy_rates_range, привязанный к now → истинный UTC."""
+    calls = []
+
+    class _RangeRecorder(_FakeMT5):
+        def copy_rates_range(self, symbol, timeframe, start, end):
+            calls.append((start, end))
+            return self._rates
+
+        def copy_rates_from_pos(self, *args):  # не должен вызываться
+            raise AssertionError("copy_rates_from_pos не должен вызываться")
+
+    import time as _time
+
+    before = _time.time()
+    # Источник в окне [now - limit*step*padding; now] вернул БОЛЬШЕ, чем limit
+    # (padding окна) — fetch должен отрезать хвост ровно до limit.
+    rates = [_row(1_700_000_000 + i * 900) for i in range(6)]
+    _ready(monkeypatch, _RangeRecorder(rates))
+
+    df = mt5mod.fetch_mt5("EURUSD", "15m", limit=4)
+    after = _time.time()
+
+    assert len(calls) == 1
+    start, end = calls[0]
+    # окно = (now - limit*step*padding, now), tz-aware UTC
+    assert end.timestamp() - after < 2.0
+    assert start.timestamp() < before - 4 * 900  # c учётом calendar padding
+    assert start.tzinfo is not None and end.tzinfo is not None
+    # хвост режется ровно до limit, отсортирован по возрастанию времени
+    assert len(df) == 4
+    assert df["timestamp"].is_monotonic_increasing
+
+
 def test_fetch_mt5_signature_unchanged(monkeypatch, fresh_state):
     """Сигнатура: fetch_mt5(symbol, tf, limit=1000, start_sec=None, end_sec=None)."""
     import inspect

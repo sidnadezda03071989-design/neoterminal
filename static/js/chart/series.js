@@ -29,11 +29,44 @@ export function safeSetData(series, data) {
   catch (e) { console.warn('[chart] setData skipped:', e.message); }
 }
 
+/* Линейные series (SMA/EMA/RSI/...) НЕ санитайзим через _sanitizePoint:
+   _cleanData/toLineData уже гарантируют числовое value. Санитайзинг нужен
+   только свечам (см. безопасные setData ниже). */
+
+/* lightweight-charts v5 может молча (без throw) отрисовать битую свечу,
+   если high/low не согласованы с open/close (например, NaN из края данных).
+   Нормализуем: high = max(o,h,c), low = min(o,l,c). Линейные series (value)
+   не трогаем. */
+function _sanitizePoint(point) {
+  if (!point || typeof point !== 'object') return point;
+  if (!_isFiniteNumber(point.close)) return point;  // линейные данные {time,value}
+  const o = _isFiniteNumber(point.open) ? point.open : point.close;
+  const c = point.close;
+  const hRaw = _isFiniteNumber(point.high) ? point.high : Math.max(o, c);
+  const lRaw = _isFiniteNumber(point.low) ? point.low : Math.min(o, c);
+  // Косметика невалидной пары h<l НЕ трогаем (не расширяем тело свечи):
+  // просто отдаём согласованный бар, чтобы LWC не рисовал «прыгающую» свечу.
+  if (hRaw < lRaw) {
+    return { ...point, open: o, close: c, high: Math.max(o, c), low: Math.min(o, c) };
+  }
+  return { ...point, open: o, close: c, high: hRaw, low: lRaw };
+}
+
+/* Свечной setData: сначала _cleanData (отбрасывает null/NaN), затем
+   _sanitizePoint — нормализует некорректные пары high/low у свечей. */
+export function safeSetCandleData(series, data) {
+  if (!series) return;
+  try { series.setData(_cleanData(data).map(_sanitizePoint)); }
+  catch (e) { console.warn('[chart] setData skipped:', e.message); }
+}
+
 export function safeUpdate(series, point) {
   if (!series || !point) return;
   if (point.time == null) return;
   if (!_isFiniteNumber(point.close) && !_isFiniteNumber(point.value)) return;
-  try { series.update(point); }
+  // Свечи (есть close) санитайзим, линейные {time,value} — как есть.
+  const out = _isFiniteNumber(point.close) ? _sanitizePoint(point) : point;
+  try { series.update(out); }
   catch (e) { console.warn('[chart] update skipped:', e.message); }
 }
 
@@ -116,10 +149,20 @@ export function fitChartToData(candles) {
   } catch (e) { /* noop: fit не критичен */ }
 }
 
+// Доскроллить график к правому краю. Нужно после добавления НОВОГО бара из
+// live-потока (/api/last-bar или SSE candle_update): при rightOffset=5 новый
+// бар появляется за пределами видимой области, и кажется, что свеча «не
+// пришла». Вызывать только при реальном append (не при обновлении текущего).
+export function scrollChartToRealTime() {
+  try { chart.timeScale().scrollToRealTime(); } catch (e) { /* noop */ }
+}
+
 export function setAllData(candles, ind) {
   if (!Array.isArray(candles) || candles.length === 0) return;
   if (!ind || typeof ind !== 'object') ind = {};
-  safeSetData(candleSeries, candles);
+  // Свечи — через safeSetCandleData (санитайзинг high/low), остальные series —
+  // обычным safeSetData (уже отфильтрованы _cleanData).
+  safeSetCandleData(candleSeries, candles);
   safeSetData(volumeSeries, state.indicators.volume ? toVolumeData(candles) : []);
   safeSetData(smaSeries, state.indicators.sma ? toLineData(ind.sma20) : []);
   safeSetData(emaSeries, state.indicators.ema ? toLineData(ind.ema50) : []);
@@ -151,6 +194,7 @@ export function setAllData(candles, ind) {
 export function updateAllLast(candles, ind) {
   if (!Array.isArray(candles) || candles.length === 0) return;
   const last = candles[candles.length - 1];
+  if (!last || !_isFiniteNumber(last.time)) return;
   safeUpdate(candleSeries, last);
   if (state.indicators.volume) {
     safeUpdate(volumeSeries, toVolumeData([last])[0]);

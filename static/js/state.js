@@ -21,6 +21,8 @@ export const state = {
     macd:false, vwap:false, supertrend:false, stoch:false,
     adx:false, cci:false, obv:false,
   },
+  // Часовой пояс графика/таймеров: 'local' | id из TZ_LIST (см. ui/timezone.js)
+  timeZone: 'local',
   dm: null,
   aiProbRenderer: null,
 };

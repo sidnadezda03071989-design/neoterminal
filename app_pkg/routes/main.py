@@ -17,6 +17,21 @@ def healthz():
     return jsonify({"status": "ok", "ts": utils.now_iso()})
 
 
+@bp.route("/api/_diag/live_bars")
+def diag_live_bars():
+    """TEMP: показать live_bars и список потоков для отладки WS."""
+    import threading
+    import time
+    from app_pkg.data import live
+    return jsonify({
+        "live_bars": {f"{s}|{t}": b for (s, t), b in live.live_bars.items()},
+        "threads": [t.name for t in threading.enumerate()],
+        "_active_pairs": sorted(str(p) for p in live.active_pairs()),
+        "ws_last_msg_stale_s": int(time.monotonic() - live._live_ws_last_msg[0])
+                              if live._live_ws_last_msg[0] else None,
+    })
+
+
 @bp.route("/api/version")
 def api_version():
     return jsonify({"app": config.APP_NAME, "version": config.APP_VERSION})

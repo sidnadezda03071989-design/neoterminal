@@ -39,6 +39,10 @@
       <span id="data-load-status" class="data-load-status" style="display:none">
         загрузка: 0/20000
       </span>
+      <span id="candle-timer" class="candle-timer" style="display:none"
+            title="Время до закрытия текущей свечи">⏱</span>
+      <label class="lbl">Часовой пояс</label>
+      <select id="timezone-select" title="Часовой пояс графика и таймеров"></select>
       <button id="ai-analysis-btn" class="btn ai-btn">🧠 AI Analysis</button>
       <button id="watchlist-toggle-btn" class="btn">📋 Watchlist</button>
       <button id="ai-toggle-btn" class="btn">🧠 AI</button>
@@ -109,6 +113,8 @@
     <div class="chart-wrap">
       <div class="chart-legend" id="chart-legend"></div>
       <div id="chart-container"></div>
+      <div class="price-timer" id="price-timer" style="display:none"
+           title="Время до закрытия текущей свечи">⏱</div>
       <div class="chart-loading" id="chart-loading">
         <div class="chart-spinner"></div>
       </div>
@@ -482,7 +488,7 @@
 <div id="alert-toasts"></div>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/static/js/main.js?v=10"></script>
+<script type="module" src="/static/js/main.js?v=16"></script>
 </body>
 </html>
 

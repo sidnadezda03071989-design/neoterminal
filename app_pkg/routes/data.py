@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
 from app_pkg.data.fetch import get_replay_df, get_series_df
-from app_pkg.indicators import compute_indicators, df_to_payload
+from app_pkg.indicators import compute_indicators, df_last_candle, df_to_payload
 
 bp = Blueprint("data", __name__)
 log = logging.getLogger(__name__)
@@ -61,19 +61,9 @@ def api_last_bar():
         return jsonify({"error": "Invalid timeframe"}), 400
 
     df = get_series_df(symbol, tf, limit=config.LAST_BAR_HISTORY)
-    candle = None
+    candle = df_last_candle(df)
     indicators = None
-    if df is not None and not df.empty:
-        ts = utils.epoch_secs(df["timestamp"].iloc[-1:])
-        last_row = df.iloc[-1]
-        candle = {
-            "time": int(ts[0]),
-            "open": utils._clean(last_row["open"]),
-            "high": utils._clean(last_row["high"]),
-            "low": utils._clean(last_row["low"]),
-            "close": utils._clean(last_row["close"]),
-            "volume": utils._clean(last_row["volume"]),
-        }
+    if candle is not None:
         # Индикаторы последнего бара: скаляры, NaN -> None. Если данных мало
         # (все NaN, например SMA50 на 3 барах) — отдаём то, что есть, не падаем.
         try:
@@ -89,6 +79,29 @@ def api_last_bar():
         "indicators": indicators,
         "ts": utils.now_sec(),
     })
+
+
+@bp.route("/api/live/subscribe", methods=["POST"])
+def api_live_subscribe():
+    """Регистрирует открытую в UI пару (symbol, timeframe) для SSE-пушей.
+
+    Тело: {"symbol": "BTCUSDT", "timeframe": "1m"}.
+    Без этого активного списка сервер шлёт candle_update по ВСЕМ 18 парам,
+    что переполняет очередь клиента: свечи на графике начинают отставать и
+    «пропадать». Фронт вызывает при загрузке и при смене symbol/ТФ.
+    """
+    body = request.get_json(silent=True) or {}
+    symbol = (body.get("symbol") or request.args.get("symbol") or "").upper()
+    tf = body.get("timeframe") or request.args.get("timeframe")
+    if not symbol or not tf:
+        return jsonify({"error": "symbol and timeframe required"}), 400
+    try:
+        from app_pkg.data.live import set_active_pairs
+        pairs = set_active_pairs([(symbol, tf)])
+    except Exception as exc:  # noqa: BLE001 — live-модуль может быть не поднят
+        logger.debug("live subscribe failed: %s", exc)
+        return jsonify({"error": "live module unavailable"}), 503
+    return jsonify({"ok": True, "active": sorted(f"{s}|{t}" for s, t in pairs)})
 
 
 @bp.route("/api/replay-data")

@@ -79,6 +79,59 @@ select:focus, input:focus { border-color:var(--accent);
   color: var(--warning);
   font-size: 11px;
   padding: 4px 8px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Таймер закрытия свечи (как в TV): подсвечиваем, когда остаётся < 10с. */
+.candle-timer {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+/* Таймер на ценовой шкале (позиционируется JS по priceToCoordinate). */
+.price-timer {
+  position: absolute;
+  right: 4px;
+  z-index: 4;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Селект часового пояса в топбаре. */
+#timezone-select {
+  max-width: 210px;
+  font-size: 12px;
+}
+
+/* Легенда: время свечи + метка UTC (при активном поясе). */
+.chart-legend .lg-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-legend .lg-utc {
+  color: var(--text-subtle);
+  font-size: 10px;
+  margin-left: 2px;
+}
+.data-load-status {
+  color: var(--warning);
+  font-size: 11px;
+  padding: 4px 8px;
   background: rgba(210,153,34,0.1);
   border-radius: 4px;
   border: 1px solid rgba(210,153,34,0.3);
@@ -518,6 +571,14 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   font-weight: 600; color: var(--text); background: rgba(255, 255, 255, 0.04);
   border: 1px dashed rgba(255, 255, 255, 0.25); border-radius: 6px;
   white-space: nowrap; }
+/* Сводка вероятностей простого ЛОНГ/ШОРТ в панели (сумма не более 100%). */
+.aibt-dir-summary { display: flex; gap: 6px; margin-bottom: 8px; }
+.aibt-dir-pill { flex: 1; padding: 6px 8px; font-size: 12px; font-weight: 700;
+  text-align: center; border-radius: 4px; white-space: nowrap; }
+.aibt-dir-pill.up { color: var(--up); background: rgba(38, 166, 154, 0.15);
+  border: 1px solid var(--up); }
+.aibt-dir-pill.down { color: var(--down); background: rgba(239, 83, 80, 0.15);
+  border: 1px solid var(--down); }
 .scan-strategies-count { margin-left: auto; font-size: 11px;
   color: var(--text-muted); }
 .scan-checks-strategies { grid-column: 1 / -1; }
