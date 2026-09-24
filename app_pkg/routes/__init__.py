@@ -16,6 +16,7 @@ def register_routes(app):
     from app_pkg.routes.ai_data import bp as ai_data_bp
     from app_pkg.routes.alerts import bp as alerts_bp
     from app_pkg.routes.backtest import bp as backtest_bp
+    from app_pkg.routes.charon import bp as charon_bp
     from app_pkg.routes.chart_ctx import bp as chart_ctx_bp
     from app_pkg.routes.chat import bp as chat_bp
     from app_pkg.routes.data import bp as data_bp
@@ -28,7 +29,7 @@ def register_routes(app):
 
     for bp in (main_bp, data_bp, chart_ctx_bp, drawings_bp, ai_bp,
                chat_bp, alerts_bp, backtest_bp, infra_bp, scanner_bp,
-               notes_bp, ai_backtest_bp, news_bp, ai_data_bp):
+               notes_bp, ai_backtest_bp, news_bp, ai_data_bp, charon_bp):
         app.register_blueprint(bp)
 
     @app.before_request

@@ -1,7 +1,9 @@
 """SQLite-хранилище NeoTerminal.
 
-WAL-режим, одна глобальная connection с threading.Lock.
-Все операции с БД — только через функции этого модуля.
+WAL-режим, одна глобальная connection с threading.Lock (thread-local
+стендпоинТ OPT-3: все операции сериализуются через _db_lock — конкурентные
+потоки сканера/SSE не делят cursor). Все операции с БД — только через
+функции этого модуля.
 """
 
 import json
@@ -128,6 +130,18 @@ def _init_db(conn) -> None:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS charon_calibration_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL,
+            symbol TEXT,
+            timeframe TEXT,
+            raw_prob REAL,
+            side TEXT,
+            hit INTEGER,
+            context_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_charon_cal_side
+            ON charon_calibration_history(side, raw_prob);
         CREATE TABLE IF NOT EXISTS asset_notes (
             symbol TEXT PRIMARY KEY,
             content TEXT,
@@ -737,6 +751,68 @@ def db_save_ai_backtest(run_id, symbol, tf, params, metrics, signals, trades) ->
         return cur.lastrowid
 
 
+def db_save_calibration_entry(timestamp, symbol, timeframe, raw_prob, side,
+                              hit, context_json="") -> int:
+    """Сохраняет запись калибровки (raw_prob, hit) в charon_calibration_history.
+
+    hit: 1 = TP reached, 0 = SL hit or timeout. context_json — контекст
+    (adx/trend/vol/mtf) в виде JSON-строки. Идемпотентна по schema (таблица
+    создаётся в _init_db), безопасна в многопотоке (единый _db_lock).
+    """
+    conn = _get_db()
+    with _db_lock:
+        cur = conn.execute(
+            "INSERT INTO charon_calibration_history "
+            "(timestamp, symbol, timeframe, raw_prob, side, hit, context_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (float(timestamp), str(symbol or ""), str(timeframe or ""),
+             float(raw_prob), str(side or "UP"), 1 if hit else 0,
+             str(context_json or "")),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def db_get_calibration_curve(side, min_samples=50):
+    """Калибровочная кривая для стороны: [(raw_prob, hit_rate), ...].
+
+    Бакеты raw_prob с шагом 0.1 (10 бакетов); в каждый бакет попадают
+    записи raw_prob ∈ [b, b+0.1). hit_rate = (hits + 1) / (n + 2) —
+    Лапласовское сглаживание, чтобы пустой/полный бакет не давал 0/1.
+    Возвращает только бакеты с n >= min_samples (иначе калибровка
+    неинформативна и фолбэк на raw_prob безопаснее). None/пусто ->
+    пустой список.
+    """
+    if not side:
+        return []
+    conn = _get_db()
+    with _db_lock:
+        rows = conn.execute(
+            "SELECT raw_prob, hit FROM charon_calibration_history "
+            "WHERE side=?", (str(side),),
+        ).fetchall()
+    if len(rows) < max(1, int(min_samples)):
+        return []
+    buckets = {}
+    for row in rows:
+        try:
+            p = float(row["raw_prob"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        b = min(9, max(0, int(p * 10)))
+        n, hits = buckets.get(b, (0, 0))
+        buckets[b] = (n + 1, hits + (1 if row["hit"] else 0))
+    out = []
+    for b in sorted(buckets):
+        n, hits = buckets[b]
+        if n < min_samples:
+            continue
+        prob = round((b + 0.5) / 10.0, 4)
+        hit_rate = round((hits + 1.0) / (n + 2.0), 4)
+        out.append((prob, hit_rate))
+    return out
+
+
 def db_get_ai_backtest(run_id):
     """Результат прогона AI Backtest из БД; None, если прогона не было."""
     conn = _get_db()
@@ -757,5 +833,11 @@ def db_get_ai_backtest(run_id):
     d["levels"] = d["signals_log"] if isinstance(d["signals_log"], list) else []
     # Вероятность простого ЛОНГ/ШОРТ лежит в metrics.direction (новые прогоны).
     d["direction"] = (d.get("metrics") or {}).get("direction")
+    # Ответ LLM (sig/pu/pd/pf/tg/conf) сохраняется в metrics отдельно от
+    # детерминированного сигнала; direction уже построен из этого ответа.
+    d["verdict"] = (d.get("metrics") or {}).get("verdict")
+    # Детерминированный вердикт Charon (pu/pd/sig/fired) — единая функция
+    # с AI Backtest, сохраняется в metrics (новые прогоны).
+    d["signal"] = (d.get("metrics") or {}).get("signal")
     d.setdefault("status", "finished")
     return d

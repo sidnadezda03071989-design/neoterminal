@@ -28,6 +28,7 @@ import { openScanner, closeScanner, runScan, cancelScan, loadResults, exportCsv,
   copySummaryReport } from './scanner.js';
 import { openAiDataPanel, closeAiDataPanel, onSymbolTfChanged,
   initAiDataUI } from './ui/ai_data_panel.js';
+import { initCharonUI } from './charon_panel.js';
 import { chart, candleSeries, container, setReplayBarrier } from './chart/setup.js';
 import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
@@ -498,6 +499,7 @@ export function initUI() {
   initNewsUI();
   initJournalUI();
   initAiDataUI();
+  initCharonUI();
   initReplayBarrierDrag();
   initTimezoneUI();
   startCandleTimer();

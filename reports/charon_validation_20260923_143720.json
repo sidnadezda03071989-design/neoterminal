@@ -1,0 +1,117 @@
+{
+  "generated_at": "2026-09-23T14:37:20+12:00",
+  "script": "scripts/validate_charon_only.py",
+  "agent": "1/6",
+  "sharpe": -4.741,
+  "win_rate": 0.3669,
+  "profit_factor": 0.4292,
+  "max_drawdown": 483.3659,
+  "walk_forward": {
+    "n_splits": 3,
+    "window_bars": 11878,
+    "periods": [
+      {
+        "period": 1,
+        "start_ts": 1729659600,
+        "end_ts": 1749801600,
+        "n_bars": 3959,
+        "n_trades": 1325,
+        "sharpe": -4.3293,
+        "win_rate": 0.3932,
+        "profit_factor": 0.4691,
+        "max_drawdown": 182.6277,
+        "sum_pnl_pct": -180.8555
+      },
+      {
+        "period": 2,
+        "start_ts": 1749805200,
+        "end_ts": 1770156000,
+        "n_bars": 3959,
+        "n_trades": 1380,
+        "sharpe": -3.3977,
+        "win_rate": 0.4275,
+        "profit_factor": 0.5476,
+        "max_drawdown": 155.6121,
+        "sum_pnl_pct": -154.3855
+      },
+      {
+        "period": 3,
+        "start_ts": 1770159600,
+        "end_ts": 1790139600,
+        "n_bars": 3960,
+        "n_trades": 1432,
+        "sharpe": -4.7942,
+        "win_rate": 0.382,
+        "profit_factor": 0.4284,
+        "max_drawdown": 228.0135,
+        "sum_pnl_pct": -221.0009
+      }
+    ]
+  },
+  "shuffle_p_value": 0.9406,
+  "look_ahead_clean": true,
+  "verdict": "FAILED",
+  "params": {
+    "symbol": "EURUSD",
+    "timeframe": "1H",
+    "days": 700,
+    "window_bars": 11878,
+    "first_bar_ts": 1729659600,
+    "last_bar_ts": 1790139600,
+    "n_splits": 3,
+    "n_iterations": 100,
+    "seed": 42,
+    "adaptive": true,
+    "trade_horizon": 20,
+    "tp_pct": 0.2,
+    "sl_atr_k": 2.0,
+    "sl_floor": 0.1,
+    "fee_pp": 0.1,
+    "sharpe_ppy": 252.0,
+    "cbr_stage2": false,
+    "cbr_enabled": false,
+    "cbr_store_hook": false
+  },
+  "metrics": {
+    "n_bars": 11878,
+    "n_trades": 4137,
+    "n_signal_bars": 4137,
+    "coverage": 0.3483,
+    "sum_pnl_pct": -480.702,
+    "avg_pnl_pct": -0.1162,
+    "max_drawdown": 483.3659
+  },
+  "shuffle_test": {
+    "p_value": 0.9406,
+    "observed_sharpe": -4.741,
+    "n_iterations": 100,
+    "count_ge": 94,
+    "mean_shuffled_sharpe": -4.4285,
+    "std_shuffled_sharpe": 0.2022,
+    "seed": 42
+  },
+  "look_ahead": {
+    "n_steps": 11878,
+    "n_window_bars": 11878,
+    "monotonic": true,
+    "barrier_is_own_bar": true,
+    "every_bar_covered": true,
+    "no_barrier_after_window": true,
+    "max_barrier": 1790139600,
+    "window_last_ts": 1790139600,
+    "clean": true
+  },
+  "engine": {
+    "llm_calls": 74,
+    "cache_hits": 5427,
+    "tokens_total": 137410,
+    "bars": 11878,
+    "run_id": "3509a6f1b98948c7bcceca350c83b9b2"
+  },
+  "decision": {
+    "sharpe": -4.741,
+    "p_value": 0.9406,
+    "verdict": "FAILED",
+    "rule": "SUCCESS: Sharpe>=1.5 И p<0.05; MARGINAL: 0.5<=Sharpe<1.5 (и p<0.05); FAILED: Sharpe<0.5 ИЛИ p>=0.05"
+  }
+}

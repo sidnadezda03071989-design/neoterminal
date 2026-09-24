@@ -10,7 +10,7 @@ import {
 } from '../chart/series.js';
 import { updateLegend } from '../ui/legend.js';
 import { sseConnect } from '../integration/sse.js';
-import { startCandleTimer } from '../ui/candle_timer.js';
+import { startCandleTimer, syncServerClock } from '../ui/candle_timer.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -169,6 +169,8 @@ export async function loadLive(fit) {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
+    // Синхронизируем часы таймера по «сейчас» сервера (эпоха источника).
+    syncServerClock(data && data.now);
     // Ответ устарел (пока шёл fetch, стартовал более новый loadLive) — не
     // применяем: иначе setAllData(data.candles) затрёт более свежий хвост
     // и последняя свеча «дрожит»/меняет форму.
@@ -300,6 +302,7 @@ function _syncLastBarNow() {
       const resp = await fetch(url);
       if (!resp.ok) return;
       const data = await resp.json();
+      syncServerClock(data && data.now);
       if (state.mode !== 'live') return;
       const bar = data && data.candle;
       if (!bar) return;
@@ -440,6 +443,7 @@ export async function pollLive() {
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
+    syncServerClock(data && data.now);
     if (state.mode !== 'live') return;  // ушли в реплей — ответ живого полла не применяем
     const bar = data && data.candle;
     if (!bar) return;
@@ -484,6 +488,7 @@ export async function pollLive() {
    payload = {symbol, timeframe, candle:{time,open,high,low,close,volume}, closed}. */
 export function applyLiveCandleUpdate(payload) {
   if (!payload || state.mode !== 'live') return;
+  syncServerClock(payload.now);
   if (payload.symbol !== state.symbol || payload.timeframe !== state.timeframe) return;
   const raw = payload.candle;
   if (!raw) return;

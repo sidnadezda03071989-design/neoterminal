@@ -1,7 +1,8 @@
-"""Детерминированный путь применения правил Charon 1-20.
+"""Детерминированный путь применения правил Charon 1-24.
 
 Без LLM. Без побочных эффектов. Логика правил 1-13 и 14-20 перенесена
 построчно из config/charon_prompt.txt; пороги не менялись.
+Правила 21-24 читают блок d (дерривативы: funding, OI, CVD).
 """
 from __future__ import annotations
 
@@ -85,6 +86,10 @@ def apply_all_rules(snapshot: dict) -> dict:
         (18, _rule_18_momentum_acceleration),
         (19, _rule_19_rsi_price_divergence),
         (20, _rule_20_volatility_contraction),
+        (21, _rule_21_funding_extreme),
+        (22, _rule_22_oi_divergence),
+        (23, _rule_23_cvd_trend),
+        (24, _rule_24_taker_imbalance),
     ]:
         pu_before, pd_before = pu, pd
         pu, pd = rule_fn(pu, pd, snapshot)
@@ -283,6 +288,80 @@ def _rule_20_volatility_contraction(pu: float, pd: float,
     if abs(bb_slope) < 0.02 and atr_slope < 0:
         pu *= 0.9
         pd *= 0.9
+    return pu, pd
+
+
+# ---------------------------------------------------------------------------
+# Правила 21-24: Деривативы (Funding, OI, CVD, Taker)
+# ---------------------------------------------------------------------------
+
+
+def _d_val(snapshot: dict, key: str) -> float | None:
+    """Достать значение из блока d (деривативы).
+
+    Проверяет, что блок d существует и ключ не None.
+    """
+    d = snapshot.get("d")
+    if not isinstance(d, dict):
+        return None
+    return _num(d.get(key))
+
+
+def _rule_21_funding_extreme(pu: float, pd: float,
+                             snapshot: dict) -> tuple[float, float]:
+    """Правило 21. funding_zscore >2.0 -> pu-=.10,pd+=.10; <-2.0 -> pd-=.10,pu+=.10."""
+    fz = _d_val(snapshot, "funding_zscore")
+    if fz is None:
+        return pu, pd
+    if fz > 2.0:
+        pu -= 0.10
+        pd += 0.10
+    elif fz < -2.0:
+        pu += 0.10
+        pd -= 0.10
+    return pu, pd
+
+
+def _rule_22_oi_divergence(pu: float, pd: float,
+                           snapshot: dict) -> tuple[float, float]:
+    """Правило 22. oi_change_4 >0.05 -> pu+=.05,pd+=.05; <-0.05 -> pu*=0.9,pd*=0.9."""
+    oic = _d_val(snapshot, "oi_change_4")
+    if oic is None:
+        return pu, pd
+    if oic > 0.05:
+        # OI growth: volume expansion, increase both sides (volatility)
+        pu += 0.05
+        pd += 0.05
+    elif oic < -0.05:
+        # OI decline: position closing, reduce conviction both sides
+        pu *= 0.9
+        pd *= 0.9
+    return pu, pd
+
+
+def _rule_23_cvd_trend(pu: float, pd: float,
+                       snapshot: dict) -> tuple[float, float]:
+    """Правило 23. cvd_slope >0.2 -> pu+=.05; <-0.2 -> pd+=.05."""
+    cvd_s = _d_val(snapshot, "cvd_slope")
+    if cvd_s is None:
+        return pu, pd
+    if cvd_s > 0.2:
+        pu += 0.05
+    elif cvd_s < -0.2:
+        pd += 0.05
+    return pu, pd
+
+
+def _rule_24_taker_imbalance(pu: float, pd: float,
+                             snapshot: dict) -> tuple[float, float]:
+    """Правило 24. buy_sell_ratio >1.2 -> pu+=.03; <0.8 -> pd+=.03."""
+    bsr = _d_val(snapshot, "buy_sell_ratio")
+    if bsr is None:
+        return pu, pd
+    if bsr > 1.2:
+        pu += 0.03
+    elif bsr < 0.8:
+        pd += 0.03
     return pu, pd
 
 

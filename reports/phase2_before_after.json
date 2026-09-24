@@ -1,0 +1,221 @@
+{
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "model": null,
+  "temperature": 0.0,
+  "repeats": 3,
+  "inject_se": true,
+  "note": "окно 90d",
+  "results": [
+    {
+      "bar": "A_trend",
+      "ts": 1782824400,
+      "price": 58737.18,
+      "tr_after": {
+        "adx": 31.1,
+        "adx_slope": 1.224,
+        "adx_max_50": 31.18
+      },
+      "before": {
+        "n": 3,
+        "pu": [
+          0.61,
+          0.0,
+          0.0
+        ],
+        "pd": [
+          0.1,
+          0.0,
+          0.0
+        ],
+        "sig": [
+          "L",
+          "F",
+          "F"
+        ],
+        "sig_mode": "F"
+      },
+      "after": {
+        "n": 3,
+        "pu": [
+          0.0,
+          0.0,
+          0.61
+        ],
+        "pd": [
+          0.0,
+          0.45,
+          0.1
+        ],
+        "sig": [
+          "F",
+          "S",
+          "L"
+        ],
+        "sig_mode": "F"
+      }
+    },
+    {
+      "bar": "B_flat",
+      "ts": 1783886400,
+      "price": 64198.89,
+      "tr_after": {
+        "adx": 11.7,
+        "adx_slope": -0.467,
+        "adx_max_50": 23.39
+      },
+      "before": {
+        "n": 3,
+        "pu": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pd": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sig": [
+          "F",
+          "F",
+          "F"
+        ],
+        "sig_mode": "F"
+      },
+      "after": {
+        "n": 3,
+        "pu": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pd": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sig": [
+          "F",
+          "F",
+          "F"
+        ],
+        "sig_mode": "F"
+      }
+    },
+    {
+      "bar": "C_dying_trend",
+      "ts": 1783252800,
+      "price": 62745.01,
+      "tr_after": {
+        "adx": 26.5,
+        "adx_slope": -1.481,
+        "adx_max_50": 48.49
+      },
+      "before": {
+        "n": 3,
+        "pu": [
+          0.0,
+          0.0,
+          0.1
+        ],
+        "pd": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sig": [
+          "F",
+          "F",
+          "L"
+        ],
+        "sig_mode": "F"
+      },
+      "after": {
+        "n": 3,
+        "pu": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pd": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sig": [
+          "F",
+          "F",
+          "F"
+        ],
+        "sig_mode": "F"
+      }
+    }
+  ],
+  "stability_c": {
+    "with_rule17": {
+      "n": 3,
+      "pu": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pd": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "sig": [
+        "F",
+        "F",
+        "F"
+      ],
+      "sig_mode": "F"
+    }
+  },
+  "isolation_c": {
+    "with_rule17": {
+      "n": 3,
+      "pu": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pd": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "sig": [
+        "F",
+        "F",
+        "F"
+      ],
+      "sig_mode": "F"
+    },
+    "without_rule17": {
+      "n": 3,
+      "pu": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pd": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "sig": [
+        "F",
+        "F",
+        "F"
+      ],
+      "sig_mode": "F"
+    }
+  },
+  "usage_total": {
+    "tokens_prompt": 72634,
+    "tokens_completion": 1725,
+    "tokens_total": 74359
+  }
+}

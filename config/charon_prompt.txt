@@ -30,3 +30,7 @@ Decision <!-- ADDED (was undefined; the old prompt never mapped pu/pd to sig, so
 Targets: up=close+atr*k, dn=close-atr*k, k=1.5 (grow k per next level, cap 2.0). Use t.atr_pct to sanity-check k in risk terms.
 Give 2-5 UP and 2-5 DOWN levels (at least 2 each side).
 Schema: {"pu":f,"pd":f,"pf":f,"sig":"L|S|F","tg":[[price,prob],...]}. At least 4 pairs. Sum of all prob=1.00 (100%); nearer level -> higher prob. Prices 1dp, probs 2dp.
+<!-- RULE 21: funding_zscore >2.0 → counter-long (pu-=.10,pd+=.10); <-2.0 → counter-short (pu+=.10,pd-=.10) -->
+<!-- RULE 22: oi_change_4 >0.05 → vol expansion (pu+=.05,pd+=.05); <-0.05 → position closing (pu*=0.9,pd*=0.9) -->
+<!-- RULE 23: cvd_slope >0.2 → long bias (pu+=.05); <-0.2 → short bias (pd+=.05) -->
+<!-- RULE 24: buy_sell_ratio >1.2 → aggressive buyers (pu+=.03); <0.8 → aggressive sellers (pd+=.03) -->
