@@ -146,7 +146,13 @@ def test_divergence_block_plumbing(monkeypatch):
 
     monkeypatch.setattr(ms, "_divergence_combined", fake_combined)
     d = ms._divergence_block(_df(100.0 + np.arange(90)))
-    assert d == {"rsi_price": 1, "macd_price": -1, "obv_price": 0, "ok": True}
+    assert d["rsi_price"] == 1
+    assert d["macd_price"] == -1
+    assert d["obv_price"] == 0
+    assert d["ok"] is True
+    # динамика (Фаза 1) добавляет к блоку свои поля, контракт combined не ломая
+    assert d["price_slope"] is not None
+    assert d["rsi_price_div"] in (-1, 0, 1)
 
 
 def test_divergence_block_few_bars():

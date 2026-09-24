@@ -166,7 +166,11 @@ def _technicals_blank():
         "rsi": None, "atr": None, "bb_pct_b": None,
         "sma20_diff_pct": None, "close": None,
         "atr_percentile": None, "dist_to_high_pct": None,
-        "dist_to_low_pct": None, "ok": False,
+        "dist_to_low_pct": None,
+        "rsi_delta": None, "rsi_slope": None, "rsi_pct50": None,
+        "atr_delta": None, "atr_slope": None,
+        "bb_pct_delta": None, "bb_pct_slope": None,
+        "ok": False,
     }
 
 
@@ -185,9 +189,10 @@ def _technicals_from_df(df):
     close = pd.Series(df["close"], dtype="float64")
     last_close = _round(close.iloc[-1], 8)
 
-    rsi = _round(rsi_wilder(close, _RSI_PERIOD).iloc[-1], 4)
-    atr = _round(_atr(df["high"], df["low"], df["close"],
-                      _ATR_PERIOD).iloc[-1], 8)
+    rsi_series = rsi_wilder(close, _RSI_PERIOD)
+    rsi = _round(utils._clean(rsi_series.iloc[-1]), 4)
+    atr_series = _atr(df["high"], df["low"], df["close"], _ATR_PERIOD)
+    atr = _round(utils._clean(atr_series.iloc[-1]), 8)
 
     sma20 = close.rolling(_SMA_PERIOD).mean()
     bb_mid = sma20
@@ -199,6 +204,11 @@ def _technicals_from_df(df):
     if bb_range:
         bb_pct_b = _round((last_close - bb_low.iloc[-1]) / bb_range, 4)
 
+    # Динамика BB %B: полный ряд (для slope/delta), не только последний бар.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bb_pct_series = (close - bb_low) / (bb_up - bb_low)
+    bb_pct_series = bb_pct_series.replace([np.inf, -np.inf], np.nan)
+
     sma20_last = utils._clean(sma20.iloc[-1])
     sma20_diff_pct = None
     if sma20_last and last_close:
@@ -208,11 +218,24 @@ def _technicals_from_df(df):
     atr_percentile = _atr_percentile(df)
     dist_high, dist_low = _dist_to_extremes(df)
 
+    # Динамика метрик: Python считает готовые slope/delta/percentile —
+    # LLM их только читает (никакой арифметики в промпте).
+    rsi_list = _to_list(rsi_series)
+    atr_list = _to_list(atr_series)
+    bb_pct_list = _to_list(bb_pct_series)
+
     return {
         "rsi": rsi, "atr": atr, "bb_pct_b": bb_pct_b,
         "sma20_diff_pct": sma20_diff_pct, "close": last_close,
         "atr_percentile": atr_percentile,
         "dist_to_high_pct": dist_high, "dist_to_low_pct": dist_low,
+        "rsi_delta": _delta(rsi_list),
+        "rsi_slope": _slope(rsi_list, 10),
+        "rsi_pct50": _percentile_rank(rsi, rsi_list[-50:]),
+        "atr_delta": _delta(atr_list),
+        "atr_slope": _slope(atr_list, 10),
+        "bb_pct_delta": _delta(bb_pct_list),
+        "bb_pct_slope": _slope(bb_pct_list, 10),
         "ok": True,
     }
 
@@ -221,24 +244,51 @@ def _technicals_from_df(df):
 # 6 блоков считаются ЛОКАЛЬНО из OHLCV-среза (без внешних API). Единые
 # контракты: доля/перцентиль *_pct — в 0-1; "ok": false при пустом/малом df.
 
-def _slope(series, window):
-    """Наклон OLS (простой МНК) последних window значений, без scipy."""
+def _to_list(series):
+    """Чистый список float из ряда (NaN/Inf/None выброшены, порядок сохранён)."""
+    y = pd.Series(series, dtype="float64")
+    y = y.replace([np.inf, -np.inf], np.nan).dropna()
+    return [float(v) for v in y]
+
+
+def _slope(series, window=10):
+    """Наклон линейной регрессии (OLS) последних window точек, 3 знака.
+
+    Меньше window точек -> None. x = arange(window): сдвиг начала координат
+    не меняет наклон, поэтому результат совпадает с центрированным вариантом.
+    """
     try:
         y = pd.Series(series, dtype="float64")
         y = y.replace([np.inf, -np.inf], np.nan).dropna()
-        if len(y) < 2:
+        if len(y) < window or len(y) < 2:
             return None
-        y = y.tail(window)
-        if len(y) < 2:
-            return None
-        x = np.arange(len(y), dtype="float64") - (len(y) - 1) / 2.0
-        denom = float(np.dot(x, x))
-        if not denom:
-            return None
-        return float(np.dot(x, y.to_numpy(dtype="float64")
-                            - y.to_numpy(dtype="float64").mean()) / denom)
+        y = y.tail(window).to_numpy(dtype="float64")
+        x = np.arange(window, dtype="float64")
+        return round(float(np.polyfit(x, y, 1)[0]), 3)
     except Exception:  # noqa: BLE001 — расчётный хелпер
         return None
+
+
+def _delta(series):
+    """Разница между последним и предпоследним значением ряда, 3 знака.
+
+    Меньше 2 точек -> None.
+    """
+    if len(series) < 2:
+        return None
+    return round(float(series[-1] - series[-2]), 3)
+
+
+def _percentile_rank(value, series):
+    """Доля значений series строго меньше value, в [0, 1], 3 знака.
+
+    Пустой ряд или value=None -> None.
+    """
+    if value is None or not series:
+        return None
+    n = len(series)
+    count = sum(1 for x in series if x < value)
+    return round(count / n, 3)
 
 
 def _rank_pct(hist, cur):
@@ -394,6 +444,8 @@ def _volume_block(df):
 def _trend_blank():
     return {"adx": None, "plus_di": None, "minus_di": None,
             "di_spread": None, "ema20_50_ratio": None, "reg_slope_20": None,
+            "adx_delta": None, "adx_slope": None, "adx_pct50": None,
+            "adx_max_50": None,
             "ok": False}
 
 
@@ -429,9 +481,17 @@ def _trend_block(df):
         elif slope is not None:
             reg_slope_20 = _round(slope, 2)
 
+        # Динамика ADX: был ли тренд сильным и не умирает ли он.
+        adx_list = _to_list(adx_s)
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di,
                 "di_spread": di_spread, "ema20_50_ratio": ema20_50_ratio,
-                "reg_slope_20": reg_slope_20, "ok": True}
+                "reg_slope_20": reg_slope_20,
+                "adx_delta": _delta(adx_list),
+                "adx_slope": _slope(adx_list, 10),
+                "adx_pct50": _percentile_rank(adx, adx_list[-50:]),
+                "adx_max_50": (round(max(adx_list[-50:]), 2)
+                               if len(adx_list) >= 50 else None),
+                "ok": True}
     except Exception as exc:  # noqa: BLE001
         log.warning("trend block failed: %s", exc)
         return _trend_blank()
@@ -439,7 +499,9 @@ def _trend_block(df):
 
 def _momentum_blank():
     return {"macd": None, "macd_signal": None, "macd_hist": None,
-            "macd_hist_slope": None, "rsi_slope": None, "ok": False}
+            "macd_hist_slope": None, "rsi_slope": None,
+            "rsi_slope_short": None, "hist_delta": None, "macd_cross": None,
+            "ok": False}
 
 
 def _momentum_block(df):
@@ -469,11 +531,25 @@ def _momentum_block(df):
         if r_now is not None and r_prev is not None:
             rsi_slope = _round(r_now - r_prev, 2)
 
+        # Динамика импульса: быстрый наклон RSI, дельта гистограммы MACD и
+        # детект пересечения MACD/Signal (±1/0). Python считает — LLM читает.
+        hist_list = _to_list(hist)
+        rsi_list = _to_list(rsi)
+        macd_list = _to_list(macd)
+        signal_list = _to_list(signal)
+        macd_cross = None
+        if (len(macd_list) >= 2 and len(signal_list) >= 2):
+            macd_cross = (int(macd_list[-1] > signal_list[-1])
+                          - int(macd_list[-2] > signal_list[-2]))
+
         return {"macd": _round(utils._clean(macd.iloc[-1]), 2),
                 "macd_signal": _round(utils._clean(signal.iloc[-1]), 2),
                 "macd_hist": _round(utils._clean(hist.iloc[-1]), 2),
                 "macd_hist_slope": macd_hist_slope,
                 "rsi_slope": rsi_slope,
+                "rsi_slope_short": _slope(rsi_list, 5),
+                "hist_delta": _delta(hist_list),
+                "macd_cross": macd_cross,
                 "ok": True}
     except Exception as exc:  # noqa: BLE001
         log.warning("momentum block failed: %s", exc)
@@ -636,7 +712,7 @@ def _divergence_combined(closes, indicator, window=_DIV_WINDOW):
 
 def _divergence_blank():
     return {"rsi_price": None, "macd_price": None, "obv_price": None,
-            "ok": False}
+            "price_slope": None, "rsi_price_div": None, "ok": False}
 
 
 def _divergence_block(df):
@@ -662,10 +738,21 @@ def _divergence_block(df):
         direction = np.sign(close.diff().fillna(0))
         obv = (direction * vol).cumsum()
 
+        # Кросс-метрика: расхождение наклонов RSI и цены за 10 баров.
+        # +1 RSI падает при растущей цене (bearish div), -1 наоборот, 0 согласны.
+        price_slope = _slope(_to_list(close), 10)
+        rsi_slope_10 = _slope(_to_list(rsi), 10)
+        rsi_price_div = 0
+        if (price_slope is not None and rsi_slope_10 is not None
+                and np.sign(rsi_slope_10) != np.sign(price_slope)):
+            rsi_price_div = int(np.sign(price_slope))
+
         return {
             "rsi_price": _divergence_combined(close, rsi),
             "macd_price": _divergence_combined(close, hist),
             "obv_price": _divergence_combined(close, obv),
+            "price_slope": price_slope,
+            "rsi_price_div": rsi_price_div,
             "ok": True,
         }
     except Exception as exc:  # noqa: BLE001
@@ -1126,7 +1213,11 @@ def _block_has_data(block):
 
 
 def _compact_technicals(raw):
-    """technicals -> t{rsi,atr,atr_pct,bb,sma,ap,dh,dl,close} (2dp; atr/close 1dp)."""
+    """technicals -> t{rsi,atr,atr_pct,bb,sma,ap,dh,dl,close} + динамика.
+
+    Динамика: rsi_delta/rsi_slope/rsi_pct50, atr_delta/atr_slope,
+    bb_pct_delta/bb_pct_slope (slope/delta 3dp, pct50 3dp в 0-1).
+    """
     t = raw.get("technicals") or {}
     if not _block_has_data(t):
         return None
@@ -1143,6 +1234,13 @@ def _compact_technicals(raw):
     _put(out, "dh", _r2(t.get("dist_to_high_pct")))
     _put(out, "dl", _r2(t.get("dist_to_low_pct")))
     _put(out, "close", _r1(t.get("close")))
+    _put(out, "rsi_delta", _round(t.get("rsi_delta"), 3))
+    _put(out, "rsi_slope", _round(t.get("rsi_slope"), 3))
+    _put(out, "rsi_pct50", _round(t.get("rsi_pct50"), 3))
+    _put(out, "atr_delta", _round(t.get("atr_delta"), 3))
+    _put(out, "atr_slope", _round(t.get("atr_slope"), 3))
+    _put(out, "bb_pct_delta", _round(t.get("bb_pct_delta"), 3))
+    _put(out, "bb_pct_slope", _round(t.get("bb_pct_slope"), 3))
     return out or None
 
 
@@ -1260,7 +1358,10 @@ def _compact_volume(raw):
 
 
 def _compact_trend(raw):
-    """trend -> tr{adx,pdi,mdi,ds,er,rs} (adx/di 1dp; er 3dp; rs 2dp)."""
+    """trend -> tr{adx,pdi,mdi,ds,er,rs} + adx_delta/adx_slope/adx_pct50.
+
+    adx/di 1dp; er 3dp; rs 2dp; динамика ADX 3dp (pct50 в 0-1).
+    """
     t = raw.get("trend") or {}
     if not _block_has_data(t):
         return None
@@ -1271,11 +1372,18 @@ def _compact_trend(raw):
     _put(out, "ds", _r1(t.get("di_spread")))
     _put(out, "er", _round(t.get("ema20_50_ratio"), 3))
     _put(out, "rs", _r2(t.get("reg_slope_20")))
+    _put(out, "adx_delta", _round(t.get("adx_delta"), 3))
+    _put(out, "adx_slope", _round(t.get("adx_slope"), 3))
+    _put(out, "adx_pct50", _round(t.get("adx_pct50"), 3))
+    _put(out, "adx_max_50", _round(t.get("adx_max_50"), 2))
     return out or None
 
 
 def _compact_momentum(raw):
-    """momentum -> mo{macd,ms,mh,mhs,rsi_s} (2dp)."""
+    """momentum -> mo{macd,ms,mh,mhs,rsi_s} + rsi_slope_short/hist_delta/macd_cross.
+
+    2dp; динамика 3dp; macd_cross int в {-1,0,+1}.
+    """
     m = raw.get("momentum") or {}
     if not _block_has_data(m):
         return None
@@ -1285,6 +1393,9 @@ def _compact_momentum(raw):
     _put(out, "mh", _r2(m.get("macd_hist")))
     _put(out, "mhs", _r2(m.get("macd_hist_slope")))
     _put(out, "rsi_s", _r2(m.get("rsi_slope")))
+    _put(out, "rsi_slope_short", _round(m.get("rsi_slope_short"), 3))
+    _put(out, "hist_delta", _round(m.get("hist_delta"), 3))
+    _put(out, "macd_cross", _rint(m.get("macd_cross")))
     return out or None
 
 
@@ -1331,7 +1442,10 @@ def _compact_context(raw):
 
 
 def _compact_divergence(raw):
-    """divergence -> div{rsi,macd,obv} (-1 bear / +1 bull / 0 none, int)."""
+    """divergence -> div{rsi,macd,obv} + price_slope/rsi_price_div.
+
+    rsi/macd/obv и rsi_price_div в {-1,0,+1}; price_slope 3dp.
+    """
     d = raw.get("divergence") or {}
     if not _block_has_data(d):
         return None
@@ -1339,6 +1453,8 @@ def _compact_divergence(raw):
     _put(out, "rsi", _rint(d.get("rsi_price")))
     _put(out, "macd", _rint(d.get("macd_price")))
     _put(out, "obv", _rint(d.get("obv_price")))
+    _put(out, "price_slope", _round(d.get("price_slope"), 3))
+    _put(out, "rsi_price_div", _rint(d.get("rsi_price_div")))
     return out or None
 
 
