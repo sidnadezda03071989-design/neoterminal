@@ -1,16 +1,7 @@
-"""Offline backfill: apply_all_rules на N барах ETHUSDT/TF -> charon_calibration_history.
-
-Записывает 2 строки на бар (side=UP raw_prob=pu_raw, side=DOWN raw_prob=pd_raw),
-hit по triple-barrier исходу (конвенция labels/backfill: SL-приоритет, atr_k, horizon).
-
-Правила 21-24 (дерривативы) активны: _derivatives_block вызывается из
-compact_snapshot. Статистика срабатываний правил печатается в отчёте.
-
-Фетч один раз в память; market_snapshot.get_replay_df подменяется, чтобы
-compact_snapshot(upto_sec=ts) работал по одному df без сети.
-"""
+"""Backfill level-reach outcomes for the calibration history."""
 import argparse
 import importlib
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -21,254 +12,270 @@ _BASE = Path(__file__).resolve().parent.parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
-from app_pkg import config, db                      # noqa: E402
-from app_pkg.ai.apply_rules import apply_all_rules  # noqa: E402
-from app_pkg.data import market_snapshot as ms      # noqa: E402
-from app_pkg.data.fetch import get_series_df        # noqa: E402
+from app_pkg import config, db
+from app_pkg.ai.apply_rules import (
+    LEVEL_HORIZON_BARS,
+    LEVEL_REACH,
+    apply_all_rules,
+    invalidate_level_history_cache,
+)
+from app_pkg.data import market_snapshot as ms
+from app_pkg.data.fetch import get_series_df
 
-ATR_K = 1.5          # конвенция CBR_BACKFILL_ATR_K
-HORIZON = 20         # конвенция CBR_BACKFILL_HORIZON
+DEFAULT_BARS = 6000
+MIN_LEVEL_SAMPLES = 50
+TARGET_LEVEL_SAMPLES = 500
+EXPECTED_LEVEL_TYPES = ("VAH", "VAL", "POC", "STRUCT_HIGH", "STRUCT_LOW")
+_CACHE: dict[tuple[str, str], pd.DataFrame] = {}
 
-# Один сетевой фетч на ТФ в память.
-_CACHE: dict[tuple, pd.DataFrame] = {}
 
-
-def _preload(tf, limit):
-    if (SYMBOL, tf) in _CACHE:
+def _preload(symbol: str, tf: str, limit: int) -> None:
+    key = (symbol, tf)
+    if key in _CACHE:
         return
-    df = get_series_df(SYMBOL, tf, limit=limit, history_limit=config.MAX_DATA_LIMIT)
-    df = df.sort_values("timestamp").reset_index(drop=True)
-    _CACHE[(SYMBOL, tf)] = df
-
-
-def _slice(tf, to_sec):
-    df = _CACHE.get((SYMBOL, tf))
+    df = get_series_df(symbol, tf, limit=limit,
+                       history_limit=config.MAX_DATA_LIMIT)
     if df is None or df.empty:
-        return df
+        _CACHE[key] = pd.DataFrame()
+        return
+    _CACHE[key] = df.sort_values("timestamp").reset_index(drop=True)
+
+
+def _slice(symbol: str, tf: str, to_sec) -> pd.DataFrame:
+    df = _CACHE.get((symbol, tf))
+    if df is None or df.empty:
+        return pd.DataFrame()
     mask = df["timestamp"] <= pd.to_datetime(int(to_sec), unit="s", utc=True)
-    out = df[mask]
-    return out.tail(300).reset_index(drop=True)
+    return df[mask].tail(300).reset_index(drop=True)
 
 
 def _fake_replay(symbol, tf, from_sec=None, to_sec=None, limit=1200):
-    if (SYMBOL, tf) not in _CACHE:
+    key = (str(symbol).upper(), str(tf))
+    if key not in _CACHE:
         return None
-    df = _slice(tf, to_sec) if to_sec is not None else _CACHE[(SYMBOL, tf)]
-    if df is None or df.empty:
-        return df
-    return df.sort_values("timestamp").reset_index(drop=True)
+    if to_sec is not None:
+        return _slice(key[0], key[1], to_sec)
+    return _CACHE[key].sort_values("timestamp").reset_index(drop=True)
 
 
-def _bar_ts_sec(ts):
-    ts = pd.to_datetime(ts)
+def _bar_ts_sec(value) -> int:
+    ts = pd.to_datetime(value)
     if getattr(ts, "tz", None) is None:
         ts = ts.tz_localize("UTC")
     return int(ts.timestamp())
 
-def triple_barrier(high, low, close, entry, atr_pct, entry_idx, horizon, atr_k):
-    """Outcome (+1/-1/0/None) для бара entry_idx со входом (entry, atr_pct)."""
-    if entry <= 0 or atr_pct is None or atr_pct <= 0:
-        return None  # барьер вырожден
-    upper = entry * (1.0 + atr_k * atr_pct)
-    lower = entry * (1.0 - atr_k * atr_pct)
-    j0 = entry_idx + 1
-    jend = j0 + horizon
-    if jend > len(close):
-        return None  # не хватает будущих баров
-    for k in range(j0, jend):
-        if low[k] <= lower:
-            return -1  # SL-приоритет
-        if high[k] >= upper:
-            return 1
-    return 0  # таймаут
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Charon calibration backfill")
-    parser.add_argument("--symbol", default="ETHUSDT", help="Trading pair (default ETHUSDT)")
-    parser.add_argument("--tf", default="15m", help="Timeframe (default 15m)")
-    parser.add_argument("--bars", type=int, default=1000, help="Number of bars (default 1000)")
-    parser.add_argument("--no-derivatives", action="store_true",
-                        help="Disable derivatives fetch (rules 21-24)")
+def _probability(value):
+    result = _number(value)
+    if result is None:
+        return None
+    if result > 1.0:
+        result /= 100.0
+    if result < 0.0 or result > 1.0:
+        return None
+    return result
+
+
+def level_hit(level: dict, high, low, entry_index: int,
+              horizon: int = LEVEL_HORIZON_BARS):
+    price = _number(level.get("price")) if isinstance(level, dict) else None
+    side = str(level.get("side") or "").upper() if isinstance(level, dict) else ""
+    if price is None or price <= 0 or side not in ("UP", "DOWN"):
+        return None
+    start = entry_index + 1
+    end = start + int(horizon)
+    if start >= len(high) or end > len(high):
+        return None
+    if side == "UP":
+        return int(any(float(high[i]) >= price for i in range(start, end)))
+    return int(any(float(low[i]) <= price for i in range(start, end)))
+
+
+def _context(level: dict, raw: float, hit: int) -> str:
+    return json.dumps({
+        "calibration_family": LEVEL_REACH,
+        "level_type": str(level.get("type") or "").upper(),
+        "raw_prob": raw,
+        "hit": int(hit),
+        "horizon_bars": LEVEL_HORIZON_BARS,
+        "side": str(level.get("side") or "").upper(),
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
+def _db_level_stats(symbol: str, tf: str) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    try:
+        conn = sqlite3.connect(str(config.DB_PATH))
+        rows = conn.execute(
+            "SELECT side, hit, context_json FROM charon_calibration_history "
+            "WHERE symbol=? AND timeframe=?", (symbol, tf),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return result
+    for side, hit, context_json in rows:
+        try:
+            context = json.loads(context_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(context, dict):
+            continue
+        family = str(context.get("calibration_family") or "").upper()
+        if str(side or "").upper() != LEVEL_REACH and family != LEVEL_REACH:
+            continue
+        level_type = str(context.get("level_type") or "").upper()
+        if not level_type:
+            continue
+        try:
+            horizon = int(context.get("horizon_bars", LEVEL_HORIZON_BARS))
+        except (TypeError, ValueError):
+            horizon = LEVEL_HORIZON_BARS
+        if horizon != LEVEL_HORIZON_BARS:
+            continue
+        item = result.setdefault(level_type, {"rows": 0, "hits": 0})
+        item["rows"] += 1
+        item["hits"] += 1 if hit else 0
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Level-reach calibration backfill")
+    parser.add_argument("--symbol", default="ETHUSDT")
+    parser.add_argument("--tf", default="15m")
+    parser.add_argument("--bars", type=int, default=DEFAULT_BARS)
+    parser.add_argument("--no-derivatives", action="store_true")
     args = parser.parse_args()
 
-    symbol = args.symbol.upper()
-    tf = args.tf
-    n_bars = args.bars
-
+    symbol = str(args.symbol).upper()
+    tf = str(args.tf)
+    requested_bars = max(0, int(args.bars))
     if args.no_derivatives:
-        print("[config] derivatives disabled via --no-derivatives")
         ms.DERIVATIVES_ENABLED = False
+        print("[config] derivatives disabled via --no-derivatives")
 
-    _preload(tf, config.HISTORY_LIMITS.get(tf, 20000))
-    for _tf in ("1H", "4H", "1D"):
-        _preload(_tf, 300)
+    _preload(symbol, tf, max(config.HISTORY_LIMITS.get(tf, 20000),
+                              340 + LEVEL_HORIZON_BARS + requested_bars))
+    for other_tf in ("1H", "4H", "1D"):
+        _preload(symbol, other_tf, 300)
 
-    # Подмена фетча: компакт-снимок для реплея читает из памяти (без сети).
-    mod = importlib.import_module("app_pkg.data.market_snapshot")
-    mod.get_replay_df = _fake_replay
+    module = importlib.import_module("app_pkg.data.market_snapshot")
+    module.get_replay_df = _fake_replay
+    real_scanner = getattr(module, "_scanner_edge", None)
+    real_crowd = getattr(module, "_resolve_crowd", None)
+    real_extra = getattr(module, "_build_extra_blocks", None)
+    cache = {}
 
-    _real_scanner = mod._scanner_edge
-    _real_crowd = mod._resolve_crowd
+    def scanner_cached(symbol_inner, timeframe_inner):
+        key = ("scanner", symbol_inner, timeframe_inner)
+        if key not in cache and callable(real_scanner):
+            cache[key] = real_scanner(symbol_inner, timeframe_inner)
+        return cache.get(key)
 
-    # Кэшируем медленные внешние блоки: они почти не меняются бар-к-бару
-    # и делают compact_snapshot основным источником лагов.
-    _S = {}
-    def _scan_edge_cached(symbol_inner, timeframe_inner):
-        nonlocal _S
-        if "scanner" not in _S:
-            _S["scanner"] = _real_scanner(symbol_inner, timeframe_inner)
-        return _S["scanner"]
+    def crowd_cached(symbol_inner):
+        key = ("crowd", symbol_inner)
+        if key not in cache and callable(real_crowd):
+            cache[key] = real_crowd(symbol_inner)
+        return cache.get(key)
 
-    def _crowd_cached(symbol_inner):
-        nonlocal _S
-        if "crowd" not in _S:
-            _S["crowd"] = _real_crowd(symbol_inner)
-        return _S["crowd"]
+    def extra_cached(symbol_inner, clock_ts, names=None):
+        key = ("extra", symbol_inner, clock_ts,
+               tuple(names) if names is not None else "all")
+        if key not in cache and callable(real_extra):
+            cache[key] = real_extra(symbol_inner, clock_ts, names)
+        return cache.get(key)
 
-    _real_extra = mod._build_extra_blocks
-    _S_extra = {}
-    def _extra_cached(symbol_inner, clock_ts, names=None):
-        nonlocal _S_extra
-        key = tuple(names) if names is not None else "all"
-        if key not in _S_extra:
-            _S_extra[key] = _real_extra(symbol_inner, clock_ts, names)
-        return _S_extra[key]
-
-    mod._scanner_edge = _scan_edge_cached
-    mod._resolve_crowd = _crowd_cached
-    mod._build_extra_blocks = _extra_cached
+    if callable(real_scanner):
+        module._scanner_edge = scanner_cached
+    if callable(real_crowd):
+        module._resolve_crowd = crowd_cached
+    if callable(real_extra):
+        module._build_extra_blocks = extra_cached
 
     df = _CACHE[(symbol, tf)]
-    n = len(df)
+    if df is None or df.empty:
+        print("No market data")
+        return
     high = df["high"].astype(float).to_numpy(dtype="float64")
     low = df["low"].astype(float).to_numpy(dtype="float64")
-    close = df["close"].astype(float).to_numpy(dtype="float64")
-    ts = [_bar_ts_sec(x) for x in df["timestamp"]]
-
-    # Точный atr_pct = ATR(14)/close по каждому бару.
-    from app_pkg.indicators import _atr
-    atr_s = _atr(pd.Series(high), pd.Series(low), pd.Series(close), 14)
-    atr_pct_arr = (atr_s.to_numpy(dtype="float64") / close)
-    print(f"[preload] {symbol}/{tf} bars={n} (analyzable window up to {n - HORIZON})")
-
-    # Прогрев: компакт-снимку нужны ~300 баров до барьера (_LOOKBACK).
+    timestamps = [_bar_ts_sec(value) for value in df["timestamp"]]
     start = 340
-    end = n - HORIZON
-    if start >= end:
-        print(f"мало баров: n={n}")
+    end = len(df) - LEVEL_HORIZON_BARS
+    stop = min(end, start + requested_bars)
+    print(f"[preload] {symbol}/{tf} bars={len(df)} analyzable={max(0, stop - start)}")
+    if start >= stop:
+        print("Not enough bars")
         return
 
-    entries, outcomes = [], []
     written = 0
-    # Статистика правил 21-24
-    rules_activity: dict[int, int] = {21: 0, 22: 0, 23: 0, 24: 0}
-    none_counts: dict[str, int] = {"funding": 0, "oi": 0, "cvd": 0}
-
-    for i in range(start, min(end, start + n_bars)):
-        bar_ts = ts[i]
+    analyzed = 0
+    run_stats: dict[str, dict[str, int]] = {}
+    for index in range(start, stop):
+        timestamp = timestamps[index]
         try:
-            snap = ms.compact_snapshot(symbol, tf, upto_sec=float(bar_ts))
-            verdict = apply_all_rules(snap)
-        except Exception as exc:  # noqa: BLE001
-            print(f"bar {i} ts={bar_ts} snapshot fail: {exc!r}")
+            snapshot = ms.compact_snapshot(symbol, tf, upto_sec=float(timestamp))
+            result = apply_all_rules(snapshot)
+        except Exception as exc:
+            print(f"bar {index} ts={timestamp} snapshot fail: {exc!r}")
             continue
-
-        # Статистика правил 21-24
-        fired = verdict.get("fired", [])
-        for rn in (21, 22, 23, 24):
-            if rn in fired:
-                rules_activity[rn] = rules_activity.get(rn, 0) + 1
-
-        # Статистика None в d-блоке
-        d_block = snap.get("d", {}) if isinstance(snap.get("d"), dict) else {}
-        if d_block.get("funding_rate") is None:
-            none_counts["funding"] += 1
-        if d_block.get("oi") is None:
-            none_counts["oi"] += 1
-        if d_block.get("cvd") is None:
-            none_counts["cvd"] += 1
-
-        raw = verdict.get("raw") or {}
-        pu_raw = raw.get("pu")
-        pd_raw = raw.get("pd")
-        if pu_raw is None and pd_raw is None:
-            continue
-        entry_price = float(close[i])
-        atr_pct_v = float(atr_pct_arr[i]) if atr_pct_arr[i] is not None \
-            else None
-        outcome = triple_barrier(high, low, close, entry_price, atr_pct_v,
-                                 i, HORIZON, ATR_K)
-        if outcome is None:
-            continue
-        hit_up = 1 if outcome == 1 else 0
-        hit_down = 1 if outcome == -1 else 0
-        if pu_raw is not None:
-            db.db_save_calibration_entry(bar_ts, symbol, tf, float(pu_raw),
-                                         "UP", hit_up, "{}")
+        analyzed += 1
+        levels = result.get("levels", []) if isinstance(result, dict) else []
+        for level in levels:
+            if not isinstance(level, dict):
+                continue
+            level_type = str(level.get("type") or "").strip().upper()
+            raw = _probability(level.get("raw_prob"))
+            if not level_type or raw is None:
+                continue
+            hit = level_hit(level, high, low, index)
+            if hit is None:
+                continue
+            db.db_save_calibration_entry(
+                timestamp, symbol, tf, raw, LEVEL_REACH, hit,
+                _context(level, raw, hit),
+            )
+            item = run_stats.setdefault(level_type, {"rows": 0, "hits": 0})
+            item["rows"] += 1
+            item["hits"] += hit
             written += 1
-        if pd_raw is not None:
-            db.db_save_calibration_entry(bar_ts, symbol, tf, float(pd_raw),
-                                         "DOWN", hit_down, "{}")
-            written += 1
-        entries.append(bar_ts)
-        outcomes.append(outcome)
 
-    # Перечитываем кривые (сброс кэша TTL).
-    from app_pkg.ai.calibration import _load_curves
-    _load_curves(force=True)
+    invalidate_level_history_cache()
+    try:
+        from app_pkg.ai.calibration import _load_curves
+        _load_curves(force=True)
+    except Exception:
+        pass
 
-    c = sqlite3.connect(str(config.DB_PATH))
-    row = c.execute(
-        "SELECT side, COUNT(*) n, SUM(hit) h FROM charon_calibration_history "
-        "WHERE symbol=? AND timeframe=? GROUP BY side", (symbol, tf)).fetchall()
-    c.close()
-    counts = {r[0]: (r[1], r[2]) for r in row}
-
-    from app_pkg.ai.calibration import CALIBRATOR
-    curves = CALIBRATOR.export_curves()
-
-    # --- REPORT ---
-    total_bars = len(entries)
-    up_hit_rate = (counts.get("UP", (0, 0))[1] or 0) / max(1, counts.get("UP", (0, 0))[0])
-    down_hit_rate = (counts.get("DOWN", (0, 0))[1] or 0) / max(1, counts.get("DOWN", (0, 0))[0])
-
-    print("\n" + "=" * 60)
-    print("=== BACKFILL REPORT ===")
+    stored_stats = _db_level_stats(symbol, tf)
+    print()
     print("=" * 60)
-    print(f"Symbol/TF: {symbol} {tf}  bars_analyzed={total_bars}  written={written}")
-    print(f"outcome balance: +1:{outcomes.count(1)} -1:{outcomes.count(-1)} "
-          f"0:{outcomes.count(0)}")
-    for side in ("UP", "DOWN"):
-        n_rows, hits = counts.get(side, (0, 0))
-        print(f"side={side}: rows={n_rows} hits={hits} "
-              f"hit_rate={(hits or 0) / max(1, n_rows):.3f}")
-    active = {s: bool(v) for s, v in curves.items()}
-    print("calibration active (UP/DOWN):", active)
-    print("curve nodes:", {s: len(v) for s, v in curves.items()})
-    print()
-    print("--- Derivatives Rules 21-24 Activity ---")
-    print(f"  Rule 21 (funding extreme): fired {rules_activity.get(21, 0)}/{total_bars} bars")
-    print(f"  Rule 22 (OI divergence):   fired {rules_activity.get(22, 0)}/{total_bars} bars")
-    print(f"  Rule 23 (CVD trend):       fired {rules_activity.get(23, 0)}/{total_bars} bars")
-    print(f"  Rule 24 (taker imbalance): fired {rules_activity.get(24, 0)}/{total_bars} bars")
-    print(f"  Fields None count: funding={none_counts['funding']}, "
-          f"OI={none_counts['oi']}, CVD={none_counts['cvd']} (out of {total_bars} bars)")
-    print()
-    print(f"Hit-rate UP: {up_hit_rate:.4f} (baseline 46.0%)")
-    print(f"Hit-rate DOWN: {down_hit_rate:.4f} (baseline 46.6%)")
-    delta_up = up_hit_rate - 0.46
-    delta_down = down_hit_rate - 0.466
-    print(f"Delta UP: {delta_up:+.4f}")
-    print(f"Delta DOWN: {delta_down:+.4f}")
-    combined_hit = (up_hit_rate + down_hit_rate) / 2.0
-    print(f"Combined hit rate: {combined_hit:.4f} (baseline {0.463:.4f})")
-    success = combined_hit >= 0.52
-    print(f"Success criterion (>=52%): {'MET' if success else 'NOT MET'}")
-    if success:
-        print("Recommendation: Proceed to ensemble")
-    else:
-        print("Recommendation: Try different TF / Investigate data gaps")
+    print("LEVEL-REACH BACKFILL REPORT")
+    print("=" * 60)
+    print(f"Symbol/TF: {symbol} {tf}")
+    print(f"requested_bars={requested_bars} analyzed={analyzed} written={written}")
+    print(f"horizon_bars={LEVEL_HORIZON_BARS} min_samples={MIN_LEVEL_SAMPLES}")
+    all_types = sorted(set(EXPECTED_LEVEL_TYPES) | set(run_stats) | set(stored_stats))
+    for level_type in all_types:
+        current = run_stats.get(level_type, {"rows": 0, "hits": 0})
+        stored = stored_stats.get(level_type, {"rows": 0, "hits": 0})
+        rate = current["hits"] / current["rows"] if current["rows"] else 0.0
+        print(f"{level_type}: run_rows={current['rows']} run_hits={current['hits']} "
+              f"hit_rate={rate:.3f} stored_rows={stored['rows']} "
+              f"stored_hits={stored['hits']}")
+    target_met = all(
+        stored_stats.get(level_type, {}).get("rows", 0) >= TARGET_LEVEL_SAMPLES
+        for level_type in EXPECTED_LEVEL_TYPES
+    )
+    print(f"target >= {TARGET_LEVEL_SAMPLES} samples per level type: "
+          f"{'MET' if target_met else 'NOT MET'}")
+    if not target_met:
+        print("Increase --bars to accumulate at least 500 samples per level type.")
 
 
 if __name__ == "__main__":

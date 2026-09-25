@@ -1,4 +1,4 @@
-// Long/Short Position tool (как в TradingView).
+// Long/Short Position tool для рисования позиций.
 // 3 клика: entry → target → SL. Тип рисунка задаёт направление явно:
 //   long_position  — target ВЫШЕ entry (зелёный блок сверху), SL ниже (красный);
 //   short_position — target НИЖЕ entry (зелёный блок снизу), SL выше.
@@ -64,8 +64,8 @@ export function paint(opts) {
   let x1 = Math.max(E.x, T.x, Sl ? Sl.x : T.x);
   if (x1 - x0 < MIN_WIDTH) x1 = x0 + MIN_WIDTH;
 
-  const green = ui.cssVar('--up', '#3fb950');
-  const red = ui.cssVar('--down', '#f85149');
+  const green = ui.cssVar('--up', '#26a69a');
+  const red = ui.cssVar('--down', '#ef5350');
 
   rectZone(ctx, x0, x1, E.y, T.y, ui.hexToRgba(green, 0.30));
   if (Sl) rectZone(ctx, x0, x1, E.y, Sl.y, ui.hexToRgba(red, 0.22));
@@ -95,7 +95,7 @@ export function paint(opts) {
     const reward = Math.abs(tpPrice(d) - epPrice(d));
     const rr = risk > 1e-12 ? reward / risk : Infinity;
     ctx.font = '10px "Segoe UI", Tahoma, sans-serif';
-    ctx.fillStyle = ui.cssVar('--text', '#e6edf3');
+    ctx.fillStyle = ui.cssVar('--text', '#d1d4dc');
     ctx.fillText('R:R ' + (isFinite(rr) ? rr.toFixed(2) : '∞'), x0 + 4, yTop + 17);
   }
   ctx.textBaseline = 'alphabetic';

@@ -1,67 +1,105 @@
+import { state } from '../state.js';
+import { candleSeries } from '../chart/setup.js';
+import { notificationsEnabled } from './settings.js';
+
 const $ = (id) => document.getElementById(id);
+let _alertsCache = [];
+const _alertLines = new Map();
+
+function _removeAlertLine(id) {
+  const line = _alertLines.get(String(id));
+  if (!line) return;
+  try { candleSeries.removePriceLine(line); } catch (e) { /* noop */ }
+  _alertLines.delete(String(id));
+}
+
+export function syncAlertLines() {
+  const visible = _alertsCache.filter((alert) => alert.symbol === state.symbol);
+  const visibleIds = new Set(visible.map((alert) => String(alert.id)));
+  for (const id of Array.from(_alertLines.keys())) {
+    if (!visibleIds.has(id)) _removeAlertLine(id);
+  }
+
+  const dashed = window.LightweightCharts?.LineStyle?.Dashed ?? 2;
+  for (const alert of visible) {
+    const id = String(alert.id);
+    const value = Number(alert.value);
+    if (_alertLines.has(id) || !Number.isFinite(value)) continue;
+    try {
+      const line = candleSeries.createPriceLine({
+        price: value,
+        color: '#ffffff',
+        lineWidth: 1,
+        lineStyle: dashed,
+        axisLabelVisible: true,
+        title: `🔔 ${value}`,
+      });
+      _alertLines.set(id, line);
+    } catch (e) { /* chart may still be initializing */ }
+  }
+}
 
 /* Лейблы условий для компактного отображения в списке. */
 const CONDITION_LABELS = { above: '≥', below: '≤', cross: '×' };
 
-/* ---------------------------------------------------------------- панель */
-export function openAlerts() {
-  const panel = $('alerts-panel');
-  if (!panel) return;
-  panel.style.display = 'block';
-  loadAlerts();
-}
-
-export function closeAlerts() {
-  const panel = $('alerts-panel');
-  if (panel) panel.style.display = 'none';
-}
-
-export function toggleAlerts() {
-  const panel = $('alerts-panel');
-  if (!panel) return;
-  if (panel.style.display === 'none') openAlerts();
-  else closeAlerts();
-}
-
 /* --------------------------------------------------------------- список */
 export function loadAlerts() {
   const list = $('alerts-list');
-  if (!list) return;
-  fetch('/api/alerts?active=1')
-    .then(r => r.json())
-    .then(data => {
-      const alerts = data.alerts || [];
+  if (!list) return Promise.resolve([]);
+  return fetch('/api/alerts?active=0')
+    .then((r) => r.json())
+    .then((data) => {
+      const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+      _alertsCache = alerts;
+      syncAlertLines();
+      const current = alerts.filter((a) => Number(a.triggered) !== 1 && Number(a.active) !== 0);
+      const triggered = alerts.filter((a) => Number(a.triggered) === 1);
       list.innerHTML = '';
-      for (const a of alerts) {
-        const row = document.createElement('div');
-        row.className = 'alert-item' + (Number(a.triggered) === 1 ? ' triggered' : '');
-        const sym = document.createElement('span');
-        sym.className = 'alert-symbol';
-        sym.textContent = a.symbol;
-        const cond = document.createElement('span');
-        cond.className = 'alert-cond';
-        cond.textContent = (CONDITION_LABELS[a.condition] || a.condition) + ' ' + a.value;
-        const del = document.createElement('button');
-        del.className = 'alert-delete';
-        del.textContent = '✕';
-        del.title = 'Удалить';
-        del.addEventListener('click', () => deleteAlert(a.id));
-        row.append(sym, cond, del);
-        list.appendChild(row);
-      }
-      if (!alerts.length) {
+
+      const renderGroup = (title, rows, isTriggered) => {
+        if (!rows.length) return;
+        const heading = document.createElement('div');
+        heading.className = 'alerts-section-title';
+        heading.textContent = title;
+        list.appendChild(heading);
+        for (const a of rows) {
+          const row = document.createElement('div');
+          row.className = 'alert-item' + (isTriggered ? ' triggered' : '');
+          const sym = document.createElement('span');
+          sym.className = 'alert-symbol';
+          sym.textContent = a.symbol;
+          const cond = document.createElement('span');
+          cond.className = 'alert-cond';
+          cond.textContent = (CONDITION_LABELS[a.condition] || a.condition) + ' ' + a.value;
+          const status = document.createElement('span');
+          status.className = 'alert-status';
+          status.textContent = isTriggered ? 'Сработало' : 'Текущее';
+          const del = document.createElement('button');
+          del.className = 'alert-delete';
+          del.textContent = '✕';
+          del.title = 'Удалить';
+          del.addEventListener('click', () => deleteAlert(a.id));
+          row.append(sym, cond, status, del);
+          list.appendChild(row);
+        }
+      };
+
+      renderGroup('Текущие оповещения', current, false);
+      renderGroup('Сработавшие оповещения', triggered, true);
+      if (!current.length && !triggered.length) {
         const empty = document.createElement('div');
         empty.className = 'alerts-empty';
-        empty.textContent = 'Нет активных алертов';
+        empty.textContent = 'Оповещений пока нет';
         list.appendChild(empty);
       }
+      const countText = 'активных: ' + current.length + ' · сработало: ' + triggered.length;
       const cnt = $('alerts-count');
-      if (cnt) {
-        const active = alerts.filter(a => Number(a.triggered) !== 1).length;
-        cnt.textContent = 'активных: ' + active;
-      }
+      if (cnt) cnt.textContent = countText;
     })
-    .catch(e => console.error('alerts:', e));
+    .catch((e) => {
+      console.error('alerts:', e);
+      return [];
+    });
 }
 
 /* ------------------------------------------------------------ удаление */
@@ -107,7 +145,7 @@ export async function createAlert() {
     valInp.value = '';
     await loadAlerts();
     showAlertToast({ message: '✅ Алерт создан: ' + body.symbol + ' ' + body.condition + ' ' + body.value });
-    if (body.channel === 'browser' && window.Notification
+    if (body.channel === 'browser' && notificationsEnabled() && window.Notification
         && Notification.permission !== 'granted') {
       requestNotificationPermission();
     }
@@ -148,7 +186,7 @@ export function showAlertToast(data) {
     toast.classList.add('out');
     setTimeout(() => toast.remove(), 300);
   }, 5000);
-  if (window.Notification && Notification.permission === 'granted') {
+  if (notificationsEnabled() && window.Notification && Notification.permission === 'granted') {
     try { new Notification('NeoTerminal', { body: msg }); } catch { /* noop */ }
   }
 }

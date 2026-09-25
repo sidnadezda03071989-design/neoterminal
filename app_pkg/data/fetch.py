@@ -376,6 +376,25 @@ def get_series_df(symbol: str, tf: str, limit: int = 1000,
     return _tail(apply_live_merge(symbol, tf, df, copy=False), limit)
 
 
+def get_cached_series_df(symbol: str, tf: str) -> pd.DataFrame:
+    """Вернуть только валидный кэш без попытки обращения к сети.
+
+    Нужен быстрым потребителям (например, watchlist): если источник завис,
+    список котировок всё равно должен вернуться сразу, используя уже
+    загруженные бары и live-merge.
+    """
+    key = (symbol, tf)
+    with cache_lock:
+        item = data_cache.get(key)
+        if not item or (time.time() - item["ts"]) >= _ttl_for(symbol, tf):
+            return _empty_df()
+        df = item.get("df")
+        if df is None or df.empty:
+            return _empty_df()
+        data_cache.move_to_end(key)
+    return apply_live_merge(symbol, tf, df)
+
+
 def get_replay_df(symbol: str, tf: str, from_sec: float | None = None,
                   to_sec: float | None = None, limit: int = 1200) -> pd.DataFrame:
     """Исторические данные для бэктеста (без live-мержа)."""

@@ -441,7 +441,7 @@ export class DrawingsManager {
     if (t == null || p == null) return null;
     const nt = this._nearestTime(t);
     if (this.magnet) {
-      // магнит: прилипаем к ближайшей свече по X и к ближайшей из OHLC по Y
+      // Магнит рисунка: X — ближайший бар, Y — ближайшее значение OHLC.
       const c = this._times() ? this._times()[this._indexOfTime(nt)] : null;
       if (c) {
         const cands = [c.open, c.high, c.low, c.close];
@@ -889,14 +889,30 @@ export class DrawingsManager {
 
   clearAll() {
     const self = this;
-    const before = this.drawings.map((d) => this._cloneShape(d));
-    fetch('/api/drawings', { method: 'DELETE' })
-      .then(function() {
+    return fetch('/api/drawings', { cache: 'no-store' })
+      .then(function(response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.json();
+      })
+      .then(function(data) {
+        const before = (Array.isArray(data.drawings) ? data.drawings : [])
+          .map((d) => self._cloneShape(d));
+        return fetch('/api/drawings', { method: 'DELETE' })
+          .then(function(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return before;
+          });
+      })
+      .then(function(before) {
         self.selectedId = null;
         historyPush({ type: 'clear', before: before, after: null });
         self._updateHistoryUI();
         self.refresh([]);
-      }).catch(function() {});
+      })
+      .catch(function(error) {
+        console.error('drawings clear:', error);
+        throw error;
+      });
   }
   eraseAI() {
     const self = this;

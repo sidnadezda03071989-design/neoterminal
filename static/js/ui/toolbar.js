@@ -14,8 +14,6 @@ export function setTool(tool) {
   });
   const mBtn = $('measure-btn');
   if (mBtn) mBtn.classList.toggle('active', tool === 'measure');
-  const hint = $('tool-hint');
-  if (hint) hint.textContent = TOOL_HINTS[tool] || '';
   if (state.dm) state.dm.setTool(tool);
 }
 
@@ -25,24 +23,6 @@ export function toggleMagnet() {
   const btn = $('magnet-btn');
   if (btn) btn.classList.toggle('active', state.dm.magnet);
 }
-
-export const TOOL_HINTS = {
-  cursor: 'Курсор — выделяйте и перетаскивайте рисунки',
-  trendline: 'Трендовая линия: клик → первая точка, тянете → вторая',
-  ray: 'Луч: клик → начало, тяните через второй узел',
-  h_line: 'Горизонтальная линия: один клик',
-  rectangle: 'Прямоугольник: тяните от угла к углу',
-  fib: 'Фибоначчи: от нижней точки к верхней',
-  pen: 'Перо: ведите мышью',
-  text: 'Текст: клик по месту, где поставить подпись',
-  hray: 'Горизонтальный луч: клик → точка, линия вправо от неё',
-  vline: 'Вертикальная линия: один клик',
-  channel: 'Канал: клик → линия тренда, второй клик → ширина канала',
-  long_position: 'Long-позиция: клик → вход, клик → TP, клик → SL',
-  short_position: 'Short-позиция: клик → вход, клик → TP, клик → SL',
-  arrow: 'Стрелка: клик по свече, направление — от цены закрытия',
-  measure: 'Измерение: клик → точка A, тяните → точка B, Esc — отмена',
-};
 
 export function syncToolbarUI() {
   const mode = state.mode;

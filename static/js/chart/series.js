@@ -128,7 +128,7 @@ export function toMacdHist(arr) {
   return (arr || [])
     .filter(it => it && _isFiniteNumber(it.value))
     .map(it => ({ time: it.time, value: it.value,
-      color: it.value >= 0 ? 'rgba(66,165,245,0.55)' : 'rgba(239,83,80,0.55)' }));
+      color: it.value >= 0 ? 'rgba(38,166,154,0.55)' : 'rgba(239,83,80,0.55)' }));
 }
 
 // Разовый fit после первой загрузки / смены symbol/tf (state.chartNeedsFit):

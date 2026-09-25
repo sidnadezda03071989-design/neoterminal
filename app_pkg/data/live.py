@@ -71,6 +71,13 @@ def active_pairs():
         return set(_active_pairs)
 
 
+def get_live_bar(symbol: str, tf: str) -> dict | None:
+    """Потокобезопасная копия последнего live-бара без сетевого запроса."""
+    with _live_bars_lock:
+        bar = live_bars.get((symbol, tf))
+        return dict(bar) if bar else None
+
+
 def data_now_sec(symbol):
     """«Сейчас» в эпохе ИСТОЧНИКА данных для symbol (сек).
 

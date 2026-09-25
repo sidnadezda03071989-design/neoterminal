@@ -5,8 +5,6 @@
 
 import { openAiBacktest, runAiBacktest } from './ui/ai_backtest.js';
 
-export function renderCharonSignal() { /* упразднено: вердикт в панели AI Backtest */ }
-
 async function requestSignal() {
   const btn = document.getElementById('charon-refresh-btn');
   if (btn) btn.disabled = true;

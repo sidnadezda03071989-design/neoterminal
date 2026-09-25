@@ -1200,6 +1200,9 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None,
             "macro": blocks["macro"],
             "derivatives": blocks["derivatives"],
         })
+    # Volume Profile (POC/VAH/VAL) — из того же df, что и остальные блоки;
+    # в rules_only тоже кладём: адаптивные барьеры читают vp (tg/прав. 27-28)
+    raw["volume_profile"] = _volume_profile_block(df)
     return raw
 
 
@@ -1529,6 +1532,27 @@ def _compact_micro(raw):
     return out or None
 
 
+def _compact_volume_profile(raw):
+    """volume_profile -> vp{poc,vah,val,hvn_count_above,lvn_count_below,
+    dist_to_poc_atr,in_value_area}.
+
+    Цены 1dp; счётчики int; dist_to_poc_atr 2dp; in_value_area bool.
+    """
+    vp = raw.get("volume_profile") or {}
+    if not _block_has_data(vp):
+        return None
+    out = {}
+    _put(out, "poc", _r1(vp.get("poc")))
+    _put(out, "vah", _r1(vp.get("vah")))
+    _put(out, "val", _r1(vp.get("val")))
+    _put(out, "hvn_count_above", _rint(vp.get("hvn_count_above")))
+    _put(out, "lvn_count_below", _rint(vp.get("lvn_count_below")))
+    _put(out, "dist_to_poc_atr", _r2(vp.get("dist_to_poc_atr")))
+    if isinstance(vp.get("in_value_area"), bool):
+        out["in_value_area"] = bool(vp["in_value_area"])
+    return out or None
+
+
 def _cbr_store_live_snapshot(symbol, timeframe, compact):
     """Хук CBR: live-снимок в БД (гейт config.CBR_ENABLED; ошибки глушим).
 
@@ -1789,6 +1813,32 @@ def _mtf_compact(symbol, upto_sec=None):
     return out
 
 
+def _volume_profile_block(df) -> dict:
+    """Volume Profile block (POC/VAH/VAL) для адаптивных барьеров.
+
+    Считается из ТОГО ЖЕ df, что и остальные рыночные блоки снимка
+    (_slice_df): без повторного сетевого запроса и без заглядывания в
+    будущее в реплее. Пустой блок ({}), если профиль невалиден.
+    """
+    try:
+        from app_pkg.ai.volume_profile import calculate_vp
+        vp = calculate_vp(df, num_bins=50)
+        if not vp:
+            return {}
+        return {
+            "poc": vp.get("poc"),
+            "vah": vp.get("vah"),
+            "val": vp.get("val"),
+            "hvn_count_above": vp.get("hvn_count_above"),
+            "lvn_count_below": vp.get("lvn_count_below"),
+            "dist_to_poc_atr": vp.get("dist_to_poc_atr"),
+            "in_value_area": vp.get("in_value_area"),
+        }
+    except Exception as exc:  # noqa: BLE001 — блок не должен ронять снимок
+        log.warning("volume profile block failed: %s", exc)
+        return {}
+
+
 def compact_snapshot(symbol, timeframe, upto_sec=None, rules_only=False):
     """Максимально сжатый JSON-снимок для LLM (схема v3, без "ok").
 
@@ -1811,7 +1861,7 @@ def compact_snapshot(symbol, timeframe, upto_sec=None, rules_only=False):
         ("mo", _compact_momentum), ("vl", _compact_volatility),
         ("rg", _compact_regime), ("cg", _compact_context),
         ("div", _compact_divergence), ("cnd", _compact_candle),
-        ("mcr", _compact_micro),
+        ("mcr", _compact_micro), ("vp", _compact_volume_profile),
     ):
         if rules_only and key in ("m", "v", "vl", "rg", "cg", "cnd"):
         # Note: "d" removed from skip list — rules 21-24 need derivatives data.

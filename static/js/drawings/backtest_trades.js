@@ -2,7 +2,7 @@
 // Паттерн (paneViews/attached/detach/attachPrimitive) повторяет DrawingsManager.
 
 // BLOCK-40: логика отрисовки позиции переписана с нуля. Вид СТРОГО как на
-// макете (TradingView long/short position):
+// макете long/short position:
 //   • зелёная зона  — entry → TP, на всю ширину сделки (вход → выход);
 //   • красная зона  — entry → SL, на ту же ширину;
 //   • белая пунктирная вертикаль на баре входа — левая граница позиции;

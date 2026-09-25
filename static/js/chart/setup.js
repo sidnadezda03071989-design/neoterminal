@@ -19,9 +19,10 @@ export const chart = LightweightCharts.createChart(container, {
     background: { type:'solid', color: COLORS.bg },
     textColor: COLORS.text,
     fontSize: 11,
+    attributionLogo: false,
     panes: {
-      separatorColor: '#363a45',
-      separatorHoverColor: 'rgba(255,255,255,0.15)',
+      separatorColor: COLORS.border,
+      separatorHoverColor: 'rgba(255,255,255,0.20)',
       enableResize: true,
     },
   },
@@ -57,8 +58,9 @@ export const chart = LightweightCharts.createChart(container, {
     pinch: true,
   },
   crosshair: {
-    vertLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor:'#4a4f5f' },
-    horzLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor:'#4a4f5f' },
+    mode: LightweightCharts.CrosshairMode.Normal,
+    vertLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor: COLORS.border },
+    horzLine: { color:'rgba(255,255,255,0.25)', width:1, style:3, labelBackgroundColor: COLORS.border },
   },
   localization: { locale: 'ru-RU' },
 });
@@ -122,9 +124,9 @@ tunePanes();
 export function updatePaneVisibility() { tunePanes(); }
 
 try {
-  rsiSeries.createPriceLine({ price:70, color:'rgba(255,80,80,0.35)', lineWidth:1, lineStyle:2, axisLabelVisible:false });
-  rsiSeries.createPriceLine({ price:30, color:'rgba(80,255,140,0.35)', lineWidth:1, lineStyle:2, axisLabelVisible:false });
-  macdHistSeries.createPriceLine({ price:0, color:'#363a45', lineWidth:1, lineStyle:2, axisLabelVisible:false });
+  rsiSeries.createPriceLine({ price:70, color:'rgba(239,83,80,0.35)', lineWidth:1, lineStyle:2, axisLabelVisible:false });
+  rsiSeries.createPriceLine({ price:30, color:'rgba(38,166,154,0.35)', lineWidth:1, lineStyle:2, axisLabelVisible:false });
+  macdHistSeries.createPriceLine({ price:0, color:COLORS.border, lineWidth:1, lineStyle:2, axisLabelVisible:false });
 } catch (e) { /* noop */ }
 
 // Replay-барьер + «шторка» будущего. Вертикальная пунктирная линия на всё
@@ -390,7 +392,7 @@ class ReplayBarrierPrimitive {
         ctx.moveTo(x, 0);
         ctx.lineTo(x, h);
         ctx.stroke();
-        // Ручка-«наконечник» сверху — как реплика TradingView.
+        // Ручка-«наконечник» сверху replay-барьера.
         ctx.setLineDash([]);
         ctx.fillStyle = '#ef5350';
         ctx.beginPath();

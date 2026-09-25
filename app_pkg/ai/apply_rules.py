@@ -1,32 +1,45 @@
-"""Детерминированный путь применения правил Charon 1-24.
-
-Без LLM. Без побочных эффектов. Логика правил 1-13 и 14-20 перенесена
-построчно из config/charon_prompt.txt; пороги не менялись.
-Правила 21-24 читают блок d (дерривативы: funding, OI, CVD).
-"""
+"""Детерминированные уровни и калибровка вероятностей достижения."""
 from __future__ import annotations
 
+import json
+import time
 from typing import Any
 
 from app_pkg.ai.calibration import CALIBRATOR
 
-# Порог направления из блока Decision промпта.
-SIG_THRESHOLD = 0.20
-# bb-порог перепроданности правила 1 (0.5 - 1.5*0.25).
 BB_OVERSOLD = 0.125
 BB_OVERBOUGHT = 0.875
+LEVEL_REACH = "LEVEL_REACH"
+LEVEL_HORIZON_BARS = 20
+MIN_LEVEL_SAMPLES = 50
+LEVEL_PRIORS = {
+    "VAH": 0.30,
+    "VAL": 0.40,
+    "POC": 0.30,
+    "STRUCT_HIGH": 0.25,
+    "STRUCT_LOW": 0.25,
+}
+_LEVEL_HISTORY_CACHE = {"stamp": 0.0, "rows": None}
 
 
 def _num(value: Any) -> float | None:
-    """float или None (None/нечисло/'')."""
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
+def _prob(value: Any, default: float = 0.0) -> float:
+    result = _num(value)
+    if result is None:
+        return default
+    if result > 1.0:
+        result /= 100.0
+    return max(0.0, min(1.0, result))
+
+
 def _block(snap: dict, name: str) -> dict:
-    block = snap.get(name)
+    block = snap.get(name) if isinstance(snap, dict) else None
     return block if isinstance(block, dict) else {}
 
 
@@ -59,70 +72,178 @@ def _gated(direction: int, amount: float, trend: int) -> float:
     return amount
 
 
-def apply_all_rules(snapshot: dict) -> dict:
-    """Применяет правила 1-20 к snapshot.
+def _level_history() -> list[tuple[str, float, int]]:
+    now = time.monotonic()
+    cached = _LEVEL_HISTORY_CACHE.get("rows")
+    if cached is not None and now - float(_LEVEL_HISTORY_CACHE.get("stamp", 0.0)) < 5.0:
+        return cached
+    try:
+        from app_pkg import db
+        conn = db._get_db()
+        rows = conn.execute(
+            "SELECT side, raw_prob, hit, context_json "
+            "FROM charon_calibration_history "
+            "WHERE side=? OR side IN (?,?,?,?,?)",
+            (LEVEL_REACH, *LEVEL_PRIORS.keys()),
+        ).fetchall()
+    except Exception:
+        rows = []
+    parsed = []
+    for row in rows:
+        try:
+            side = str(row["side"] or "").strip().upper()
+            context = json.loads(row["context_json"] or "{}")
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        if not isinstance(context, dict):
+            continue
+        level_type = str(context.get("level_type") or "").strip().upper()
+        if not level_type and side in LEVEL_PRIORS:
+            level_type = side
+        if level_type not in LEVEL_PRIORS:
+            continue
+        try:
+            horizon = int(context.get("horizon_bars", LEVEL_HORIZON_BARS))
+        except (TypeError, ValueError):
+            horizon = LEVEL_HORIZON_BARS
+        if horizon != LEVEL_HORIZON_BARS:
+            continue
+        raw = _num(row["raw_prob"])
+        if raw is None:
+            continue
+        parsed.append((level_type, _prob(raw), 1 if row["hit"] else 0))
+    _LEVEL_HISTORY_CACHE["stamp"] = now
+    _LEVEL_HISTORY_CACHE["rows"] = parsed
+    return parsed
 
-    Возвращает {"pu": float, "pd": float, "sig": str, "fired": list[int], "raw": {...}}.
-    Порядок: baseline (1-13) -> 14 -> 15 -> 16 -> 17 -> 18 -> 19 -> 20.
-    В конце clamp pu/pd к [0, 1].
 
-    fired — номера правил, которые изменили pu или pd (правила, влияющие
-    только на conf/k, сюда не попадают).
+def invalidate_level_history_cache() -> None:
+    _LEVEL_HISTORY_CACHE["stamp"] = 0.0
+    _LEVEL_HISTORY_CACHE["rows"] = None
 
-    Калибровка: сырые pu/pd (raw) прогоняются через CALIBRATOR.calibrate для
-    сторонов UP/DOWN. Пока в charon_calibration_history меньше MIN_SAMPLES (50)
-    на сторону — калибровщик возвращает raw как есть (fallback), т.е. поведение
-    идентично исходному детерминированному. Как только история накопится,
-    pu/pd возвращаются уЖЕ калиброванными, а исходные значения кладутся в .raw
-    (нужно для обратной записи pu_raw/pd_raw в историю калибровки).
-    """
-    pu, pd = _baseline_rules(snapshot)
-    fired: list[int] = []
-    for rule_num, rule_fn in [
-        (14, _rule_14_micro),
-        (15, _rule_15_risk_cap),
-        (16, _rule_16_counter_trend_veto),
-        (17, _rule_17_trend_mortality),
-        (18, _rule_18_momentum_acceleration),
-        (19, _rule_19_rsi_price_divergence),
-        (20, _rule_20_volatility_contraction),
-        (21, _rule_21_funding_extreme),
-        (22, _rule_22_oi_divergence),
-        (23, _rule_23_cvd_trend),
-        (24, _rule_24_taker_imbalance),
-    ]:
-        pu_before, pd_before = pu, pd
-        pu, pd = rule_fn(pu, pd, snapshot)
-        if (pu, pd) != (pu_before, pd_before):
-            fired.append(rule_num)
-    pu_raw = max(0.0, min(1.0, pu))
-    pd_raw = max(0.0, min(1.0, pd))
-    # Калибровка (fallback на raw при нехватке истории — см. докстринг).
-    pu_cal = CALIBRATOR.calibrate(pu_raw, "UP")
-    pd_cal = CALIBRATOR.calibrate(pd_raw, "DOWN")
-    if _hard_flat(snapshot):
-        sig = "FLAT"
-    else:
-        diff = pu_cal - pd_cal
-        if diff > SIG_THRESHOLD:
-            sig = "LONG"
-        elif diff < -SIG_THRESHOLD:
-            sig = "SHORT"
-        else:
-            sig = "FLAT"
+
+def _level_calibration(raw: float, level_type: str,
+                       history: list[tuple[str, float, int]]) -> tuple[float, int, float]:
+    prior = LEVEL_PRIORS.get(level_type, 0.30)
+    rows = [item for item in history if item[0] == level_type]
+    samples = len(rows)
+    empirical = (sum(item[2] for item in rows) + 1.0) / (samples + 2.0) \
+        if samples else 0.0
+    try:
+        calibrated_value = CALIBRATOR.calibrate(_prob(raw), LEVEL_REACH)
+        calibrated = _num(calibrated_value)
+    except Exception:
+        calibrated = None
+    if calibrated is None:
+        calibrated = empirical
+    if samples < MIN_LEVEL_SAMPLES:
+        return prior, samples, 0.0
+    if calibrated == _prob(raw):
+        calibrated = empirical
+    return calibrated, samples, empirical
+
+
+def _level_record(price: float, side: str, level_type: str, raw: float,
+                  history: list[tuple[str, float, int]]) -> dict:
+    calibrated, samples, empirical = _level_calibration(raw, level_type, history)
+    raw = round(_prob(raw), 4)
+    calibrated = round(_prob(calibrated), 4)
     return {
-        "pu": round(pu_cal, 4), "pd": round(pd_cal, 4), "sig": sig,
-        "fired": fired,
-        "raw": {"pu": round(pu_raw, 4), "pd": round(pd_raw, 4)},
+        "price": round(price, 2),
+        "side": side,
+        "type": level_type,
+        "raw_prob": raw,
+        "calibrated_prob": calibrated,
+        "probability": calibrated,
+        "calibration_samples": samples,
+        "calibration_min_samples": MIN_LEVEL_SAMPLES,
+        "historical_hit_rate": round(empirical, 4) if samples else None,
+        "horizon_bars": LEVEL_HORIZON_BARS,
     }
+
+
+def _generate_tg_levels(snapshot: dict, entry_price: float) -> list:
+    atr = _num(_block(snapshot, "t").get("atr")) or 0.0
+    if atr <= 0 or entry_price <= 0:
+        return []
+    vp = _block(snapshot, "vp")
+    poc = _num(vp.get("poc")) or 0.0
+    vah = _num(vp.get("vah")) or 0.0
+    val = _num(vp.get("val")) or 0.0
+    history = _level_history()
+    levels = []
+    if vah > entry_price:
+        distance = vah - entry_price
+        raw = max(0.10, min(0.50, 0.35 * max(0.0, 1.0 - distance / (2.5 * atr))))
+        levels.append((vah, "UP", "VAH", raw))
+    if poc > entry_price and poc - entry_price <= 2.0 * atr:
+        distance = poc - entry_price
+        raw = max(0.15, min(0.55, 0.45 * max(0.0, 1.0 - distance / (2.0 * atr))))
+        levels.append((poc, "UP", "POC", raw))
+    struct_high = entry_price + 2.0 * atr
+    levels.append((struct_high, "UP", "STRUCT_HIGH", 0.25))
+    if 0 < val < entry_price:
+        distance = entry_price - val
+        raw = max(0.10, min(0.45, 0.30 * max(0.0, 1.0 - distance / (2.5 * atr))))
+        levels.append((val, "DOWN", "VAL", raw))
+    if poc < entry_price and entry_price - poc <= 2.0 * atr:
+        distance = entry_price - poc
+        raw = max(0.12, min(0.50, 0.40 * max(0.0, 1.0 - distance / (2.0 * atr))))
+        levels.append((poc, "DOWN", "POC", raw))
+    struct_low = entry_price - 1.5 * atr
+    levels.append((struct_low, "DOWN", "STRUCT_LOW", 0.20))
+    best = {}
+    for price, side, level_type, raw in levels:
+        key = round(price, 2)
+        current = best.get(key)
+        if current is None or raw > current[3]:
+            best[key] = (price, side, level_type, raw)
+    out = [_level_record(price, side, level_type, raw, history)
+           for price, side, level_type, raw in best.values()]
+    out.sort(key=lambda item: (0 if item["side"] == "UP" else 1,
+                               item["price"] if item["side"] == "UP"
+                               else -item["price"]))
+    return out
+
+
+def _adaptive_barriers(*args, **kwargs) -> None:
+    del args, kwargs
+    return None
+
+
+def apply_all_rules(snapshot: dict) -> dict:
+    pu, pd = _baseline_rules(snapshot)
+    for rule_fn in (
+        _rule_14_micro,
+        _rule_15_risk_cap,
+        _rule_16_counter_trend_veto,
+        _rule_17_trend_mortality,
+        _rule_18_momentum_acceleration,
+        _rule_19_rsi_price_divergence,
+        _rule_20_volatility_contraction,
+        _rule_21_funding_extreme,
+        _rule_22_oi_divergence,
+        _rule_23_cvd_trend,
+        _rule_24_taker_imbalance,
+    ):
+        pu, pd = rule_fn(pu, pd, snapshot)
+    pu = _prob(pu)
+    pd = _prob(pd)
+    entry_price = _num(_block(snapshot, "t").get("close")) or 0.0
+    levels = _generate_tg_levels(snapshot, entry_price)
+    return {
+        "levels": levels,
+        "_debug": {"pu": round(pu, 4), "pd": round(pd, 4)},
+    }
+
 
 
 def _baseline_rules(snapshot: dict) -> tuple[float, float]:
     """Правила 1-13 из charon_prompt.txt -> (pu, pd).
 
-    Переносятся только ветки, меняющие pu/pd; правила 4/7/8/10/11 меняют
-    conf/k/sig и на pu/pd не влияют. Правило 16 применено inline к
-    направленным веткам 2/3/13 (см. _gated).
+    Переносятся только ветки, меняющие pu/pd; остальные правила на pu/pd
+    не влияют. Правило 16 применено inline к направленным веткам 2/3/13
+    (см. _gated).
     """
     pu = 0.0
     pd = 0.0
@@ -363,32 +484,3 @@ def _rule_24_taker_imbalance(pu: float, pd: float,
     elif bsr < 0.8:
         pd += 0.03
     return pu, pd
-
-
-def _hard_flat(snapshot: dict) -> bool:
-    """HARD F (правила 11/12/13 + Decision-1): любое условие -> sig F."""
-    se = _block(snapshot, "se")
-    sharpe = _num(se.get("sharpe"))
-    pf = _num(se.get("pf"))
-    n = _num(se.get("n"))
-    tsh = _num(se.get("tsh"))
-    dd = _num(se.get("dd"))
-    wr = _num(se.get("wr"))
-    if sharpe is not None and sharpe < 0:
-        return True
-    if pf is not None and pf < 1.0:
-        return True
-    if n is not None and n < 20:
-        return True
-    if tsh is not None and sharpe is not None and tsh < 0.6 * sharpe:
-        return True
-    if dd is not None and dd > 0.5:
-        return True
-    if wr is not None and wr < 0.3:
-        return True
-    if _val(snapshot, "cal", "hi2h") == 1:
-        return True
-    if _val(snapshot, "c", "open") == 0:
-        return True
-    ns_avg = _val(snapshot, "ns", "avg")
-    return bool(ns_avg is not None and ns_avg < -0.5)

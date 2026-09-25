@@ -1,12 +1,14 @@
 """Blueprint: /api/data, /api/last-bar, /api/replay-data, /api/watchlist."""
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
+import pandas as pd
 from flask import Blueprint, jsonify, request
 
 from app_pkg import config, utils
-from app_pkg.data.fetch import get_replay_df, get_series_df
+from app_pkg.data.fetch import get_cached_series_df, get_replay_df, get_series_df
+from app_pkg.data.live import get_live_bar
+from app_pkg.data.watchlist import get_forex_quotes
 from app_pkg.indicators import compute_indicators, df_last_candle, df_to_payload
 
 bp = Blueprint("data", __name__)
@@ -115,7 +117,7 @@ def api_live_subscribe():
         from app_pkg.data.live import set_active_pairs
         pairs = set_active_pairs([(symbol, tf)])
     except Exception as exc:  # noqa: BLE001 — live-модуль может быть не поднят
-        logger.debug("live subscribe failed: %s", exc)
+        log.debug("live subscribe failed: %s", exc)
         return jsonify({"error": "live module unavailable"}), 503
     return jsonify({"ok": True, "active": sorted(f"{s}|{t}" for s, t in pairs)})
 
@@ -165,39 +167,106 @@ def api_replay_data():
     })
 
 
+def _daily_change(df):
+    """Изменение последней цены от начала текущего торгового дня."""
+    if df is None or df.empty:
+        return None
+    try:
+        stamps = pd.to_datetime(df["timestamp"], utc=True)
+        last_close = utils._clean(df.iloc[-1]["close"])
+        day_start = stamps.iloc[-1].normalize()
+        previous = df.loc[stamps < day_start, "close"].dropna()
+        if not previous.empty:
+            base_close = utils._clean(previous.iloc[-1])
+        else:
+            today_open = df.loc[stamps >= day_start, "open"].dropna()
+            base_close = utils._clean(today_open.iloc[0]) if not today_open.empty else None
+        if base_close in (None, 0) or last_close is None:
+            return None
+        return round((last_close - base_close) / base_close * 100.0, 2)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("daily change error: %s", exc)
+        return None
+
+
+def _number(value):
+    value = utils._clean(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def _bar_change(bar):
+    if not bar:
+        return None
+    close = _number(bar.get("close"))
+    base = _number(bar.get("open"))
+    if close is None or base in (None, 0):
+        return None
+    return round((close - base) / base * 100.0, 2)
+
+
+def _watchlist_item(sym, forex_quotes=None):
+    """Быстрый снимок котировки: live-бар → валидный кэш → пустое значение.
+
+    Здесь нельзя запускать историческую загрузку: Yahoo/MT5 может не ответить
+    несколько минут, а список на UI должен появляться сразу целиком.
+    """
+    base = {
+        "symbol": sym,
+        "name": config.ASSET_NAMES.get(sym, sym),
+        "price": None,
+        "change": None,
+        "volume": None,
+        "source": None,
+    }
+
+    daily_bar = get_live_bar(sym, "1D")
+    price_bar = daily_bar or get_live_bar(sym, "1H")
+    change = _bar_change(daily_bar)
+
+    df = None
+    if price_bar is None or change is None:
+        for tf in ("1H", "1D"):
+            candidate = get_cached_series_df(sym, tf)
+            if candidate is not None and not candidate.empty:
+                df = candidate
+                break
+
+    if price_bar is not None:
+        price = _number(price_bar.get("close"))
+        volume = _number(price_bar.get("volume"))
+        if price is not None:
+            base["source"] = "live"
+    elif df is not None and not df.empty:
+        last = df.iloc[-1]
+        price = _number(last.get("close"))
+        volume = _number(last.get("volume"))
+        base["source"] = "cache"
+    else:
+        price = None
+        volume = None
+
+    if change is None and df is not None and not df.empty:
+        change = _daily_change(df)
+
+    if price is None and sym in config.FOREX_SYMBOLS:
+        quote = (forex_quotes or {}).get(sym)
+        if quote:
+            price = _number(quote.get("price"))
+            change = _number(quote.get("change"))
+            if price is not None:
+                base["source"] = "fallback"
+
+    return {**base, "price": price, "change": change, "volume": volume}
+
+
 @bp.route("/api/watchlist")
 def api_watchlist():
-    items = []
-
-    def _item(sym):
-        try:
-            # history_limit=WATCHLIST_HISTORY: тонкая дозагрузка (100 баров),
-            # а не полная история 1H; limit=300 достаточно для расчёта change.
-            df = get_series_df(sym, "1H", limit=300,
-                               history_limit=config.WATCHLIST_HISTORY)
-        except Exception as exc:  # noqa: BLE001
-            log.debug("watchlist %s error: %s", sym, exc)
-            return None
-        if df is None or df.empty:
-            return None
-        last = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-        prev_close = utils._clean(prev["close"])
-        last_close = utils._clean(last["close"])
-        change = None
-        if prev_close and last_close is not None:
-            change = round((last_close - prev_close) / prev_close * 100.0, 2)
-        return {
-            "symbol": sym,
-            "price": last_close,
-            "change": change,
-            "volume": utils._clean(last["volume"]),
-        }
-
-    # Параллельная загрузка всех символов: холодный кеш 10 символов
-    # укладывается в ~длительность одной (самой медленной) загрузки.
-    with ThreadPoolExecutor(max_workers=config.CONTEXT_WORKERS) as pool:
-        for item in pool.map(_item, config.SYMBOLS):
-            if item:
-                items.append(item)
+    # Историческая загрузка здесь запрещена. Для недоступных live-кешей
+    # используется один batch-запрос с жёстким timeout и общим кэшем.
+    forex_quotes = get_forex_quotes()
+    items = [_watchlist_item(sym, forex_quotes) for sym in config.SYMBOLS]
     return jsonify({"watchlist": items})

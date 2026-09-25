@@ -17,6 +17,18 @@ SYMBOLS = [
     "EURUSD", "GBPUSD", "USDCHF", "USDJPY",     # форекс
     "USDCAD", "EURJPY", "XAUUSD",               # форекс / золото
 ]
+ASSET_NAMES = {
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "SOLUSDT": "Solana",
+    "EURUSD": "Евро / доллар США",
+    "GBPUSD": "Фунт / доллар США",
+    "USDCHF": "Доллар США / швейцарский франк",
+    "USDJPY": "Доллар США / японская иена",
+    "USDCAD": "Доллар США / канадский доллар",
+    "EURJPY": "Евро / японская иена",
+    "XAUUSD": "Золото",
+}
 CRYPTO_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 FOREX_SYMBOLS = {s for s in SYMBOLS if s not in CRYPTO_SYMBOLS}
 
@@ -50,7 +62,7 @@ PRICE_PRECISION = {
 REPLAY_LIMIT = 20000
 # Потолок свечей для бэктеста: 5m × 30 дней = ~8600 баров, 20 страниц Binance
 # через прокси рвутся и копят retry (3-5 мин). 5000 баров ≈ 17 дней по 5m —
-# быстрее и без обрывов; больше можно запросить селектом #bt-limit в панели.
+# быстрее и без обрывов; полный лимит задаётся отдельно для AI Backtest.
 BACKTEST_LIMIT = 5000
 
 # --------------------------------------- полная история ручного бэктеста
@@ -576,8 +588,6 @@ HISTORY_LIMITS = {"1m": 20000, "5m": 20000, "15m": 20000, "1H": 20000, "4H": 200
 # Дефолт limit /api/data при холодном старте: 1 страница Binance (~1с).
 # Фронт затем в фоне сам запрашивает 20000 — кеш дозагружается по частям.
 INITIAL_LOAD_CANDLES = 1000
-# Глубина истории для /api/watchlist (передаётся в history_limit).
-WATCHLIST_HISTORY = 100
 # Глубина истории для мульти-ТФ трендов и ИИ-контекста.
 TRENDS_HISTORY = 200
 # Глубина истории для проверки алертов (нужны только последние бары).

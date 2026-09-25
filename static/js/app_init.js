@@ -9,16 +9,21 @@ import { runAIAnalysis, updateAiDrawingsUI } from './ai/analysis.js';
 import { openChat, closeChat, sendChatMessage } from './ai/chat.js';
 import { setTool, toggleMagnet, syncToolbarUI, setSymbolChangeHandler,
   switchSymbol, confirmedDanger } from './ui/toolbar.js';
-import { loadWatchlist, highlightActiveWatchlist, setSwitchSymbolHandler } from './ui/watchlist.js';
+import { loadWatchlist, startWatchlistRefresh, stopWatchlistRefresh,
+  highlightActiveWatchlist, setSwitchSymbolHandler } from './ui/watchlist.js';
 import { toggleCommandPalette } from './ui/command_palette.js';
 import { bindHotkeys } from './ui/hotkeys.js';
 import { indMap, toggleIndicator } from './ui/indicators.js';
-import { openAlerts, closeAlerts, showAlertToast, createAlert } from './ui/alerts.js';
+import { showAlertToast, createAlert, loadAlerts, syncAlertLines } from './ui/alerts.js';
+import { initSettings } from './ui/settings.js';
+import { closeRightDock, toggleRightDock, isRightDockActive,
+  initRightDockResizer, loadObjectTree, scheduleObjectTreeRefresh }
+  from './ui/right_dock.js';
+import { initContextMenu } from './ui/context_menu.js';
 import { toggleNotes, openNotes, closeNotes, initNotesUI, onSymbolChanged } from './ui/notes.js';
-import { openNews, closeNews, loadNews, initNewsUI,
+import { openNews, initNewsUI,
   onSymbolChanged as onNewsSymbolChanged } from './ui/news.js';
 import { openJournal, closeJournal, initJournalUI } from './ui/journal.js';
-import { closeBacktest, openBacktest, runBacktest } from './backtest.js';
 import { openAiBacktest, closeAiBacktest, runAiBacktest, updateAiBacktestProgress,
   initAiBacktestSymbols, hideAiProbZones, setAiProbZonesRenderer,
   resetAiProbZones }
@@ -33,7 +38,7 @@ import { chart, candleSeries, container, setReplayBarrier } from './chart/setup.
 import { DrawingsManager } from './drawings/index.js';
 import { BacktestTradesRenderer } from './drawings/backtest_trades.js';
 import { TZ_LIST, tzOptionLabel, getActiveTzId, setActiveTzId,
-  initTimezone, activeOffsetSeconds } from './ui/timezone.js';
+  initTimezone, activeOffsetSeconds, formatInTz } from './ui/timezone.js';
 import { startCandleTimer } from './ui/candle_timer.js';
 import { updateLegend } from './ui/legend.js';
 
@@ -61,14 +66,22 @@ function _fmtTime(t, isUtc) {
     + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
 }
 
-/* Селект пояса + навешивание форматтеров на уже созданный chart. */
+/* Обновление видимых часов в выбранном часовом поясе. */
+function _updateTimezoneClock(timeEl) {
+  if (!timeEl) return;
+  timeEl.textContent = formatInTz(Math.floor(Date.now() / 1000), {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+}
+
+/* Селект пояса в правом нижнем углу + навешивание форматтеров на chart. */
 function initTimezoneUI() {
-  const sel = $('timezone-select');
-  if (!sel) return;
   initTimezone();
+  const sel = $('tz-clock-select');
+  if (!sel) return;
+  const timeEl = $('tz-clock-time');
   sel.innerHTML = '';
-  const local = new Option('Локальный (по системе)', 'local');
-  sel.appendChild(local);
+  sel.appendChild(new Option('Локальный (по системе)', 'local'));
   for (const tz of TZ_LIST) {
     sel.appendChild(new Option(tzOptionLabel(tz), tz.id));
   }
@@ -77,7 +90,11 @@ function initTimezoneUI() {
     setActiveTzId(sel.value);
     applyChartFormatters();
     updateLegend(null);
+    _updateTimezoneClock(timeEl);
   });
+  const updateClock = () => _updateTimezoneClock(timeEl);
+  updateClock();
+  setInterval(updateClock, 1000);
   applyChartFormatters();
 }
 
@@ -108,15 +125,10 @@ function _isOpen(id) {
 /* Синхронизация active-состояния toggle-кнопок с состоянием панелей. */
 function _syncPanelButtons() {
   const map = [
-    ['watchlist-toggle-btn', 'watchlist-panel'],
-    ['ai-toggle-btn', 'ai-panel'],
     ['chat-toggle-btn', 'chat-panel'],
-    ['alerts-toggle-btn', 'alerts-panel'],
-    ['backtest-btn', 'backtest-panel'],
     ['ai-backtest-btn', 'ai-backtest-panel'],
     ['scanner-btn', 'scanner-panel'],
     ['notes-btn', 'notes-panel'],
-    ['news-btn', 'news-panel'],
     ['journal-btn', 'journal-panel'],
     ['ai-data-toggle-btn', 'ai-data-panel'],
   ];
@@ -124,34 +136,41 @@ function _syncPanelButtons() {
     const btn = $(btnId);
     if (btn) btn.classList.toggle('panel-active', _isOpen(panelId));
   }
+  const quotesBtn = $('watchlist-toggle-btn');
+  const alertsBtn = $('alerts-toggle-btn');
+  const objectsBtn = $('objects-toggle-btn');
+  if (quotesBtn) quotesBtn.classList.toggle('panel-active', isRightDockActive('quotes'));
+  if (alertsBtn) alertsBtn.classList.toggle('panel-active', isRightDockActive('alerts'));
+  if (objectsBtn) objectsBtn.classList.toggle('panel-active', isRightDockActive('objects'));
 }
 
-/* Закрыть AI, Chat, Alerts, Backtest — открыта только одна правая панель. */
+/* Закрыть правые панели и правый dock. */
 function _closeAllRightPanels() {
   const ai = $('ai-panel');
   if (ai) ai.style.display = 'none';
+  closeRightDock();
+  stopWatchlistRefresh();
   closeChat();
-  closeAlerts();
-  closeBacktest();
   closeAiBacktest();
   closeScanner();
   closeNotes();
-  closeNews();
   closeJournal();
   closeAiDataPanel();
 }
 
 function toggleWatchlistPanel() {
-  const panel = $('watchlist-panel');
-  if (!panel) return;
-  panel.style.display = _isOpen('watchlist-panel') ? 'none' : 'block';
-}
-
-function toggleAIPanel() {
-  if (_isOpen('ai-panel')) {
-    $('ai-panel').style.display = 'none';
+  if (isRightDockActive('quotes')) {
+    closeRightDock();
+    stopWatchlistRefresh();
     return;
   }
+  _closeAllRightPanels();
+  toggleRightDock('quotes');
+  startWatchlistRefresh();
+  openNews();
+}
+
+function openAIAnalysisPanel() {
   _closeAllRightPanels();
   const panel = $('ai-panel');
   if (panel) panel.style.display = 'flex';
@@ -164,15 +183,21 @@ function toggleChatPanel() {
 }
 
 function toggleAlertsPanel() {
-  if (_isOpen('alerts-panel')) { closeAlerts(); return; }
+  if (isRightDockActive('alerts')) {
+    closeRightDock();
+    return;
+  }
   _closeAllRightPanels();
-  openAlerts();
+  toggleRightDock('alerts');
 }
 
-function toggleBacktestPanel() {
-  if (_isOpen('backtest-panel')) { closeBacktest(); return; }
+function toggleObjectsPanel() {
+  if (isRightDockActive('objects')) {
+    closeRightDock();
+    return;
+  }
   _closeAllRightPanels();
-  openBacktest();
+  toggleRightDock('objects');
 }
 
 function toggleAiBacktestPanel() {
@@ -191,12 +216,6 @@ function toggleNotesPanel() {
   if (_isOpen('notes-panel')) { closeNotes(); return; }
   _closeAllRightPanels();
   openNotes();
-}
-
-function toggleNewsPanel() {
-  if (_isOpen('news-panel')) { closeNews(); return; }
-  _closeAllRightPanels();
-  openNews();
 }
 
 function toggleJournalPanel() {
@@ -222,7 +241,10 @@ export function initDrawingsManager() {
   const dm = new DrawingsManager({
     chart, series: candleSeries, container,
     candlesRef: () => state.activeCandles,
-    onChanged: updateAiDrawingsUI,
+    onChanged: () => {
+      updateAiDrawingsUI();
+      scheduleObjectTreeRefresh();
+    },
     onHistoryChange: syncHistoryButtons,
     symbol: state.symbol, timeframe: state.timeframe,
   });
@@ -272,6 +294,7 @@ export function onSymbolOrTfChange() {
   showChartLoading();
   state.symbol = newSym;
   state.timeframe = newTf;
+  syncAlertLines();
   highlightActiveWatchlist(state.symbol);
   state.candles = [];
   state.ind = null;
@@ -289,6 +312,7 @@ export function onSymbolOrTfChange() {
 }
 
 export function initUI() {
+  $('watchlist-refresh-btn')?.addEventListener('click', loadWatchlist);
   /* SSE-прогресс сканера: integration/sse.js дергает window.__scanProgress
      (формат события scan_progress: {run_id, done, total, current}). */
   window.__scanProgress = updateScanProgress;
@@ -377,7 +401,11 @@ export function initUI() {
     const cb = $(key);
     if (cb) cb.addEventListener('change', (e) => toggleIndicator(indMap[key], e.target.checked));
   }
-  const aiBtn = $('ai-analysis-btn'); if (aiBtn) aiBtn.addEventListener('click', runAIAnalysis);
+  const aiBtn = $('ai-analysis-btn');
+  if (aiBtn) aiBtn.addEventListener('click', () => {
+    openAIAnalysisPanel();
+    runAIAnalysis();
+  });
   const aiRef = $('ai-refresh-btn'); if (aiRef) aiRef.addEventListener('click', runAIAnalysis);
   const chatBtn = $('chat-toggle-btn');
   if (chatBtn) chatBtn.addEventListener('click', toggleChatPanel);
@@ -389,8 +417,8 @@ export function initUI() {
   });
   const alBtn = $('alerts-toggle-btn');
   if (alBtn) alBtn.addEventListener('click', toggleAlertsPanel);
-  const alClose = $('alerts-close-btn');
-  if (alClose) alClose.addEventListener('click', closeAlerts);
+  const objectsBtn = $('objects-toggle-btn');
+  if (objectsBtn) objectsBtn.addEventListener('click', toggleObjectsPanel);
   const alChan = $('alert-channel');
   if (alChan) alChan.addEventListener('change', () => {
     const dest = $('alert-destination');
@@ -398,12 +426,15 @@ export function initUI() {
   });
   const alCreate = $('alert-create-btn');
   if (alCreate) alCreate.addEventListener('click', createAlert);
-  const btBtn = $('backtest-btn');
-  if (btBtn) btBtn.addEventListener('click', toggleBacktestPanel);
-  const btClose = $('bt-close-btn');
-  if (btClose) btClose.addEventListener('click', closeBacktest);
-  const btRun = $('bt-run-btn');
-  if (btRun) btRun.addEventListener('click', runBacktest);
+  const rightClose = $('right-dock-close-btn');
+  if (rightClose) rightClose.addEventListener('click', () => {
+    closeRightDock();
+    stopWatchlistRefresh();
+  });
+  initRightDockResizer();
+  initContextMenu();
+  const objectsRefresh = $('objects-refresh-btn');
+  if (objectsRefresh) objectsRefresh.addEventListener('click', loadObjectTree);
   initAiBacktestSymbols();
   const aibtBtn = $('ai-backtest-btn');
   if (aibtBtn) aibtBtn.addEventListener('click', toggleAiBacktestPanel);
@@ -439,36 +470,18 @@ export function initUI() {
   if (ntBtn) ntBtn.addEventListener('click', toggleNotesPanel);
   const ntClose = $('notes-close-btn');
   if (ntClose) ntClose.addEventListener('click', closeNotes);
-  const nwBtn = $('news-btn');
-  if (nwBtn) nwBtn.addEventListener('click', toggleNewsPanel);
-  const nwClose = $('news-close-btn');
-  if (nwClose) nwClose.addEventListener('click', closeNews);
-  const nwRefresh = $('news-refresh-btn');
-  if (nwRefresh) nwRefresh.addEventListener('click', () => loadNews(true));
   const aiddBtn = $('ai-data-toggle-btn');
   if (aiddBtn) aiddBtn.addEventListener('click', toggleAiDataPanel);
   const jrClose = $('journal-close-btn');
   if (jrClose) jrClose.addEventListener('click', closeJournal);
   const jrBtn = $('journal-btn');
   if (jrBtn) jrBtn.addEventListener('click', toggleJournalPanel);
-  const clr = $('clear-btn');
-  if (clr) clr.addEventListener('click', () => {
-    if (state.dm && confirmedDanger('Удалить все рисунки?')) state.dm.clearAll();
-  });
   const uBtn = $('undo-btn');
   const rBtn = $('redo-btn');
   if (uBtn) uBtn.addEventListener('click', () => { if (state.dm) state.dm.undo(); });
   if (rBtn) rBtn.addEventListener('click', () => { if (state.dm) state.dm.redo(); });
-  const eraseAi = $('erase-ai-btn');
-  if (eraseAi) eraseAi.addEventListener('click', () => {
-    if (state.dm && confirmedDanger('Стереть рисунки AI?')) state.dm.eraseAI();
-  });
-  const exp = $('export-btn');
-  if (exp) exp.addEventListener('click', () => { if (state.dm) state.dm.exportJSON(); });
-  const imp = $('import-btn');
   const impFile = $('import-file');
-  if (imp && impFile) {
-    imp.addEventListener('click', () => impFile.click());
+  if (impFile) {
     impFile.addEventListener('change', (e) => {
       const f = e.target.files && e.target.files[0];
       if (f && state.dm) state.dm.importJSON(f);
@@ -479,15 +492,13 @@ export function initUI() {
   if (cmdBtn) cmdBtn.addEventListener('click', toggleCommandPalette);
   const wlBtn = $('watchlist-toggle-btn');
   if (wlBtn) wlBtn.addEventListener('click', toggleWatchlistPanel);
-  const aiPnlBtn = $('ai-toggle-btn');
-  if (aiPnlBtn) aiPnlBtn.addEventListener('click', toggleAIPanel);
   /* Кнопки panel-active синхронизируются с любым изменением style панелей
      (покрывает и command palette, и ✕-кнопки внутри панелей). */
   const panelObserver = new MutationObserver(_syncPanelButtons);
   for (const id of ['watchlist-panel', 'ai-panel', 'chat-panel',
-                    'alerts-panel', 'backtest-panel', 'ai-backtest-panel',
-                    'scanner-panel', 'notes-panel', 'news-panel',
-                    'journal-panel']) {
+                    'ai-backtest-panel', 'scanner-panel',
+                    'notes-panel', 'journal-panel',
+                    'right-dock', 'objects-panel', 'alerts-panel']) {
     const p = $(id);
     if (p) panelObserver.observe(p, { attributes: true, attributeFilter: ['style'] });
   }
@@ -497,11 +508,13 @@ export function initUI() {
   bindHotkeys();
   initNotesUI();
   initNewsUI();
+  void loadAlerts();
   initJournalUI();
   initAiDataUI();
   initCharonUI();
   initReplayBarrierDrag();
   initTimezoneUI();
+  initSettings();
   startCandleTimer();
   setTool('cursor');
   syncToolbarUI();

@@ -3,7 +3,7 @@ export const COLORS = {
   text: '#d1d4dc', up: '#26a69a', down: '#ef5350',
   sma: '#2196f3', ema: '#ff9800',
   bbUp: '#7e57c2', bbMid: '#7e57c2', bbLow: '#7e57c2',
-  rsi: '#ab47bc', macd: '#42a5f5', macdSignal: '#ffa726',
+  rsi: '#ab47bc', macd: '#2962ff', macdSignal: '#ff9800',
 };
 
 export const HISTORY_LIMIT = {

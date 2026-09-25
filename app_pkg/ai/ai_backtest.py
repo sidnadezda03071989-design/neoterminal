@@ -53,6 +53,9 @@ _RUNS_MAX = 50
 
 # Сколько уровней запрашиваем/принимаем в каждую сторону (UP/DOWN).
 PROB_LEVELS_MAX = 5
+PROB_LEVELS_MIN = 2
+PROB_LEVELS_MAX_DISTANCE_ATR = 1.5
+PROB_LEVELS_FILL_STEPS_ATR = (0.75, 1.5, 0.35, 1.15, 0.25, 1.25, 0.5, 1.0)
 
 # ---------------------------------------------- токен-диета: вердикты (v3)
 # LEGACY (LLM REMOVED): ключи ниже сохранены, т.к. _llm_request/_llm_verdict
@@ -80,14 +83,12 @@ def get_run(run_id):
     return dict(_RUNS.get(run_id) or {})
 
 
-def start_run(run_id, symbol, timeframe, upto_sec=None, mode="live",
-              model=None):
-    """Сеет запись прогона ДО старта фонового потока: GET <run_id> сразу
-    отвечает status='running', а не 404 (гонка с потоком в routes)."""
+def start_run(run_id, symbol, timeframe, upto_sec=None, mode="live"):
+    """Seed a run record before the background local calculation starts."""
     _RUNS[run_id] = {
         "run_id": run_id, "status": "running", "done": 0, "total": 1,
         "upto_sec": upto_sec, "mode": mode, "levels": [], "error": None,
-        "symbol": symbol, "timeframe": timeframe, "model": model,
+        "symbol": symbol, "timeframe": timeframe,
     }
     _prune_runs()
 
@@ -355,6 +356,70 @@ def _blend_levels(struct, llm, current_price):
     return (ups[:PROB_LEVELS_MAX] + downs[:PROB_LEVELS_MAX])
 
 
+class _LevelsWithBarriers(list):
+    """Уровни + адаптивные барьеры в одном list-совместимом контейнере.
+
+    Подкласс list: jsonify/json.dumps/сравнения работают как с обычным
+    списком, а _barriers/_signal — транспорт до run_ai_backtest без
+    изменения сигнатуры levels_for_slice (3-tuple сохраняется для тестов).
+    """
+
+    def __init__(self, items, barriers, signal=None):
+        super().__init__(items)
+        self._barriers = barriers
+        self._signal = signal
+
+
+def _barriers_from_raw(raw):
+    """Адаптивные барьеры из ответа вердикта ({tp_price, sl_price, ...}) или None."""
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    barriers = parsed.get("barriers") or None
+    return barriers if isinstance(barriers, dict) else None
+
+
+_SIG_WORDS = {
+    "L": "LONG", "S": "SHORT", "F": "FLAT",
+    "BUY": "LONG", "SELL": "SHORT", "HOLD": "FLAT", "WAIT": "FLAT",
+}
+
+
+def _signal_from_raw(raw):
+    """Детерминированный сигнал Charon {sig,pu,pd,pf,fired,tg,barriers}.
+
+    sig — словом (LONG/SHORT/FLAT), как ждёт панель (сигнатурный бокс и
+    data.signal.barriers во фронтенде). None, если вердикт не распознан.
+    """
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    key = str(parsed.get("sig") or parsed.get("signal") or "").strip().upper()
+    word = _SIG_WORDS.get(key)
+    if word is None:
+        word = key if key in ("LONG", "SHORT", "FLAT") else None
+    if word is None:
+        return None
+    fired = parsed.get("fired")
+    tg = parsed.get("targets") or parsed.get("tg")
+    barrier = parsed.get("barriers")
+    return {
+        "sig": word,
+        "pu": _clamp_prob(parsed.get("pu")),
+        "pd": _clamp_prob(parsed.get("pd")),
+        "pf": _clamp_prob(parsed.get("pf")),
+        "fired": fired if isinstance(fired, list) else [],
+        "tg": tg if isinstance(tg, list) else [],
+        "barriers": barrier if isinstance(barrier, dict) else None,
+    }
+
+
 def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
                      current_price=None):
     """Один запрос к LLM -> (уровни, цена среза, текст ошибки).
@@ -400,6 +465,8 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
     if not raw:
         return [], current_price, ("LLM не вернула ответ (все провайдеры "
                                    "цепочки недоступны — проверьте ключи/лимиты)")
+    barriers = _barriers_from_raw(raw)
+    signal = _signal_from_raw(raw)
     struct = _structure_levels(symbol, timeframe, upto_sec, current_price)
     ts = upto_sec if upto_sec is not None else int(utils.now_sec())
     source = "backtest" if upto_sec is not None else "live"
@@ -417,6 +484,8 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
             chosen = struct if struct else []
             if chosen:
                 chosen = filter_levels(chosen, snapshot)
+            if barriers is not None or signal is not None:
+                chosen = _LevelsWithBarriers(chosen, barriers, signal)
             _cbr_store_snapshot(
                 symbol, timeframe, ts, snapshot, verdict=verdict,
                 levels=chosen, price=current_price, source=source)
@@ -429,6 +498,8 @@ def levels_for_slice(symbol, timeframe, upto_sec=None, model=None,
     # Детерминированный пост-фильтр: MTF/ADX/VWAP+OBV правила поверх
     # вероятностей уровней (тот же compact_snapshot, что ушёл в промпт).
     levels = filter_levels(levels, snapshot)
+    if barriers is not None or signal is not None:
+        levels = _LevelsWithBarriers(levels, barriers, signal)
     _cbr_store_snapshot(
         symbol, timeframe, ts, snapshot, levels=levels, price=current_price,
         source=source)
@@ -505,13 +576,16 @@ def _llm_request(system, messages, model=None, purpose=None, max_tokens=None,
                 break
     if snap is None:
         return None
-    verdict = _verdict_from_obj(apply_all_rules(snap))
+    obj = apply_all_rules(snap)
+    verdict = _verdict_from_obj(obj)
     if verdict is None:
         return None
     return json.dumps(
         {"sig": verdict.get("sig"), "pu": verdict.get("pu"),
          "pd": verdict.get("pd"), "pf": verdict.get("pf"),
-         "targets": verdict.get("tg") or []},
+         "targets": verdict.get("tg") or [],
+         "fired": obj.get("fired") or [],
+         "barriers": obj.get("barriers")},
         ensure_ascii=False, separators=(",", ":"))
 
 
@@ -560,25 +634,21 @@ def _slice_price(symbol, timeframe, upto_sec=None):
 
 
 def direction_probability(levels):
-    """Вероятности простого ЛОНГ/ШОРТ по уровням (после filter_levels).
-
-    ЛОНГ = сумма вероятностей UP-уровней, ШОРТ = сумма DOWN. Каждая сторона
-    не выше 1.0; если лонг + шорт > 1.0 — нормируем на сумму (гарантия
-    «общая вероятность не больше 100%»), иначе оставляем как есть (остаток
-    до 100% — «без сделки»). Вероятности уровней уже прошли filter_levels
-    (MTF/ADX/VWAP+OBV), поэтому результат объединяет и уровни, и метрики
-    снимка. Пустой список -> {long:0, short:0}.
-    """
+    """Aggregate calibrated level probabilities into the legacy direction shape."""
     long_p = short_p = 0.0
     for lv in levels or []:
         if not isinstance(lv, dict):
             continue
         side = str(lv.get("side") or "").upper()
+        raw = lv.get("calibrated_prob")
+        if raw is None:
+            raw = lv.get("probability")
+        if raw is None:
+            raw = lv.get("prob")
         try:
-            prob = float(lv.get("probability") or 0.0)
+            prob = _clamp_prob(raw)
         except (TypeError, ValueError):
             continue
-        prob = min(1.0, max(0.0, prob))
         if side == "UP":
             long_p += prob
         elif side == "DOWN":
@@ -590,32 +660,233 @@ def direction_probability(levels):
         scale = 1.0 / total
         long_p *= scale
         short_p *= scale
-    return {"long": round(long_p, 4), "short": round(short_p, 4)}
+    return {
+        "long": round(long_p, 4),
+        "short": round(short_p, 4),
+        "flat": round(max(0.0, 1.0 - long_p - short_p), 4),
+    }
+
+
+def _snapshot_close(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    tick = snapshot.get("t")
+    if isinstance(tick, dict):
+        for key in ("close", "current_close", "price"):
+            value = utils._clean(tick.get(key))
+            if value is not None:
+                return value
+    for key in ("current_close", "close", "price"):
+        value = utils._clean(snapshot.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _snapshot_atr(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    tick = snapshot.get("t")
+    if not isinstance(tick, dict):
+        return None
+    atr = utils._clean(tick.get("atr"))
+    return atr if atr is not None and atr > 0 else None
+
+
+def _level_unit(snapshot, current_price):
+    if current_price is None or current_price <= 0:
+        return None
+    atr = _snapshot_atr(snapshot)
+    if atr is not None:
+        return min(atr, current_price * 0.01)
+    return current_price * 0.005
+
+
+def _fill_local_levels(levels, current_price, unit):
+    if current_price is None or current_price <= 0 or unit is None:
+        return levels
+    tolerance = max(unit * 0.05, current_price * 0.0005)
+    result = list(levels)
+    for side, sign, level_type in (
+        ("UP", 1.0, "STRUCT_HIGH"),
+        ("DOWN", -1.0, "STRUCT_LOW"),
+    ):
+        side_levels = [lv for lv in result if lv.get("side") == side]
+        for step in PROB_LEVELS_FILL_STEPS_ATR:
+            if len(side_levels) >= PROB_LEVELS_MIN:
+                break
+            price = round(current_price + sign * step * unit, 8)
+            if price <= 0 or any(
+                abs(price - lv["price"]) <= tolerance for lv in side_levels
+            ):
+                continue
+            base_prob = max(
+                (lv.get("probability", 0.25) for lv in side_levels),
+                default=0.25,
+            )
+            prob = round(max(0.15, min(0.50, base_prob * (
+                1.0 if step <= 0.75 else 0.85))), 4)
+            level = {
+                "price": price,
+                "side": side,
+                "probability": prob,
+                "type": level_type,
+                "calibrated_prob": prob,
+                "calibration_samples": 0,
+                "calibration_min_samples": 50,
+                "horizon_bars": 20,
+                "diff": round(price - current_price, 8),
+                "diff_pct": round((price - current_price) / current_price * 100.0, 4),
+            }
+            result.append(level)
+            side_levels.append(level)
+    return result
+
+
+def _local_levels(snapshot, rules_result, current_price):
+    source = None
+    if isinstance(rules_result, dict):
+        source = rules_result.get("levels")
+        if not isinstance(source, (list, dict)) or not source:
+            tg = rules_result.get("tg")
+            if isinstance(tg, (list, dict)) and tg:
+                source = tg
+    elif isinstance(rules_result, list):
+        source = rules_result
+    if not source and isinstance(snapshot, dict):
+        source = snapshot.get("levels")
+        if not isinstance(source, (list, dict)) or not source:
+            source = snapshot.get("tg")
+    if isinstance(source, dict):
+        expanded = []
+        for side, values in source.items():
+            if isinstance(values, (list, tuple)):
+                for value in values:
+                    if isinstance(value, dict):
+                        item = dict(value)
+                        item.setdefault("side", side)
+                        expanded.append(item)
+            elif isinstance(values, dict):
+                item = dict(values)
+                item.setdefault("side", side)
+                expanded.append(item)
+        source = expanded
+    if not isinstance(source, list):
+        source = []
+
+    normalized = []
+    for raw in source:
+        if isinstance(raw, dict):
+            item = dict(raw)
+        elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            item = {"price": raw[0], "probability": raw[1]}
+        else:
+            continue
+        price = utils._clean(item.get("price"))
+        if price is None or price <= 0:
+            continue
+        side = _normalize_side(item.get("side"))
+        if side not in ("UP", "DOWN"):
+            type_text = str(item.get("type") or item.get("level_type") or "").upper()
+            if "UP" in type_text or "RESIST" in type_text:
+                side = "UP"
+            elif "DOWN" in type_text or "SUPPORT" in type_text:
+                side = "DOWN"
+            elif current_price is not None:
+                side = "UP" if price > current_price else "DOWN"
+        if side not in ("UP", "DOWN"):
+            continue
+        raw_prob = None
+        for key in ("calibrated_prob", "probability", "prob"):
+            if item.get(key) is not None:
+                raw_prob = item.get(key)
+                break
+        if raw_prob is None:
+            continue
+        prob = _clamp_prob(raw_prob)
+        level_type = item.get("type") or item.get("level_type") or side
+        level = {
+            "price": round(price, 8),
+            "side": side,
+            "probability": round(prob, 8),
+            "type": str(level_type),
+            "calibrated_prob": round(prob, 8),
+        }
+        raw_value = utils._clean(item.get("raw_prob"))
+        if raw_value is not None:
+            level["raw_prob"] = round(_clamp_prob(raw_value), 8)
+        for key in ("calibration_samples", "calibration_min_samples",
+                    "calibration_status", "horizon_bars"):
+            value = item.get(key)
+            if value is not None:
+                level[key] = value
+        if current_price is not None:
+            level["diff"] = round(price - current_price, 8)
+            if current_price:
+                level["diff_pct"] = round(
+                    (price - current_price) / current_price * 100.0, 4)
+        normalized.append(level)
+
+    unit = _level_unit(snapshot, current_price)
+    if current_price is not None and current_price > 0 and unit:
+        tolerance = max(unit * 0.05, current_price * 0.0005)
+        max_distance = unit * PROB_LEVELS_MAX_DISTANCE_ATR
+
+        normalized = [
+            lv for lv in normalized
+            if ((lv["side"] == "UP" and lv["price"] > current_price)
+                or (lv["side"] == "DOWN" and lv["price"] < current_price))
+            and abs(lv["price"] - current_price) <= max_distance + tolerance
+        ]
+    normalized = _fill_local_levels(normalized, current_price, unit)
+    normalized = _dedupe_levels(normalized)
+    ups = sorted((lv for lv in normalized if lv["side"] == "UP"),
+                 key=lambda lv: lv["price"])
+    downs = sorted((lv for lv in normalized if lv["side"] == "DOWN"),
+                   key=lambda lv: -lv["price"])
+    return ups[:PROB_LEVELS_MAX] + downs[:PROB_LEVELS_MAX]
 
 
 def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
-                    model=None, run_id=None):
-    """Расчёт уровней вероятностей для ТЕКУЩЕГО среза данных.
-
-    Возвращает полный результат (dict) со списком levels и сводкой
-    direction ({long, short} — вероятности простого ЛОНГ/ШОРТ). Никаких
-    сделок и метрик стратегии — только уровни и вероятности (панель-
-    помощник).
-    """
+                    run_id=None):
+    """Run the local snapshot/rules engine and return calibrated levels."""
     run_id = run_id or uuid.uuid4().hex
     started = utils.now_sec()
-    _RUNS[run_id] = {"run_id": run_id, "status": "running", "done": 0,
-                     "total": 1, "levels": [], "error": None,
-                     "symbol": symbol, "timeframe": timeframe,
-                     "upto_sec": upto_sec, "mode": mode, "model": model}
+    _RUNS[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "done": 0,
+        "total": 1,
+        "levels": [],
+        "error": None,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "upto_sec": upto_sec,
+        "mode": mode,
+    }
     _push_progress(run_id, 0, 1, upto_sec=upto_sec, levels=0)
 
-    levels, price, error = levels_for_slice(symbol, timeframe,
-                                            upto_sec=upto_sec, model=model)
+    levels = []
+    price = None
+    error = None
+    snapshot = None
+    try:
+        snapshot = compact_snapshot(
+            symbol, timeframe, upto_sec=upto_sec, rules_only=True)
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError("local snapshot is empty")
+        price = _snapshot_close(snapshot)
+        rules_result = apply_all_rules(snapshot)
+        if not isinstance(rules_result, (dict, list)):
+            raise TypeError("local rules returned an invalid result")
+        levels = _local_levels(snapshot, rules_result, price)
+        _cbr_store_snapshot(
+            symbol, timeframe, int(utils.now_sec()), snapshot,
+            levels=levels, price=price, source="local_engine")
+    except Exception as exc:
+        error = f"Ошибка локального движка: {exc}"
+        log.exception("ai_backtest local engine failed")
 
-    elapsed = round(utils.now_sec() - started, 2)
-    # Вероятность простого ЛОНГ/ШОРТ: агрегат вероятностей уровней каждой
-    # стороны (уровни уже прошли filter_levels с метриками MTF/ADX/VWAP+OBV).
     direction = direction_probability(levels)
     result = {
         "run_id": run_id,
@@ -627,20 +898,14 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
         "price": round(price, 8) if price is not None else None,
         "levels": levels,
         "direction": direction,
-        "model": model,
         "error": error,
-        "elapsed_seconds": elapsed,
+        "elapsed_seconds": round(utils.now_sec() - started, 2),
         "created_at": utils.now_iso(),
     }
-    if not levels and not error:
-        # Пусто без ошибки = валидный вердикт «рынок плоский». Не ошибка —
-        # поясняем нейтральной заметкой вместо красного ⚠.
-        result["notice"] = ("Уровней не найдено: рынок без явной сделки "
-                            "(сигнал FLAT) — уровни не рисуем")
     try:
         db.db_save_ai_backtest(
             run_id, symbol, timeframe,
-            {"mode": mode, "upto_sec": upto_sec, "model": model,
+            {"mode": mode, "upto_sec": upto_sec,
              "price": result["price"]},
             {"direction": direction}, levels, [])
     except Exception:
@@ -651,27 +916,30 @@ def run_ai_backtest(symbol, timeframe, upto_sec=None, mode="live",
     _push_progress(run_id, 1, 1, upto_sec=upto_sec, levels=len(levels),
                    finished=True, error=error)
     log.info("ai_backtest %s done: %d levels, %.2fs", run_id[:8],
-             len(levels), elapsed)
+             len(levels), result["elapsed_seconds"])
     return result
 
 
 def run_ai_backtest_async(symbol, timeframe, upto_sec=None, mode="live",
-                          model=None, run_id=None):
-    """Запуск в фоновом потоке: роут отвечает сразу, клиент опрашивает GET."""
+                          run_id=None):
+    """Run the local calculation in a background thread for legacy callers."""
     run_id = run_id or uuid.uuid4().hex
-    start_run(run_id, symbol, timeframe, upto_sec=upto_sec, mode=mode,
-              model=model)
+    start_run(run_id, symbol, timeframe, upto_sec=upto_sec, mode=mode)
 
     def _bg():
         try:
             run_ai_backtest(symbol, timeframe, upto_sec=upto_sec, mode=mode,
-                            model=model, run_id=run_id)
+                            run_id=run_id)
         except Exception:
             log.exception("ai_backtest %s failed", run_id[:8])
-            _RUNS[run_id] = {"run_id": run_id, "status": "finished",
-                             "error": "Внутренняя ошибка расчёта уровней",
-                             "levels": [], "symbol": symbol,
-                             "timeframe": timeframe}
+            _RUNS[run_id] = {
+                "run_id": run_id,
+                "status": "finished",
+                "error": "Внутренняя ошибка расчёта уровней",
+                "levels": [],
+                "symbol": symbol,
+                "timeframe": timeframe,
+            }
             _push_progress(run_id, 1, 1, upto_sec=upto_sec, levels=0,
                            finished=True,
                            error="Внутренняя ошибка расчёта уровней")

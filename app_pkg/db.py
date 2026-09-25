@@ -839,5 +839,7 @@ def db_get_ai_backtest(run_id):
     # Детерминированный вердикт Charon (pu/pd/sig/fired) — единая функция
     # с AI Backtest, сохраняется в metrics (новые прогоны).
     d["signal"] = (d.get("metrics") or {}).get("signal")
+    # Адаптивные барьеры TP/SL из metrics (новые прогоны).
+    d["barriers"] = (d.get("metrics") or {}).get("barriers")
     d.setdefault("status", "finished")
     return d

@@ -1,4 +1,4 @@
-/* Часовые пояса как в TradingView: фиксированный список «город (UTC±X)»,
+/* Часовые пояса: фиксированный список «город (UTC±X)»,
    у каждого — стабильный id и смещение в секундах (без учёта DST, как и
    uvOffset в LWC). Лениво резолвим IANA-имя через Intl, чтобы не тащить
    тяжёлую таблицу городов и не спорить с летним временем. */
@@ -111,11 +111,19 @@ export function initTimezone() {
 /* Формат времени для легенды/реплея в АКТИВНОМ поясе. */
 export function formatInTz(epochSec, opts) {
   const tz = getActiveTz();
-  const o = Object.assign({
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  }, opts || {});
+  const timeOnly = !!opts && (
+    opts.hour != null || opts.minute != null || opts.second != null
+  ) && opts.year == null && opts.month == null && opts.day == null;
+  const o = timeOnly
+    ? Object.assign({
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      }, opts)
+    : Object.assign({
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      }, opts || {});
   const d = new Date((epochSec || 0) * 1000);
   if (tz) {
     try { return new Intl.DateTimeFormat('ru-RU', Object.assign({ timeZone: tz.id }, o)).format(d); }

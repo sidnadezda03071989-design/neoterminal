@@ -1,5 +1,8 @@
 import { state } from '../state.js';
 import { setAllData } from '../chart/series.js';
+import { updatePaneVisibility } from '../chart/setup.js';
+
+const $ = (id) => document.getElementById(id);
 
 export const indMap = {
   'ind-sma':'sma', 'ind-ema':'ema', 'ind-bb':'bb', 'ind-volume':'volume',
@@ -19,4 +22,19 @@ export function toggleIndicator(name, visible) {
   const ind = {};
   for (const k of Object.keys(state.ind)) ind[k] = (state.ind[k] || []).slice(0, n);
   setAllData(candles, ind);
+}
+
+export function clearIndicators() {
+  for (const name of Object.keys(state.indicators)) {
+    state.indicators[name] = false;
+  }
+  for (const id of Object.keys(indMap)) {
+    const checkbox = $(id);
+    if (checkbox) checkbox.checked = false;
+  }
+  if (state.candles && state.candles.length && state.ind) {
+    setAllData(state.candles, state.ind);
+  } else {
+    updatePaneVisibility();
+  }
 }

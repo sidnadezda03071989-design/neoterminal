@@ -201,10 +201,18 @@ function _applyResult(data) {
   // тот же источник, что и линии на графике (единый набор).
   if (state.aiProbRenderer) {
     state.aiProbRenderer.enableTpsl = _tpslEnabled();
-    state.aiProbRenderer.render(data, _anchorForUpto(upto));
+    const barriers = (data && data.signal && data.signal.barriers)
+      || (data && data.barriers) || null;
+    const anchor = _anchorForUpto(upto);
+    const responsePrice = Number(data && data.price);
+    if (anchor && Number.isFinite(responsePrice) && responsePrice > 0) {
+      anchor.price = responsePrice;
+    }
+    state.aiProbRenderer.render(data, anchor, barriers);
   }
   _renderSignalVerdict(data && data.signal);
-  _renderLevels(levels, data && data.error, data && data.notice);
+  _renderLevels(levels, data && data.error, data && data.notice,
+    data && data.direction);
   // Причину отказа показываем явно (квота/rate limit/нет JSON) — «уровни не
   // получены» без деталей бесполезно.
   if (data && data.error) _showError(data.error);
@@ -239,7 +247,7 @@ function _renderSignalVerdict(signal) {
    notice — нейтральное пояснение (напр. «рынок плоский») без красного ⚠.
    Источник — зафиксированные на графике уровни (renderer.levels: ближние
    уже сдвинуты на 0.5·ATR), чтобы панель и график не расходились. */
-function _renderLevels(levels, error, notice) {
+function _renderLevels(levels, error, notice, direction) {
   const box = $('aibt-levels');
   if (!box) return;
   box.innerHTML = '';
@@ -252,6 +260,7 @@ function _renderLevels(levels, error, notice) {
     else if (notice) empty.textContent = notice;
     else empty.textContent = 'Уровни не получены';
     box.appendChild(empty);
+    _renderDirection(box, direction);
     return;
   }
   const sorted = [...disp]
@@ -278,24 +287,27 @@ function _renderLevels(levels, error, notice) {
     row.append(left, right);
     box.appendChild(row);
   }
-  _renderDirection(box);
+  _renderDirection(box, direction);
   _renderTpslSummary(box);
 }
 
-/* Сводка вероятностей простого ЛОНГ/ШОРТ/ФЛЭТ в панели: читает
-   renderer.direction (тот же источник, что и пилюли на графике).
-   Сумма long+short+flat не превышает 100%. ФЛЭТ — посередине.
-   Если direction нет, показываем 33/33/34 по дефолту. */
-function _renderDirection(box) {
+/* Сводка вероятностей простого ЛОНГ/ШОРТ/ФЛЭТ в панели. */
+function _renderDirection(box, fallbackDirection) {
   const r = state.aiProbRenderer;
-  const dir = r && r.direction;
-  // Если direction не задан — по дефолту равномерное распределение
-  const d = dir || { long: 0.33, short: 0.33, flat: 0.34 };
-  const longP = Number(d.long);
-  const shortP = Number(d.short);
-  const flatP = Number(d.flat);
+  const d = (r && r.direction) || fallbackDirection;
+  let longP = d ? Number(d.long) : 0;
+  let shortP = d ? Number(d.short) : 0;
+  if (longP > 1) longP /= 100;
+  if (shortP > 1) shortP /= 100;
   if (!Number.isFinite(longP) || !Number.isFinite(shortP)) return;
-  if (longP <= 0 && shortP <= 0 && flatP <= 0) return;
+  longP = Math.max(0, Math.min(1, longP));
+  shortP = Math.max(0, Math.min(1, shortP));
+  const total = longP + shortP;
+  if (total > 1) {
+    longP /= total;
+    shortP /= total;
+  }
+  const flatP = Math.max(0, 1 - longP - shortP);
   const longLbl = 'ЛОНГ ' + (longP * 100).toFixed(0) + '%';
   const flatLbl = 'ФЛЭТ ' + (flatP * 100).toFixed(0) + '%';
   const shortLbl = 'ШОРТ ' + (shortP * 100).toFixed(0) + '%';

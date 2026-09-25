@@ -1,18 +1,17 @@
-/* Таймер до закрытия свечи — как в TradingView.
+/* Таймер до закрытия свечи в нижнем таймере.
    Тикает локально раз в секунду (без сети): берёт время последней свечи
    из state.candles и длительность ТФ из config.TF_SECONDS.
-   Дополнительно рисует мини-таймер на правой ценовой шкале У текущей цены
-   (#price-timer): позиция по candleSeries.priceToCoordinate(close) каждый
-   кадр (rAF) — чтобы держаться при броссе/зуме ценовой шкалы. */
+   Отображается только мини-таймер на правой ценовой шкале (#price-timer):
+   позиция обновляется по candleSeries.priceToCoordinate(close) каждый кадр. */
 
 import { state } from '../state.js';
 import { TF_SECONDS } from '../config.js';
-import { formatInTz, activeOffsetSeconds, getActiveTz } from './timezone.js';
 import { candleSeries, container } from '../chart/setup.js';
 
 const $ = (id) => document.getElementById(id);
 // #price-timer лежит в .chart-wrap (position:relative); #chart-container —
-// absolute inset:0, поэтому координата pane-y (цена) == top в chart-wrap.
+// absolute внутри него (справа оставлена полоса кнопок), поэтому
+// координата pane-y (цена) по-прежнему совпадает с top в chart-wrap.
 const _wrap = $('chart-wrap') || container;
 
 let _timer = null;
@@ -53,46 +52,28 @@ export function barCloseTime(barTime) {
 }
 
 function _tick() {
-  const el = $('candle-timer');
-  if (!el) return;
   const act = state.activeCandles && state.activeCandles.length
     ? state.activeCandles
     : state.candles;
   if (!act || !act.length || state.mode !== 'live') {
-    el.textContent = '';
-    el.style.display = 'none';
     _lastLeft = null;
     return;
   }
   const last = act[act.length - 1];
+  if (!last || !Number.isFinite(Number(last.time))) {
+    _lastLeft = null;
+    return;
+  }
   const nowSec = _nowSec();
-  const close = barCloseTime(last.time);
+  const close = barCloseTime(Number(last.time));
   const left = close - nowSec;
   if (left <= 0 || left > (TF_SECONDS[state.timeframe] || 60) + 1) {
-    /* До смены свечи «дожили» (или часы съехали) — до прихода новой
-       свечи от data/live.js прячем тикер, чтобы не показывать мусор. */
+    // До смены свечи «дожили» (или часы съехали) — до новой свечи
+    // data/live.js price-timer будет скрыт.
     _lastLeft = null;
-    el.textContent = '⏱ —';
     return;
   }
   _lastLeft = left;
-  const tz = getActiveTz();
-  const closeStr = formatInTz(close, {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).slice(0, 5);
-  const off = activeOffsetSeconds();
-  const utcTag = tz ? ' ' + _tzTag(off) : '';
-  el.textContent = '⏱ ' + formatRemainder(left) + ' до закрытия · ' + closeStr + utcTag;
-  el.style.display = 'inline-block';
-}
-
-function _tzTag(sec) {
-  const s = Math.round(sec);
-  if (s === 0) return 'UTC';
-  const sign = s < 0 ? '−' : '+';
-  const abs = Math.abs(s);
-  return 'UTC' + sign + Math.floor(abs / 3600) + ':'
-    + String(Math.floor((abs % 3600) / 60)).padStart(2, '0');
 }
 
 /* Позиционирует мини-таймер на правой ценовой шкале у цены последней свечи.

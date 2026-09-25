@@ -1,6 +1,6 @@
-// Новости по активу: лента Finnhub (+CoinGecko, если доступен) в панели
-// справа; привязана к текущему символу state.symbol, перезагружается при
-// смене актива и по кнопке ⟳ (bypass серверного кеша, ?refresh=1).
+// Новости по активу: лента Finnhub (+CoinGecko, если доступна) в нижней
+// части правого dock со списком котировок; перезагружается при смене актива
+// и по кнопке ⟳ (bypass серверного кеша, ?refresh=1).
 // Под лентой — карточка «Статистика стратегий (Scanner Edge)»: лучшая
 // комбинация сканера для текущих symbol+timeframe (GET /api/scanner/stats),
 // с цветовой оценкой Sharpe и текстовым пояснением (надёжная / убыточная /
@@ -17,6 +17,13 @@ const body = () => document.getElementById('news-body');
 const label = () => document.getElementById('news-symbol-label');
 const scanEdgeCard = () => document.getElementById('scan-edge-card');
 const newsList = () => document.getElementById('news-list');
+
+function _isVisible() {
+  const p = panel();
+  if (!p || p.style.display === 'none') return false;
+  const host = p.closest('#watchlist-panel');
+  return !host || host.style.display !== 'none';
+}
 
 function _fmtTime(epoch) {
   if (!epoch) return '';
@@ -139,7 +146,7 @@ export async function loadScanEdge(force = false) {
   const card = scanEdgeCard();
   if (!card) return;
   const sym = state.symbol;
-  if (panel() && panel().style.display === 'none' && !force) {
+  if (!_isVisible() && !force) {
     _edgeSymbol = null;
     return;
   }
@@ -163,7 +170,7 @@ export async function loadNews(force = false) {
   const sym = state.symbol;
   const p = panel();
   if (!p) return;
-  if (p.style.display === 'none') { _symbol = null; return; }
+  if (!_isVisible()) { _symbol = null; return; }
   if (_loading) return;
   _loading = true;
   const b = newsList() || body();
@@ -190,7 +197,7 @@ export async function loadNews(force = false) {
 export function openNews(symbol) {
   const p = panel();
   if (!p) return;
-  p.style.display = 'block';
+  p.style.display = 'flex';
   const sym = symbol || state.symbol;
   if (label()) label().textContent = `📰 Новости · ${sym}`;
   if (sym !== _symbol || !(newsList() || body()).querySelector('.news-item')) {
@@ -202,14 +209,8 @@ export function openNews(symbol) {
       || !card || !card.querySelector('.scan-edge-head')) loadScanEdge();
 }
 
-export function closeNews() {
-  const p = panel();
-  if (p) p.style.display = 'none';
-}
-
 export function onSymbolChanged(newSym) {
-  const p = panel();
-  if (!p || p.style.display === 'none') return;
+  if (!_isVisible()) return;
   if (newSym === _symbol) return;
   loadNews();
   loadScanEdge();
