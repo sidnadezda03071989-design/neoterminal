@@ -6,14 +6,16 @@
     уровней, вероятности в процентах (61.3 -> 0.613), невалидный ответ -> None;
   - build_levels_context: уходит тот же контекст, что у Харона, и в replay
     (upto_sec) в промпт не попадает ни одна свеча из будущего;
-  - run_ai_backtest: один LLM-запрос, результат = только levels (+price), без
-    сделок и метрик стратегии; ошибка LLM -> status=finished + error;
+  - run_ai_backtest: локальный snapshot/rules engine, результат = только
+    levels (+price), без сделок и метрик стратегии; ошибка локального движка
+    -> status=finished + error;
   - POST /api/ai-backtest: sync=true сразу отдаёт результат; mode=live
     игнорирует upto_sec, mode=replay его прокидывает;
   - GET /api/ai-backtest/<run_id>: уровни из БД доступны как "levels".
 """
 
 import json
+import time
 
 import pandas as pd
 import pytest
@@ -141,54 +143,66 @@ def test_live_context_uses_last_candle(monkeypatch):
 
 
 # -------------------------------------------------------------------- движок
-def test_run_ai_backtest_one_llm_call_and_levels_only(monkeypatch):
-    """Один запрос к LLM; результат — только уровни, без сделок/метрик."""
-    calls = []
-    payload = json.dumps({"levels": [
-        {"side": "UP", "price": 110, "probability": 0.6},
-        {"side": "DOWN", "price": 90, "probability": 0.7},
-    ]})
+def test_run_ai_backtest_deterministic_local_engine(monkeypatch):
+    """v2.0: compact snapshot -> local rules -> calibrated levels, без LLM."""
+    snapshot = {"t": {"close": 100.0, "atr": 2.0}, "vp": {"poc": 100.0}}
+    rules_result = {"levels": [
+        {"side": "UP", "price": 101.0, "probability": 0.6, "type": "RESISTANCE"},
+        {"side": "DOWN", "price": 99.0, "probability": 0.7, "type": "SUPPORT"},
+    ]}
+    snapshot_calls = []
+    rules_calls = []
 
-    def fake_llm(system, messages, **kwargs):
-        calls.append((system, messages, kwargs))
-        return payload
+    def fake_snapshot(*args, **kwargs):
+        snapshot_calls.append((args, kwargs))
+        return snapshot
 
-    monkeypatch.setattr(aibt, "_llm_request", fake_llm)
-    monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 100.0)
-    monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "compact_snapshot",
-                        lambda *a, **k: {"t": {"close": 100.0}})
-    monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
-    monkeypatch.setattr(aibt.db, "db_save_ai_backtest",
-                        lambda *a, **k: 1)
+    def fake_rules(actual_snapshot):
+        rules_calls.append(actual_snapshot)
+        return rules_result
 
+    monkeypatch.setattr(aibt, "compact_snapshot", fake_snapshot)
+    monkeypatch.setattr(aibt, "apply_all_rules", fake_rules)
+    monkeypatch.setattr(aibt, "_cbr_store_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(aibt, "_push_progress", lambda *a, **k: None)
+    monkeypatch.setattr(aibt.db, "db_save_ai_backtest", lambda *a, **k: 1)
+
+    started = time.perf_counter()
     res = aibt.run_ai_backtest("BTCUSDT", "1H", upto_sec=None, mode="live")
+    elapsed = time.perf_counter() - started
 
-    assert len(calls) == 1, "должен быть ровно один запрос к LLM"
+    assert elapsed < 0.5
+    assert snapshot_calls == [(("BTCUSDT", "1H"), {"upto_sec": None, "rules_only": True})]
+    assert rules_calls == [snapshot]
     assert res["status"] == "finished"
     assert res["mode"] == "live"
     assert res["price"] == pytest.approx(100.0)
-    assert len(res["levels"]) == 2
+    assert res["levels"]
+    assert all("calibrated_prob" in level for level in res["levels"])
+    assert all(0.0 <= level["calibrated_prob"] <= 1.0 for level in res["levels"])
+    assert "model" not in res
     assert res["error"] is None
     # Панель-помощник: ни сделок, ни метрик стратегии.
     assert "trades" not in res
     assert "metrics" not in res
 
 
-def test_run_ai_backtest_llm_failure_reports_error(monkeypatch):
-    """LLM недоступна: прогон завершается статусом finished + error."""
-    monkeypatch.setattr(aibt, "_llm_request",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("net")))
-    monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 50.0)
-    monkeypatch.setattr(aibt, "build_levels_context", lambda *a, **k: "ctx")
-    monkeypatch.setattr(aibt, "compact_snapshot",
-                        lambda *a, **k: {"t": {"close": 100.0}})
+def test_run_ai_backtest_local_engine_failure_reports_error(monkeypatch):
+    """Ошибка локального snapshot/rules engine: finished + понятный error."""
+    def broken_snapshot(*_args, **_kwargs):
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(aibt, "compact_snapshot", broken_snapshot)
+    monkeypatch.setattr(aibt, "_cbr_store_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(aibt, "_push_progress", lambda *a, **k: None)
+    monkeypatch.setattr(aibt.db, "db_save_ai_backtest", lambda *a, **k: 1)
 
     res = aibt.run_ai_backtest("BTCUSDT", "1H", mode="live")
 
     assert res["status"] == "finished"
     assert res["levels"] == []
-    assert res["error"]
+    assert "Ошибка локального движка" in res["error"]
+    assert "snapshot unavailable" in res["error"]
 
 
 @pytest.mark.parametrize("exc_text,needle", [
@@ -246,22 +260,23 @@ def test_levels_for_slice_reports_unparsable_answer(monkeypatch):
 
 
 def test_run_ai_backtest_replay_passes_upto(monkeypatch):
-    """mode=replay: upto_sec уходит в сырые данные (без look-ahead) и в результат."""
+    """mode=replay: upto_sec попадает в snapshot и в результат без look-ahead."""
     seen = {}
 
-    def fake_snap(symbol, tf, upto_sec=None):
+    def fake_snap(symbol, tf, upto_sec=None, rules_only=False):
         seen["upto"] = upto_sec
+        seen["rules_only"] = rules_only
         return {"t": {"close": 42.0}}
 
-    monkeypatch.setattr(aibt, "_llm_request",
-                        lambda *a, **k: json.dumps({"targets": []}))
-    monkeypatch.setattr(aibt, "_slice_price", lambda *a, **k: 42.0)
     monkeypatch.setattr(aibt, "compact_snapshot", fake_snap)
+    monkeypatch.setattr(aibt, "_cbr_store_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(aibt, "_push_progress", lambda *a, **k: None)
+    monkeypatch.setattr(aibt.db, "db_save_ai_backtest", lambda *a, **k: 1)
 
     upto = BASE_TS + 10 * STEP
     res = aibt.run_ai_backtest("BTCUSDT", "1H", upto_sec=upto, mode="replay")
 
-    assert seen["upto"] == upto
+    assert seen == {"upto": upto, "rules_only": True}
     assert res["upto_sec"] == upto
     assert res["mode"] == "replay"
 
@@ -377,13 +392,12 @@ def test_route_upto_sec_passthrough(client, monkeypatch, payload,
     """routes/ai_backtest: upto_sec = только для mode=replay."""
     captured = {}
 
-    def fake_async(symbol, timeframe, upto_sec=None, mode="live", model=None,
-                   run_id=None):
+    def fake_run(symbol, timeframe, upto_sec=None, mode="live", run_id=None):
         captured.update(upto_sec=upto_sec, mode=mode)
-        return "run-1"
+        return {"run_id": "run-1", "status": "finished", "mode": mode,
+                "upto_sec": upto_sec, "levels": []}
 
-    monkeypatch.setattr("app_pkg.routes.ai_backtest.run_ai_backtest_async",
-                        fake_async)
+    monkeypatch.setattr("app_pkg.routes.ai_backtest.run_ai_backtest", fake_run)
 
     resp = client.post("/api/ai-backtest", json={
         "symbol": "BTCUSDT", "timeframe": "1H", **payload})
@@ -454,25 +468,24 @@ def test_config_symbols_match_scanner_list():
 
 
 def test_route_sync_end_to_end_pill_labels(monkeypatch):
-    """Полный путь роут -> LLM -> уровни: пилюли как на макете (+diff prob%).
-
-    Данные и LLM мокаются — сеть не нужна. Проверяем, что панель получает
-    готовые к отрисовке уровни: +0.5 61.3%, +0.19 47.1%, -1.3 55.6%.
-    """
+    """Полный путь роут -> local rules -> уровни: diff и calibrated prob."""
     df = _df(n=50)
     df["close"] = 100.0
     monkeypatch.setattr(aibt, "get_series_df", lambda *a, **k: df)
     monkeypatch.setattr("app_pkg.ai.context.get_series_df", lambda *a, **k: df)
-    monkeypatch.setattr(aibt, "compact_snapshot",
-                        lambda *a, **k: {"t": {"close": 100.0}})
-    monkeypatch.setattr(aibt, "_llm_request", lambda *a, **k: json.dumps({
-        "levels": [
-            {"side": "UP", "price": 100.5, "probability": 0.613},
-            {"side": "UP", "price": 100.19, "probability": 0.471},
-            {"side": "DOWN", "price": 98.7, "probability": 0.556},
-        ],
-    }))
+    monkeypatch.setattr(
+        aibt, "compact_snapshot",
+        lambda *a, **k: {"t": {"close": 100.0, "atr": 2.0}},
+    )
+    monkeypatch.setattr(aibt, "apply_all_rules", lambda _snapshot: {"levels": [
+        {"side": "UP", "price": 100.5, "probability": 0.613},
+        {"side": "UP", "price": 100.19, "probability": 0.471},
+        {"side": "DOWN", "price": 98.7, "probability": 0.556},
+        {"side": "DOWN", "price": 99.0, "probability": 0.4},
+    ]})
     monkeypatch.setattr(aibt, "_structure_levels", lambda *a, **k: [])
+    monkeypatch.setattr(aibt, "_cbr_store_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(aibt, "_push_progress", lambda *a, **k: None)
     monkeypatch.setattr(aibt.db, "db_save_ai_backtest", lambda *a, **k: 1)
 
     app = create_app()
@@ -484,13 +497,17 @@ def test_route_sync_end_to_end_pill_labels(monkeypatch):
     data = resp.get_json()
     assert data["price"] == pytest.approx(100.0)
     assert data["error"] is None
+    assert "model" not in data
+    assert all("calibrated_prob" in level for level in data["levels"])
     ups = [lv for lv in data["levels"] if lv["side"] == "UP"]
     downs = [lv for lv in data["levels"] if lv["side"] == "DOWN"]
-    assert [round(lv["price"], 2) for lv in ups] == [100.19, 100.5]
-    assert round(ups[1]["diff"], 2) == 0.5
-    assert ups[1]["probability"] == pytest.approx(0.613)
-    assert downs[0]["diff"] == pytest.approx(-1.3)
-    assert downs[0]["probability"] == pytest.approx(0.556)
+    assert {round(lv["price"], 2) for lv in ups} >= {100.19, 100.5}
+    up_50 = next(lv for lv in ups if round(lv["price"], 2) == 100.5)
+    assert up_50["diff"] == pytest.approx(0.5)
+    assert up_50["probability"] == pytest.approx(0.613)
+    down_13 = next(lv for lv in downs if round(lv["price"], 2) == 98.7)
+    assert down_13["diff"] == pytest.approx(-1.3)
+    assert down_13["probability"] == pytest.approx(0.556)
 
 
 # -------------------------------------- структурная база уровней (логика)
