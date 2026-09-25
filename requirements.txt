@@ -7,3 +7,7 @@ numpy>=1.26
 yfinance>=0.2.50
 websocket-client>=1.7
 pytest>=8.0
+RestrictedPython>=8.5,<9
+ta>=0.11,<1
+scipy>=1.11
+psutil>=6,<8
