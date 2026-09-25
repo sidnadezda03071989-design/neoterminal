@@ -27,6 +27,7 @@ const DOWN_FILL = 'rgba(239, 83, 80, 0.40)';     // зона вниз
 const LEVEL_LINE = 'rgba(255, 255, 255, 0.55)';  // линия уровня
 const UP_PILL = '#26a69a';
 const DOWN_PILL = '#ef5350';
+const FLAT_PILL = '#7d8590';                     // флэт — серый
 const PILL_TEXT = '#ffffff';
 
 const MIN_WIDTH = 20;    // мин ширина зоны, px
@@ -122,30 +123,39 @@ function _capTo100(list) {
   }));
 }
 
-/* Вероятность простого ЛОНГ/ШОРТ по уровням (fallback, если бэкенд не
-   отдал direction): ЛОНГ = сумма вероятностей UP-уровней, ШОРТ = сумма
-   DOWN. Каждая сторона не выше 100%, сумма — не больше 100% (при перекосе
-   нормируем на сумму). Бэкенд считает то же самое после filter_levels
-   (метрики MTF/ADX/VWAP+OBV уже в вероятностях уровней), поэтому
-   результат един для панели и графика. */
+/* Вероятность простого ЛОНГ/ШОРТ/ФЛЭТ по уровням (fallback, если бэкенд не
+   отдал direction). Каждый уровень — {price, probability, side}.
+
+   Расчёт:
+     rawTotal = sum(probabilities всех уровней, UP + DOWN)
+     flat     = 1 / (1 + rawTotal)   — uncertainty от rawTotal
+     long     = (1 - flat) * rawLong / rawTotal
+     short    = (1 - flat) * rawShort / rawTotal
+
+   Чем больше сырых вероятностей (больше уровней/выше confidence), тем
+   меньше flat. flat ВСЕГДА > 0 (кроме бесконечности). Сумма = 1. */
 export function computeDirectionProb(levels) {
-  let long = 0, short = 0;
+  let rawLong = 0, rawShort = 0;
   for (const lv of (Array.isArray(levels) ? levels : [])) {
     if (!lv) continue;
     const p = Number(lv.probability);
-    if (!Number.isFinite(p) || p < 0) continue;
-    if (String(lv.side || '').toUpperCase() === 'DOWN') short += p;
-    else long += p;
+    if (!Number.isFinite(p) || p <= 0) continue;
+    if (String(lv.side || '').toUpperCase() === 'DOWN') rawShort += p;
+    else rawLong += p;
   }
-  long = Math.min(1, long);
-  short = Math.min(1, short);
-  const total = long + short;
-  if (total > 1.0) {
-    const k = 1.0 / total;
-    long *= k;
-    short *= k;
+  const rawTotal = rawLong + rawShort;
+  if (rawTotal <= 0) {
+    return { long: 0.33, short: 0.33, flat: 0.34 };
   }
-  return { long: long, short: short };
+  const flat = 1 / (1 + rawTotal);
+  const dir = 1 - flat;
+  const long = dir * (rawLong / rawTotal);
+  const short = dir * (rawShort / rawTotal);
+  return {
+    long: Math.min(1, Math.max(0, long)),
+    short: Math.min(1, Math.max(0, short)),
+    flat: Math.min(1, Math.max(1e-10, flat)),
+  };
 }
 
 /* ATR(period) в ценах актива по свечам ДО uptoTime включительно (Wilder).
@@ -260,7 +270,7 @@ export class AIProbZonesRenderer {
     this.primitive = null;
     this.tpsl = null;
     this.enableTpsl = false;
-    this.direction = null;   // {long, short} — вероятности ЛОНГ/ШОРТ
+    this.direction = null;   // {long, short, flat} — вероятности ЛОНГ/ШОРТ/ФЛЭТ
   }
 
   /* Вкл/выкл TP/SL поверх уровней: перерисовывает текущие зоны без нового
@@ -285,18 +295,36 @@ export class AIProbZonesRenderer {
     const atr = atrOf(this.candlesRef(), anchor.time);
     const levels = pinNearLevels(
       this._extractLevels(result, anchor), anchor.price, atr);
-    if (!levels.length) return;
+
+    // direction вычисляем ДО early return — чтобы даже без уровней
+    // показывать дефолтное 33/33/33 (ЛОНГ/ФЛЭТ/ШОРТ).
+    this.direction = (result && result.direction && result.direction.long != null
+      && result.direction.short != null)
+      ? (() => {
+          const long = Math.min(1, Math.max(0, Number(result.direction.long) || 0));
+          const short = Math.min(1, Math.max(0, Number(result.direction.short) || 0));
+          const total = long + short;
+          if (total > 1) {
+            // Тот же расчёт, что в computeDirectionProb: flat = 1/(1+total),
+            // остаток dir = 1-flat делится пропорционально long/short
+            const flat = 1 / (1 + total);
+            const dir = 1 - flat;
+            return {
+              long: dir * (long / total),
+              short: dir * (short / total),
+              flat,
+            };
+          }
+          if (total <= 0) return { long: 0.33, short: 0.33, flat: 0.34 };
+          return { long, short, flat: 1 - total };
+        })()
+      : computeDirectionProb(levels);
+
     this.levels = levels;
     this.anchor = anchor;
     this.tpsl = this.enableTpsl ? pickTpsl(levels, anchor.price, atr) : null;
-    // direction: из ответа бэкенда (метрики+уровни) или расчёт по уровням.
-    this.direction = (result && result.direction && result.direction.long != null
-      && result.direction.short != null)
-      ? {
-          long: Math.min(1, Math.max(0, Number(result.direction.long) || 0)),
-          short: Math.min(1, Math.max(0, Number(result.direction.short) || 0)),
-        }
-      : computeDirectionProb(levels);
+    // Создаём primitive всегда (даже с пустыми уровнями) — чтобы
+    // _drawDirection() отрисовала пилюли ЛОНГ/ФЛЭТ/ШОРТ на графике.
     this.primitive = new AIProbZonesPrimitive(
       this.levels, this.anchor, this.tpsl, this);
     this.series.attachPrimitive(this.primitive);
@@ -437,32 +465,37 @@ class AIProbZonesRendererImpl {
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, ups, true);
     this._drawSide(ctx, x0, x1, size, yPrice, anchor.price, downs, false);
     this._drawTpsl(ctx, x0, x1, size);
-    this._drawDirection(ctx, x0, x1, size);
+    this._drawDirection(ctx, x0, x1, size, yPrice);
   }
 
-  /* Вероятность простого ЛОНГ/ШОРТ («на рисунке»): две пилюли в верхнем
-     левом углу зоны — «ЛОНГ {p}%» зелёная и «ШОРТ {p}%» красная. Сумма
-     вероятностей не может быть больше 100% (нормирована ещё на бэкенде и
-     в computeDirectionProb). Если вероятностей нет — не рисуем ничего. */
-  _drawDirection(ctx, x0, x1, size) {
+  /* Вероятность простого ЛОНГ/ШОРТ/ФЛЭТ («на рисунке»): три пилюли.
+     • ЛОНГ/ШОРТ — в верхнем левом углу зоны (зелёная/красная).
+     • ФЛЭТ — на линии текущей цены (серая), между longW short-пилюлями.
+     Сумма long+short+flat не превышает 100%. */
+  _drawDirection(ctx, x0, x1, size, yPrice) {
     const dir = this._direction();
-    if (!dir) return;
-    const longP = Number(dir.long);
-    const shortP = Number(dir.short);
+    // Если direction не задан — по дефолту равномерное распределение
+    const d = dir || { long: 0.33, short: 0.33, flat: 0.34 };
+    const longP = Number(d.long);
+    const shortP = Number(d.short);
+    const flatP = Number(d.flat);
     if (!Number.isFinite(longP) || !Number.isFinite(shortP)) return;
-    if (longP <= 0 && shortP <= 0) return;
+    if (longP <= 0 && shortP <= 0 && flatP <= 0) return;
 
     const longLbl = 'ЛОНГ ' + (longP * 100).toFixed(0) + '%';
     const shortLbl = 'ШОРТ ' + (shortP * 100).toFixed(0) + '%';
+    const flatLbl = 'ФЛЭТ ' + (flatP * 100).toFixed(0) + '%';
     ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
     const padX = 6;
     const h = 15;
     const gap = 4;
     const longW = ctx.measureText(longLbl).width + padX * 2;
     const shortW = ctx.measureText(shortLbl).width + padX * 2;
+
+    // --- ЛОНГ и ШОРТ в верхнем левом углу (как было) ---
     const totalW = longW + gap + shortW;
     const x = Math.max(1, Math.min(x0 + 4, size.width - totalW - 2));
-    const y = 18;   // под хедером графика, чтобы не пересекаться с TP/SL
+    const y = 18;   // под хедером графика
 
     ctx.fillStyle = UP_PILL;
     this._roundRect(ctx, x, y, longW, h, 4);
@@ -477,6 +510,35 @@ class AIProbZonesRendererImpl {
     ctx.fill();
     ctx.fillStyle = PILL_TEXT;
     ctx.fillText(shortLbl, x2 + padX, y + h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
+
+    // --- ФЛЭТ на линии текущей цены ---
+    if (flatP > 0 && yPrice != null) {
+      this._drawFlatPill(ctx, flatLbl, x0, x1, yPrice, size);
+    }
+  }
+
+  /* ФЛЭТ пилюля на линии текущей цены: серая, центрирована по горизонтали
+     между x0 и правой кромкой, прижата к линии yPrice. */
+  _drawFlatPill(ctx, label, x0, x1, yPrice, size) {
+    ctx.font = 'bold 10px "Segoe UI", Tahoma, sans-serif';
+    const padX = 6;
+    const pillW = ctx.measureText(label).width + padX * 2;
+    const pillH = 15;
+    // центрируем по x между началом зоны и правой кромкой
+    const cx = (x0 + x1) / 2;
+    let px = cx - pillW / 2;
+    px = Math.max(2, Math.min(px, size.width - pillW - 2));
+    // прижимаем к линии цены (чуть выше, чтобы не перекрывать линию)
+    let py = yPrice - pillH / 2;
+    py = Math.max(2, Math.min(py, size.height - pillH - 2));
+
+    ctx.fillStyle = FLAT_PILL;
+    this._roundRect(ctx, px, py, pillW, pillH, 4);
+    ctx.fill();
+    ctx.fillStyle = PILL_TEXT;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, px + padX, py + pillH / 2 + 0.5);
     ctx.textBaseline = 'alphabetic';
   }
 

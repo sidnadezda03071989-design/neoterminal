@@ -1,0 +1,15 @@
+﻿[preload] ETHUSDT/15m bars=20000 (analyzable window up to 19980)
+
+============================================================
+FILTERED CALIBRATION REPORT
+============================================================
+Symbol: ETHUSDT | TF: 15m | Bars: 5000
+Min confidence gap: 0.2 (20%)
+
+FILTER STATS:
+  Total bars processed: 5000
+  Signals passing filter: 0 (0.0%)
+  Signals skipped (gap < 0.2): 5000
+  Average gap (filtered): 0.000
+
+HIT-RATE (FILTERED ONLY):

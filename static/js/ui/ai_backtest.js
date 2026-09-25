@@ -203,11 +203,35 @@ function _applyResult(data) {
     state.aiProbRenderer.enableTpsl = _tpslEnabled();
     state.aiProbRenderer.render(data, _anchorForUpto(upto));
   }
+  _renderSignalVerdict(data && data.signal);
   _renderLevels(levels, data && data.error, data && data.notice);
   // Причину отказа показываем явно (квота/rate limit/нет JSON) — «уровни не
   // получены» без деталей бесполезно.
   if (data && data.error) _showError(data.error);
   else _showError('');
+}
+
+/* Вердикт Charon (детерминированные правила 1-20): pu/pd/sig/fired —
+   единая функция с AI Backtest, вердикт приходит в том же ответе. */
+function _renderSignalVerdict(signal) {
+  const box = $('aibt-signal');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!signal || !signal.sig) return;
+  const sigClass = signal.sig === 'LONG' ? 'up'
+    : signal.sig === 'SHORT' ? 'down' : 'flat';
+  const head = document.createElement('div');
+  head.className = 'aibt-signal-head ' + sigClass;
+  head.textContent = 'Сигнал: ' + signal.sig;
+  box.appendChild(head);
+  const row = document.createElement('div');
+  row.className = 'aibt-signal-row';
+  const pu = Number.isFinite(Number(signal.pu)) ? Number(signal.pu).toFixed(2) : '—';
+  const pd = Number.isFinite(Number(signal.pd)) ? Number(signal.pd).toFixed(2) : '—';
+  row.textContent = 'pu ' + pu + ' · pd ' + pd
+    + (Array.isArray(signal.fired) && signal.fired.length
+      ? ' · правила ' + signal.fired.join(', ') : '');
+  box.appendChild(row);
 }
 
 /* Краткий список уровней в панели: +{diff} {prob}% (как на пилюлях графика).
@@ -258,27 +282,35 @@ function _renderLevels(levels, error, notice) {
   _renderTpslSummary(box);
 }
 
-/* Сводка вероятностей простого ЛОНГ/ШОРТ в панели: читает renderer.direction
-   (тот же источник, что и пилюли на графике). Сумма не превышает 100%. */
+/* Сводка вероятностей простого ЛОНГ/ШОРТ/ФЛЭТ в панели: читает
+   renderer.direction (тот же источник, что и пилюли на графике).
+   Сумма long+short+flat не превышает 100%. ФЛЭТ — посередине.
+   Если direction нет, показываем 33/33/34 по дефолту. */
 function _renderDirection(box) {
   const r = state.aiProbRenderer;
   const dir = r && r.direction;
-  if (!dir) return;
-  const longP = Number(dir.long);
-  const shortP = Number(dir.short);
+  // Если direction не задан — по дефолту равномерное распределение
+  const d = dir || { long: 0.33, short: 0.33, flat: 0.34 };
+  const longP = Number(d.long);
+  const shortP = Number(d.short);
+  const flatP = Number(d.flat);
   if (!Number.isFinite(longP) || !Number.isFinite(shortP)) return;
-  if (longP <= 0 && shortP <= 0) return;
+  if (longP <= 0 && shortP <= 0 && flatP <= 0) return;
   const longLbl = 'ЛОНГ ' + (longP * 100).toFixed(0) + '%';
+  const flatLbl = 'ФЛЭТ ' + (flatP * 100).toFixed(0) + '%';
   const shortLbl = 'ШОРТ ' + (shortP * 100).toFixed(0) + '%';
   const row = document.createElement('div');
   row.className = 'aibt-dir-summary';
   const up = document.createElement('span');
   up.className = 'aibt-dir-pill up';
   up.textContent = longLbl;
+  const fl = document.createElement('span');
+  fl.className = 'aibt-dir-pill flat';
+  fl.textContent = flatLbl;
   const dn = document.createElement('span');
   dn.className = 'aibt-dir-pill down';
   dn.textContent = shortLbl;
-  row.append(up, dn);
+  row.append(up, fl, dn);
   box.appendChild(row);
 }
 

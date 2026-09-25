@@ -354,6 +354,10 @@ CBR_NORMALIZE_STATS_PATH = DATA_DIR / "cbr_norm_stats.pkl"
 # False — k-NN живёт только в автономных сценариях (бэктест/скрипты);
 # True включается проверка запросом и DEFAULTS КАК в бэктесте.
 CBR_STAGE2_ENABLED = os.getenv("CBR_STAGE2_ENABLED", "0") == "1"
+# Гейт детерминированных правил Charon 1-20 в бэктесте: True — вердикт
+# считает app_pkg.ai.apply_rules.apply_all_rules (без LLM), False — LLM.
+# Влияет только на _flush_pending (бэктест), live-уровни не трогает.
+USE_DETERMINISTIC_RULES = True
 # Параметры k-NN (query_api.get_similar_summary).
 CBR_K_DEFAULT = 50
 CBR_MIN_DISTANCE = 2.0

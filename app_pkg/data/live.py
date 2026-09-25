@@ -34,6 +34,11 @@ _live_bars_lock = threading.Lock()
 # heartbeat watchdog: [0] = time.monotonic() последнего WS-сообщения
 _live_ws_last_msg = [time.monotonic()]
 
+# Последний event-time (E, мс) Binance WS — эпоха БИРЖИ. Локальные часы машины
+# могут отставать от биржи (замер: ~16.6с!), поэтому таймер закрытия свечи
+# должен тикать в эпохе источника: крипта — Binance epoch, форекс — time.time().
+_binance_epoch_ms = 0
+
 # Пары, реально открытые в UI (symbol, tf). Заполняется фронтом через
 # /api/live/subscribe. Нужен, чтобы SSE-пуши не заливали клиента событиями
 # по всем 18 парам (3 символа × 6 ТФ), а только по открытой — иначе очередь
@@ -66,6 +71,20 @@ def active_pairs():
         return set(_active_pairs)
 
 
+def data_now_sec(symbol):
+    """«Сейчас» в эпохе ИСТОЧНИКА данных для symbol (сек).
+
+    Крипта: бары Binance в эпохе биржевых часов — локальные часы машины могут
+    отставать (замер: ~16.6с), из-за чего таймер закрытия свечи «не совпадает»
+    с реальным закрытием. Берём event-time (E) из Binance WS.
+    Форекс: бары MT5 привязаны к локальным часам сервера — time.time().
+    Fallback для крипты (WS ещё не поднялся): time.time().
+    """
+    if symbol in config.CRYPTO_SYMBOLS and _binance_epoch_ms:
+        return _binance_epoch_ms / 1000.0
+    return time.time()
+
+
 def _binance_ws_message(_ws, raw):
     try:
         msg = json.loads(raw)
@@ -77,6 +96,12 @@ def _binance_ws_message(_ws, raw):
         k = payload.get("k") or {}
         if not k:
             return
+        # event-time биржи (мс): для data_now_sec() — «эпоха Binance»,
+        # в которой живут таймстампы свечей крипты (см. комментарий выше).
+        evt = payload.get("E")
+        if isinstance(evt, (int, float)) and evt > 0:
+            global _binance_epoch_ms
+            _binance_epoch_ms = int(evt)
         # heartbeat: обновляем метку «последнее сообщение» для watchdog
         _live_ws_last_msg[0] = time.monotonic()
         symbol = str(k.get("s") or "").upper()
@@ -326,6 +351,9 @@ def _sse_candle_push_loop():
                         "timeframe": tf,
                         "candle": candle,
                         "closed": bool(bar.get("closed", False)),
+                        # «Сейчас» в эпохе источника — фронт синхронизирует
+                        # по нему таймер закрытия свечи (см. candle_timer.js).
+                        "now": data_now_sec(symbol),
                     })
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("candle_update push error: %s", exc)

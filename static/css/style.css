@@ -511,6 +511,18 @@ input[type="color"] { width:26px; height:26px; padding:1px;
 /* Список уровней вероятностей: +{diff} слева, {prob}% справа. */
 .aibt-levels-title { font-size: 11px; text-transform: uppercase;
   letter-spacing: .5px; color: var(--text-muted); margin-bottom: 6px; }
+/* Вердикт Charon (правила 1-20) — единая функция с AI Backtest. */
+.aibt-signal { margin-bottom: 10px; }
+.aibt-signal-head { padding: 6px 8px; font-size: 12px; font-weight: 700;
+  text-align: center; border-radius: 4px; white-space: nowrap; }
+.aibt-signal-head.up { color: var(--up);
+  background: rgba(38, 166, 154, 0.15); border: 1px solid var(--up); }
+.aibt-signal-head.down { color: var(--down);
+  background: rgba(239, 83, 80, 0.15); border: 1px solid var(--down); }
+.aibt-signal-head.flat { color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04); border: 1px dashed rgba(255,255,255,0.25); }
+.aibt-signal-row { margin-top: 6px; font-size: 12px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
 .aibt-levels { display: flex; flex-direction: column; gap: 4px;
   margin-bottom: 12px; max-height: 320px; overflow-y: auto; }
 .aibt-level-row { display: flex; justify-content: space-between;
@@ -579,6 +591,8 @@ input[type="color"] { width:26px; height:26px; padding:1px;
   border: 1px solid var(--up); }
 .aibt-dir-pill.down { color: var(--down); background: rgba(239, 83, 80, 0.15);
   border: 1px solid var(--down); }
+.aibt-dir-pill.flat { color: var(--text-muted); background: rgba(125, 133, 144, 0.15);
+  border: 1px solid var(--text-muted); }
 .scan-strategies-count { margin-left: auto; font-size: 11px;
   color: var(--text-muted); }
 .scan-checks-strategies { grid-column: 1 / -1; }

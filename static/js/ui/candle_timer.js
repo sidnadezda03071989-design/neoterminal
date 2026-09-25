@@ -19,8 +19,23 @@ let _timer = null;
 let _raf = null;           // rAF-цикл репозиции чипа на ценовой шкале
 let _lastLeft = null;      // последний корректный остаток, для репозиции чипа
 let _cachedTop = null;     // кэш top — не трогаем DOM, если позиция не изменилась
+let _baseOffsetSec = 0;    // поправка часов: (now источника) − (now машины), сек
 
 function _pad(n) { return String(n).padStart(2, '0'); }
+
+/* Синхронизация таймера с «сейчас» сервера в эпохе источника данных:
+   крипта — часы Binance (могут отставать от машины на ~16с!), форекс — часы
+   сервера. Сервер шлёт `now` в SSE candle_update и в /api/last-bar, /api/data.
+   _baseOffsetSec = serverNow − localNow; тикаем локально, но с поправкой. */
+export function syncServerClock(serverNowSec) {
+  const s = Number(serverNowSec);
+  if (!Number.isFinite(s) || s <= 0) return;
+  _baseOffsetSec = s - Date.now() / 1000;
+}
+
+function _nowSec() {
+  return Date.now() / 1000 + _baseOffsetSec;
+}
 
 /* «MM:SS» (или «HH:MM:SS» для длинных ТФ). */
 export function formatRemainder(sec) {
@@ -50,7 +65,7 @@ function _tick() {
     return;
   }
   const last = act[act.length - 1];
-  const nowSec = Date.now() / 1000;
+  const nowSec = _nowSec();
   const close = barCloseTime(last.time);
   const left = close - nowSec;
   if (left <= 0 || left > (TF_SECONDS[state.timeframe] || 60) + 1) {

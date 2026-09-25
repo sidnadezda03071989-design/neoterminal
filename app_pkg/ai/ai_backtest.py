@@ -1,14 +1,22 @@
-"""AI Backtest «Псевдо-Харон»: вероятностные уровни через LLM.
+"""AI Backtest «Псевдо-Харон»: детерминированные вероятностные уровни.
 
 По методу Харона опасность рынка оценивается не индикаторами, а уровнями
-поддержки/сопротивления рядом с ценой. Здесь вместо сети предсказания — LLM:
-она получает ТОТ ЖЕ контекст, что и Харон (build_multi_tf_context + статистика
-сканера), и возвращает НЕСКОЛЬКО уровней вверх и вниз от текущей цены, у
-каждого — вероятность того, что цена дойдёт до уровня.
+поддержки/сопротивления рядом с ценой. LLM REMOVED: вместо сети и модели
+работает детерминированный движок в процессе:
+
+  • вердикт/направление — app_pkg.ai.apply_rules.apply_all_rules (правила
+    Charon 1-20, перенесённые из config/charon_prompt.txt, чистый Python);
+  • уровни — свечная структура (structure_levels_from_df) как подложка плюс
+    вероятности того же вердикта; пост-фильтр — app_pkg.ai.signal_filter
+    (MTF/ADX/VWAP+OBV правила) и изотоническая калибровка
+    (app_pkg.ai.calibration по истории charon_calibration_history).
+
+_llm_request сохранён как сигнатурный шов (тесты/диагностика), но внутри
+считает правила и НЕ ходит в сеть: сигнальный путь полностью offline.
 
 Ключевые отличия от прежней версии (панель «сделок/винрейта» убрана):
 
-  • ОДИН запрос к LLM на текущий срез данных (а не прогон по истории шагами):
+  • ОДИН расчёт на текущий срез данных (а не прогон по истории шагами):
     в replay — контекст обрезан по времени барьера (upto_sec), в live —
     последняя доступная свеча. Данные — ровно те же, что у Харона.
   • Результат — только уровни с вероятностями: никаких сделок, winrate,
@@ -28,8 +36,9 @@ import uuid
 import pandas as pd
 
 from app_pkg import config, db, utils
+from app_pkg.ai.apply_rules import apply_all_rules
 from app_pkg.ai.context import build_multi_tf_context
-from app_pkg.ai.llm import _extract_json, _llm_request
+from app_pkg.ai.llm import _extract_json
 from app_pkg.ai.prompts import charon_prompt_text
 from app_pkg.ai.signal_filter import filter_levels, filter_verdict
 from app_pkg.ai.structure_levels import structure_levels_from_df
@@ -46,14 +55,18 @@ _RUNS_MAX = 50
 PROB_LEVELS_MAX = 5
 
 # ---------------------------------------------- токен-диета: вердикты (v3)
-# Компактный ответ LLM: короткие ключи, без reason. Детерминизм — T=0.
+# LEGACY (LLM REMOVED): ключи ниже сохранены, т.к. _llm_request/_llm_verdict
+# держат прежнюю сигнатуру (тесты и панель читают их для tooltips). Сеть не
+# вызывается — вердикт считает apply_all_rules, токенов не тратится.
+# Компактный ответ: короткие ключи, без reason. Детерминизм — T=0.
 VERDICT_MAX_TOKENS = 120
 VERDICT_TEMPERATURE = 0.0
-# Глушим chain-of-thought: deepseek-v4-flash иначе тратит весь лимит
-# (120 токенов) на reasoning, отдаёт finish_reason="length" и пустой
-# content — панель получала текст размышлений вместо JSON-уровней.
+# Историческая заметка: deepseek-v4-flash тратил лимит на chain-of-thought
+# (finish_reason="length", пустой content). Теперь неактуально, но значение
+# осталось в сигнатуре вызова для совместимости с monkeypatch в тестах.
 VERDICT_REASONING_EFFORT = "none"
-# Триггеры адаптивного шага: LLM зовём только если сработал хотя бы один.
+# Триггеры адаптивного шага: расчёт зовём только если сработал хотя бы один.
+# LEGACY: сохранены для обратной совместимости планировщика (адаптивный шаг).
 ADAPTIVE_RSI_NEAR = 5.0     # (a) rsi в пределах 5 от oversold/overbought
 ADAPTIVE_RSI_DELTA = 7.0    # (b) |rsi - rsi на прошлом вызове| > 7
 ADAPTIVE_CLOSE_ATR = 0.7    # (c) |close - close на прошлом вызове| > .7*atr
@@ -461,6 +474,45 @@ def _cbr_store_snapshot(symbol, timeframe, ts, snap, verdict=None, levels=None,
         store_snapshot(get_cbr_conn(), sn)
     except Exception as exc:  # noqa: BLE001 — CBR не должен валить бэктест
         log.warning("cbr store failed: %s", exc)
+
+
+def _llm_request(system, messages, model=None, purpose=None, max_tokens=None,
+                 temperature=None, usage_out=None, reasoning_effort=None,
+                 **kwargs):
+    """Детерминированная замена сетевого вызова LLM (сигнатурный шов).
+
+    LLM REMOVED: сеть не используется. Функция сохранена с прежней сигнатурой,
+    потому что на неё опираются levels_for_slice/_llm_verdict, а тесты
+    подменяют её через monkeypatch. Ответ считается правилами Charon 1-20
+    (apply_all_rules) по снимку из messages и возвращается в том же
+    JSON-формате, что отдавала модель ({sig, pu, pd, pf, targets}).
+    usage_out заполняется нулями — токенов нет, token-диета вырождается.
+    """
+    if isinstance(usage_out, dict):
+        usage_out.update({"prompt_tokens": 0, "completion_tokens": 0,
+                          "total_tokens": 0, "deterministic": True})
+    snap = None
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            candidate = _extract_json(content)
+            if isinstance(candidate, dict):
+                snap = candidate
+                break
+    if snap is None:
+        return None
+    verdict = _verdict_from_obj(apply_all_rules(snap))
+    if verdict is None:
+        return None
+    return json.dumps(
+        {"sig": verdict.get("sig"), "pu": verdict.get("pu"),
+         "pd": verdict.get("pd"), "pf": verdict.get("pf"),
+         "targets": verdict.get("tg") or []},
+        ensure_ascii=False, separators=(",", ":"))
 
 
 def _llm_error_hint(exc):

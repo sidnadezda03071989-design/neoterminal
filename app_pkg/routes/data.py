@@ -13,6 +13,20 @@ bp = Blueprint("data", __name__)
 log = logging.getLogger(__name__)
 
 
+def _source_now_sec(symbol):
+    """«Сейчас» в эпохе источника данных (для синка таймера закрытия свечи).
+
+    Живой канал через app_pkg.data.live.data_now_sec (Binance = эпоха биржи),
+    иначе fallback на локальные часы сервера. Импорт ленивый: live.py тянет
+    тяжёлые зависимости (yfinance/ws), а роуты не должны грузить их на старте.
+    """
+    try:
+        from app_pkg.data.live import data_now_sec
+        return data_now_sec(symbol)
+    except Exception:  # noqa: BLE001 — live-модуль может быть недоступен
+        return utils.now_sec()
+
+
 @bp.route("/api/data")
 def api_data():
     symbol = request.args.get("symbol", "BTCUSDT").upper()
@@ -41,6 +55,7 @@ def api_data():
         "indicators": indicators,
         "last_price": last_price,
         "ts": utils.now_sec(),
+        "now": _source_now_sec(symbol),
     })
 
 
@@ -78,6 +93,7 @@ def api_last_bar():
         "candle": candle,
         "indicators": indicators,
         "ts": utils.now_sec(),
+        "now": _source_now_sec(symbol),
     })
 
 

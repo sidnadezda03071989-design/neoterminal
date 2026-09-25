@@ -45,6 +45,7 @@ short_pct, winrate, max_dd и все новые *_pct); fear_greed из crowd (0
 """
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -53,6 +54,7 @@ import pandas as pd
 
 from app_pkg import config, db, utils
 from app_pkg.data.derivatives import get_derivatives_snapshot
+from app_pkg.data.derivatives_fetch import get_client as _get_derivatives_client
 from app_pkg.data.fetch import get_replay_df, get_series_df
 from app_pkg.data.macro import get_econ_calendar, get_macro_snapshot
 from app_pkg.data.micro import get_micro_snapshot
@@ -61,6 +63,11 @@ from app_pkg.data.sentiment import get_crowd_snapshot
 from app_pkg.indicators import _atr, rsi_wilder
 
 log = logging.getLogger(__name__)
+
+# Feature flag для деривативов (правила 21-24).
+# Отключает внешние HTTP-вызовы к Binance Futures API — снимок возвращает {}
+# для блока d, правила 21-24 не срабатывают.
+DERIVATIVES_ENABLED = True
 
 # Периоды индикаторов (фиксированные — единый контракт для ИИ).
 _RSI_PERIOD = 14
@@ -166,7 +173,11 @@ def _technicals_blank():
         "rsi": None, "atr": None, "bb_pct_b": None,
         "sma20_diff_pct": None, "close": None,
         "atr_percentile": None, "dist_to_high_pct": None,
-        "dist_to_low_pct": None, "ok": False,
+        "dist_to_low_pct": None,
+        "rsi_delta": None, "rsi_slope": None, "rsi_pct50": None,
+        "atr_delta": None, "atr_slope": None,
+        "bb_pct_delta": None, "bb_pct_slope": None,
+        "ok": False,
     }
 
 
@@ -185,9 +196,10 @@ def _technicals_from_df(df):
     close = pd.Series(df["close"], dtype="float64")
     last_close = _round(close.iloc[-1], 8)
 
-    rsi = _round(rsi_wilder(close, _RSI_PERIOD).iloc[-1], 4)
-    atr = _round(_atr(df["high"], df["low"], df["close"],
-                      _ATR_PERIOD).iloc[-1], 8)
+    rsi_series = rsi_wilder(close, _RSI_PERIOD)
+    rsi = _round(utils._clean(rsi_series.iloc[-1]), 4)
+    atr_series = _atr(df["high"], df["low"], df["close"], _ATR_PERIOD)
+    atr = _round(utils._clean(atr_series.iloc[-1]), 8)
 
     sma20 = close.rolling(_SMA_PERIOD).mean()
     bb_mid = sma20
@@ -199,6 +211,11 @@ def _technicals_from_df(df):
     if bb_range:
         bb_pct_b = _round((last_close - bb_low.iloc[-1]) / bb_range, 4)
 
+    # Динамика BB %B: полный ряд (для slope/delta), не только последний бар.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bb_pct_series = (close - bb_low) / (bb_up - bb_low)
+    bb_pct_series = bb_pct_series.replace([np.inf, -np.inf], np.nan)
+
     sma20_last = utils._clean(sma20.iloc[-1])
     sma20_diff_pct = None
     if sma20_last and last_close:
@@ -208,11 +225,24 @@ def _technicals_from_df(df):
     atr_percentile = _atr_percentile(df)
     dist_high, dist_low = _dist_to_extremes(df)
 
+    # Динамика метрик: Python считает готовые slope/delta/percentile —
+    # LLM их только читает (никакой арифметики в промпте).
+    rsi_list = _to_list(rsi_series)
+    atr_list = _to_list(atr_series)
+    bb_pct_list = _to_list(bb_pct_series)
+
     return {
         "rsi": rsi, "atr": atr, "bb_pct_b": bb_pct_b,
         "sma20_diff_pct": sma20_diff_pct, "close": last_close,
         "atr_percentile": atr_percentile,
         "dist_to_high_pct": dist_high, "dist_to_low_pct": dist_low,
+        "rsi_delta": _delta(rsi_list),
+        "rsi_slope": _slope(rsi_list, 10),
+        "rsi_pct50": _percentile_rank(rsi, rsi_list[-50:]),
+        "atr_delta": _delta(atr_list),
+        "atr_slope": _slope(atr_list, 10),
+        "bb_pct_delta": _delta(bb_pct_list),
+        "bb_pct_slope": _slope(bb_pct_list, 10),
         "ok": True,
     }
 
@@ -221,24 +251,51 @@ def _technicals_from_df(df):
 # 6 блоков считаются ЛОКАЛЬНО из OHLCV-среза (без внешних API). Единые
 # контракты: доля/перцентиль *_pct — в 0-1; "ok": false при пустом/малом df.
 
-def _slope(series, window):
-    """Наклон OLS (простой МНК) последних window значений, без scipy."""
+def _to_list(series):
+    """Чистый список float из ряда (NaN/Inf/None выброшены, порядок сохранён)."""
+    y = pd.Series(series, dtype="float64")
+    y = y.replace([np.inf, -np.inf], np.nan).dropna()
+    return [float(v) for v in y]
+
+
+def _slope(series, window=10):
+    """Наклон линейной регрессии (OLS) последних window точек, 3 знака.
+
+    Меньше window точек -> None. x = arange(window): сдвиг начала координат
+    не меняет наклон, поэтому результат совпадает с центрированным вариантом.
+    """
     try:
         y = pd.Series(series, dtype="float64")
         y = y.replace([np.inf, -np.inf], np.nan).dropna()
-        if len(y) < 2:
+        if len(y) < window or len(y) < 2:
             return None
-        y = y.tail(window)
-        if len(y) < 2:
-            return None
-        x = np.arange(len(y), dtype="float64") - (len(y) - 1) / 2.0
-        denom = float(np.dot(x, x))
-        if not denom:
-            return None
-        return float(np.dot(x, y.to_numpy(dtype="float64")
-                            - y.to_numpy(dtype="float64").mean()) / denom)
+        y = y.tail(window).to_numpy(dtype="float64")
+        x = np.arange(window, dtype="float64")
+        return round(float(np.polyfit(x, y, 1)[0]), 3)
     except Exception:  # noqa: BLE001 — расчётный хелпер
         return None
+
+
+def _delta(series):
+    """Разница между последним и предпоследним значением ряда, 3 знака.
+
+    Меньше 2 точек -> None.
+    """
+    if len(series) < 2:
+        return None
+    return round(float(series[-1] - series[-2]), 3)
+
+
+def _percentile_rank(value, series):
+    """Доля значений series строго меньше value, в [0, 1], 3 знака.
+
+    Пустой ряд или value=None -> None.
+    """
+    if value is None or not series:
+        return None
+    n = len(series)
+    count = sum(1 for x in series if x < value)
+    return round(count / n, 3)
 
 
 def _rank_pct(hist, cur):
@@ -394,6 +451,8 @@ def _volume_block(df):
 def _trend_blank():
     return {"adx": None, "plus_di": None, "minus_di": None,
             "di_spread": None, "ema20_50_ratio": None, "reg_slope_20": None,
+            "adx_delta": None, "adx_slope": None, "adx_pct50": None,
+            "adx_max_50": None,
             "ok": False}
 
 
@@ -429,9 +488,17 @@ def _trend_block(df):
         elif slope is not None:
             reg_slope_20 = _round(slope, 2)
 
+        # Динамика ADX: был ли тренд сильным и не умирает ли он.
+        adx_list = _to_list(adx_s)
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di,
                 "di_spread": di_spread, "ema20_50_ratio": ema20_50_ratio,
-                "reg_slope_20": reg_slope_20, "ok": True}
+                "reg_slope_20": reg_slope_20,
+                "adx_delta": _delta(adx_list),
+                "adx_slope": _slope(adx_list, 10),
+                "adx_pct50": _percentile_rank(adx, adx_list[-50:]),
+                "adx_max_50": (round(max(adx_list[-50:]), 2)
+                               if len(adx_list) >= 50 else None),
+                "ok": True}
     except Exception as exc:  # noqa: BLE001
         log.warning("trend block failed: %s", exc)
         return _trend_blank()
@@ -439,7 +506,9 @@ def _trend_block(df):
 
 def _momentum_blank():
     return {"macd": None, "macd_signal": None, "macd_hist": None,
-            "macd_hist_slope": None, "rsi_slope": None, "ok": False}
+            "macd_hist_slope": None, "rsi_slope": None,
+            "rsi_slope_short": None, "hist_delta": None, "macd_cross": None,
+            "ok": False}
 
 
 def _momentum_block(df):
@@ -469,11 +538,25 @@ def _momentum_block(df):
         if r_now is not None and r_prev is not None:
             rsi_slope = _round(r_now - r_prev, 2)
 
+        # Динамика импульса: быстрый наклон RSI, дельта гистограммы MACD и
+        # детект пересечения MACD/Signal (±1/0). Python считает — LLM читает.
+        hist_list = _to_list(hist)
+        rsi_list = _to_list(rsi)
+        macd_list = _to_list(macd)
+        signal_list = _to_list(signal)
+        macd_cross = None
+        if (len(macd_list) >= 2 and len(signal_list) >= 2):
+            macd_cross = (int(macd_list[-1] > signal_list[-1])
+                          - int(macd_list[-2] > signal_list[-2]))
+
         return {"macd": _round(utils._clean(macd.iloc[-1]), 2),
                 "macd_signal": _round(utils._clean(signal.iloc[-1]), 2),
                 "macd_hist": _round(utils._clean(hist.iloc[-1]), 2),
                 "macd_hist_slope": macd_hist_slope,
                 "rsi_slope": rsi_slope,
+                "rsi_slope_short": _slope(rsi_list, 5),
+                "hist_delta": _delta(hist_list),
+                "macd_cross": macd_cross,
                 "ok": True}
     except Exception as exc:  # noqa: BLE001
         log.warning("momentum block failed: %s", exc)
@@ -636,7 +719,7 @@ def _divergence_combined(closes, indicator, window=_DIV_WINDOW):
 
 def _divergence_blank():
     return {"rsi_price": None, "macd_price": None, "obv_price": None,
-            "ok": False}
+            "price_slope": None, "rsi_price_div": None, "ok": False}
 
 
 def _divergence_block(df):
@@ -662,10 +745,21 @@ def _divergence_block(df):
         direction = np.sign(close.diff().fillna(0))
         obv = (direction * vol).cumsum()
 
+        # Кросс-метрика: расхождение наклонов RSI и цены за 10 баров.
+        # +1 RSI падает при растущей цене (bearish div), -1 наоборот, 0 согласны.
+        price_slope = _slope(_to_list(close), 10)
+        rsi_slope_10 = _slope(_to_list(rsi), 10)
+        rsi_price_div = 0
+        if (price_slope is not None and rsi_slope_10 is not None
+                and np.sign(rsi_slope_10) != np.sign(price_slope)):
+            rsi_price_div = int(np.sign(price_slope))
+
         return {
             "rsi_price": _divergence_combined(close, rsi),
             "macd_price": _divergence_combined(close, hist),
             "obv_price": _divergence_combined(close, obv),
+            "price_slope": price_slope,
+            "rsi_price_div": rsi_price_div,
             "ok": True,
         }
     except Exception as exc:  # noqa: BLE001
@@ -801,6 +895,20 @@ def _context_block(df, symbol, timeframe=None, upto_sec=None):
         return _context_blank()
 
 
+def _canonical_tf(tf: str) -> str:
+    """Приводит TF к канону config.TF_SECONDS ('1h'->'1H', '15m'->'15m').
+
+    SQLite-сравнение регистрозависимо, а сканер пишет канонические ключи
+    config.TF_SECONDS ('1H'/'4H'/'1D'), поэтому lookup в scan_results нужно
+    вести по канону.
+    """
+    tf = str(tf or "").strip()
+    for canon in config.TF_SECONDS:
+        if canon.lower() == tf.lower():
+            return canon
+    return tf
+
+
 def _scanner_edge(symbol, timeframe):
     """Лучшая комбинация сканера: только цифры (как в Reference Data).
 
@@ -808,7 +916,7 @@ def _scanner_edge(symbol, timeframe):
     окно; пропущенные в БД поля -> null (не 0 и не заглушка). Скана не
     было — вся схема null с "ok": false.
     """
-    s = db.db_get_best_scan_stats(symbol, timeframe)
+    s = db.db_get_best_scan_stats(symbol, _canonical_tf(timeframe))
     if not s:
         return {
             "winrate": None, "sharpe": None, "max_dd": None,
@@ -955,12 +1063,15 @@ def _resolve_extra_block(name, future, symbol):
     return data
 
 
-def _build_extra_blocks(symbol, clock_ts):
+def _build_extra_blocks(symbol, clock_ts, names=None):
     """Внешние блоки macro/calendar/derivatives/news_sentiment (с деградацией).
 
     clock_ts — время среза (последняя свеча/ts_override): уходит в календарь,
     чтобы «сегодня/+1 день» и флаги считались от точки реплея, а не от
     системных часов.
+    names — если задан (не None), тянутся ТОЛЬКО перечисленные блоки
+    (rules_only-режим charon_signal: macro/derivatives не читаются правилами
+    и их внешние источники не опрашиваются).
     """
     jobs = [
         ("macro", get_macro_snapshot, symbol),
@@ -971,6 +1082,9 @@ def _build_extra_blocks(symbol, clock_ts):
     ccy = symbol[:3] if _is_forex_symbol(symbol) else None
     if ccy:
         jobs.append(("calendar", get_econ_calendar, ccy, clock_ts))
+    if names is not None:
+        wanted = set(names)
+        jobs = [j for j in jobs if j[0] in wanted]
 
     futures = {name: _block_pool.submit(fn, *args)
                for name, fn, *args in jobs}
@@ -1020,7 +1134,8 @@ def _normalize_crowd_scale(sent):
     return out
 
 
-def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
+def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None,
+                        rules_only=False):
     """Чистый словарь с цифрами для ИИ (без единого текстового пояснения).
 
     upto_sec — барьер реплея (срез без взгляда в будущее); None в live.
@@ -1028,6 +1143,12 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
     иначе они считаются по времени ПОСЛЕДНЕЙ свечи среза, чтобы время в
     AI Backtest (replay) соответствовало исторической точке, а не системным
     часам.
+    rules_only — строить ТОЛЬКО блоки, которые читают правила 1-20
+    (см. apply_rules.py): технические, тренд, момент, дивергенция, сентимент,
+    майкро, новости, календарь, часы, scanner. Блоки macro/derivatives/
+    volume/volatility/regime/context/candle не читаются правилами — их
+    источники (в т.ч. внешние, с таймаутом) не опрашиваются, чтобы уложить
+    charon_signal в <1с. Сигнатура остаётся совместимой.
     При неизвестной паре technicals/clock уходят в null-схему с ok:false —
     ИИ получает структуру всегда.
 
@@ -1049,28 +1170,37 @@ def get_raw_market_data(symbol, timeframe, upto_sec=None, ts_override=None):
     clock = session_info(clock_ts, symbol) if clock_ts is not None \
         else _clock_blank()
 
-    blocks = _build_extra_blocks(symbol, clock_ts)
+    if rules_only:
+        blocks = _build_extra_blocks(symbol, clock_ts,
+                                     names=("micro", "news_sentiment",
+                                            "calendar"))
+    else:
+        blocks = _build_extra_blocks(symbol, clock_ts)
     blocks["sentiment"] = _normalize_crowd_scale(_resolve_crowd(symbol))
 
-    return {
+    raw = {
         "technicals": _technicals_from_df(df),
-        "volume": _volume_block(df),
         "trend": _trend_block(df),
         "momentum": _momentum_block(df),
-        "volatility": _volatility_block(df),
-        "regime": _regime_block(df),
         "divergence": _divergence_block(df),
-        "candle": _candle_block(df),
-        "context": _context_block(df, symbol, timeframe, upto_sec),
         "scanner_edge": _scanner_edge(symbol, timeframe),
         "sentiment": blocks["sentiment"],
         "clock": clock,
-        "macro": blocks["macro"],
         "calendar": blocks["calendar"],
-        "derivatives": blocks["derivatives"],
         "micro": blocks["micro"],
         "news_sentiment": blocks["news_sentiment"],
     }
+    if not rules_only:
+        raw.update({
+            "volume": _volume_block(df),
+            "volatility": _volatility_block(df),
+            "regime": _regime_block(df),
+            "candle": _candle_block(df),
+            "context": _context_block(df, symbol, timeframe, upto_sec),
+            "macro": blocks["macro"],
+            "derivatives": blocks["derivatives"],
+        })
+    return raw
 
 
 # =================================================== токен-диета (схема v3)
@@ -1126,7 +1256,11 @@ def _block_has_data(block):
 
 
 def _compact_technicals(raw):
-    """technicals -> t{rsi,atr,atr_pct,bb,sma,ap,dh,dl,close} (2dp; atr/close 1dp)."""
+    """technicals -> t{rsi,atr,atr_pct,bb,sma,ap,dh,dl,close} + динамика.
+
+    Динамика: rsi_delta/rsi_slope/rsi_pct50, atr_delta/atr_slope,
+    bb_pct_delta/bb_pct_slope (slope/delta 3dp, pct50 3dp в 0-1).
+    """
     t = raw.get("technicals") or {}
     if not _block_has_data(t):
         return None
@@ -1143,6 +1277,13 @@ def _compact_technicals(raw):
     _put(out, "dh", _r2(t.get("dist_to_high_pct")))
     _put(out, "dl", _r2(t.get("dist_to_low_pct")))
     _put(out, "close", _r1(t.get("close")))
+    _put(out, "rsi_delta", _round(t.get("rsi_delta"), 3))
+    _put(out, "rsi_slope", _round(t.get("rsi_slope"), 3))
+    _put(out, "rsi_pct50", _round(t.get("rsi_pct50"), 3))
+    _put(out, "atr_delta", _round(t.get("atr_delta"), 3))
+    _put(out, "atr_slope", _round(t.get("atr_slope"), 3))
+    _put(out, "bb_pct_delta", _round(t.get("bb_pct_delta"), 3))
+    _put(out, "bb_pct_slope", _round(t.get("bb_pct_slope"), 3))
     return out or None
 
 
@@ -1260,7 +1401,10 @@ def _compact_volume(raw):
 
 
 def _compact_trend(raw):
-    """trend -> tr{adx,pdi,mdi,ds,er,rs} (adx/di 1dp; er 3dp; rs 2dp)."""
+    """trend -> tr{adx,pdi,mdi,ds,er,rs} + adx_delta/adx_slope/adx_pct50.
+
+    adx/di 1dp; er 3dp; rs 2dp; динамика ADX 3dp (pct50 в 0-1).
+    """
     t = raw.get("trend") or {}
     if not _block_has_data(t):
         return None
@@ -1271,11 +1415,18 @@ def _compact_trend(raw):
     _put(out, "ds", _r1(t.get("di_spread")))
     _put(out, "er", _round(t.get("ema20_50_ratio"), 3))
     _put(out, "rs", _r2(t.get("reg_slope_20")))
+    _put(out, "adx_delta", _round(t.get("adx_delta"), 3))
+    _put(out, "adx_slope", _round(t.get("adx_slope"), 3))
+    _put(out, "adx_pct50", _round(t.get("adx_pct50"), 3))
+    _put(out, "adx_max_50", _round(t.get("adx_max_50"), 2))
     return out or None
 
 
 def _compact_momentum(raw):
-    """momentum -> mo{macd,ms,mh,mhs,rsi_s} (2dp)."""
+    """momentum -> mo{macd,ms,mh,mhs,rsi_s} + rsi_slope_short/hist_delta/macd_cross.
+
+    2dp; динамика 3dp; macd_cross int в {-1,0,+1}.
+    """
     m = raw.get("momentum") or {}
     if not _block_has_data(m):
         return None
@@ -1285,6 +1436,9 @@ def _compact_momentum(raw):
     _put(out, "mh", _r2(m.get("macd_hist")))
     _put(out, "mhs", _r2(m.get("macd_hist_slope")))
     _put(out, "rsi_s", _r2(m.get("rsi_slope")))
+    _put(out, "rsi_slope_short", _round(m.get("rsi_slope_short"), 3))
+    _put(out, "hist_delta", _round(m.get("hist_delta"), 3))
+    _put(out, "macd_cross", _rint(m.get("macd_cross")))
     return out or None
 
 
@@ -1331,7 +1485,10 @@ def _compact_context(raw):
 
 
 def _compact_divergence(raw):
-    """divergence -> div{rsi,macd,obv} (-1 bear / +1 bull / 0 none, int)."""
+    """divergence -> div{rsi,macd,obv} + price_slope/rsi_price_div.
+
+    rsi/macd/obv и rsi_price_div в {-1,0,+1}; price_slope 3dp.
+    """
     d = raw.get("divergence") or {}
     if not _block_has_data(d):
         return None
@@ -1339,6 +1496,8 @@ def _compact_divergence(raw):
     _put(out, "rsi", _rint(d.get("rsi_price")))
     _put(out, "macd", _rint(d.get("macd_price")))
     _put(out, "obv", _rint(d.get("obv_price")))
+    _put(out, "price_slope", _round(d.get("price_slope"), 3))
+    _put(out, "rsi_price_div", _rint(d.get("rsi_price_div")))
     return out or None
 
 
@@ -1390,6 +1549,184 @@ def _cbr_store_live_snapshot(symbol, timeframe, compact):
         })
     except Exception as exc:  # noqa: BLE001 — CBR не должен ронять снимок
         log.warning("cbr live store failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Rolling window cache for derivatives z-scores (rules 21-24)
+# ---------------------------------------------------------------------------
+_ROLLING_WINDOW: dict[str, list[dict]] = {}
+_ROLLING_LOCK = threading.Lock()
+_ROLLING_WINDOW_SIZE = 100
+
+
+def _push_rolling(symbol: str, entry: dict) -> None:
+    """Add a bar's derivatives values to the rolling window, keep last 100."""
+    with _ROLLING_LOCK:
+        window = _ROLLING_WINDOW.setdefault(symbol, [])
+        window.append(entry)
+        if len(window) > _ROLLING_WINDOW_SIZE:
+            window.pop(0)
+
+
+def _zscore(values: list[float], current: float) -> float:
+    """Compute z-score of current value against a list."""
+    if len(values) < 2:
+        return 0.0
+    import statistics
+    try:
+        mean = statistics.mean(values)
+        std = statistics.stdev(values)
+        if std < 1e-12:
+            return 0.0
+        return (current - mean) / std
+    except (statistics.StatisticsError, ZeroDivisionError):
+        return 0.0
+
+
+def _derivatives_block(symbol: str, tf: str, upto_sec: int | None = None) -> dict:
+    """Derivatives block for rules 21-24 (Funding, OI, CVD proxy).
+
+    Fetches live funding rate, open interest history, and taker ratio from
+    Binance Futures (via DerivativesClient). Computes z-scores against a
+    rolling window of 100 bars for each metric.
+
+    Returns keys:
+        funding_rate, funding_rate_avg_3, funding_zscore,
+        oi, oi_change_1, oi_change_4, oi_change_24, oi_zscore,
+        cvd, cvd_slope, buy_sell_ratio, cvd_zscore
+
+    Returns {} if DERIVATIVES_ENABLED=False or API fails completely.
+    """
+    if not DERIVATIVES_ENABLED:
+        return {}
+
+    client = _get_derivatives_client()
+    out: dict[str, float] = {}
+
+    # --- Funding Rate (last 3 periods) ---
+    try:
+        fund_data = client.get_funding_rate(symbol.upper(), limit=3, upto_sec=upto_sec)
+    except Exception:  # noqa: BLE001 — graceful degradation
+        log.debug("funding fetch failed for %s", symbol)
+        fund_data = []
+
+    if fund_data:
+        rates = []
+        for entry in fund_data:
+            r = utils._clean(entry.get("fundingRate"))
+            if r is not None:
+                rates.append(float(r))
+        if rates:
+            current_rate = rates[-1]
+            out["funding_rate"] = _round(current_rate, 8)
+            out["funding_rate_avg_3"] = _round(sum(rates) / len(rates), 8) if rates else None
+
+    # --- Open Interest (current + changes 1/4/24 periods) ---
+    try:
+        oi_data = client.get_open_interest(
+            symbol.upper(), period="15m", limit=500, upto_sec=upto_sec
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("OI fetch failed for %s", symbol)
+        oi_data = []
+
+    current_oi = None
+    oi_values: list[float] = []
+    if oi_data:
+        # OI data is sorted ascending by timestamp (oldest first)
+        for entry in oi_data:
+            oi_val = utils._clean(entry.get("sumOpenInterest"))
+            if oi_val is not None:
+                oi_values.append(float(oi_val))
+        if oi_values:
+            current_oi = oi_values[-1]
+            out["oi"] = _round(current_oi, 2)
+            if len(oi_values) >= 2:
+                out["oi_change_1"] = _round(
+                    (oi_values[-1] - oi_values[-2]) / oi_values[-2] * 100.0, 4
+                )
+            if len(oi_values) >= 5:
+                out["oi_change_4"] = _round(
+                    (oi_values[-1] - oi_values[-5]) / oi_values[-5] * 100.0, 4
+                )
+            if len(oi_values) >= 25:
+                out["oi_change_24"] = _round(
+                    (oi_values[-1] - oi_values[-25]) / oi_values[-25] * 100.0, 4
+                )
+
+    # --- CVD proxy (taker buy/sell ratio → cumulative volume delta slope) ---
+    try:
+        taker_data = client.get_taker_ratio(
+            symbol.upper(), period="15m", limit=500, upto_sec=upto_sec
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("taker ratio fetch failed for %s", symbol)
+        taker_data = []
+
+    buy_sell_values: list[float] = []
+    if taker_data:
+        for entry in taker_data:
+            bsr = utils._clean(entry.get("buySellRatio"))
+            if bsr is not None:
+                buy_sell_values.append(float(bsr))
+        if buy_sell_values:
+            current_bsr = buy_sell_values[-1]
+            # buy_sell_ratio: normalized to [0,1], share of buys
+            ratio_share = current_bsr / (1.0 + current_bsr) if current_bsr > 0 else 0.5
+            out["buy_sell_ratio"] = _round(max(0.05, min(0.95, ratio_share)), 4)
+
+            # CVD proxy: cumulative sum of (buy - sell) share differences
+            # buy_share = bsr/(1+bsr), sell_share = 1 - buy_share
+            # delta = buy_share - sell_share = (2*bsr - 1) / (1 + bsr)
+            deltas = []
+            for bsr_val in buy_sell_values:
+                share = bsr_val / (1.0 + bsr_val) if bsr_val > 0 else 0.5
+                deltas.append(share - (1.0 - share))  # buy - sell
+            cvd = sum(deltas)  # cumulative volume delta
+            out["cvd"] = _round(cvd, 4)
+            # CVD slope: linear regression over last 20 values
+            if len(deltas) >= 5:
+                n = min(20, len(deltas))
+                y = deltas[-n:]
+                x = list(range(n))
+                sx = sum(x)
+                sy = sum(y)
+                sx2 = sum(v * v for v in x)
+                sxy = sum(x[i] * y[i] for i in range(n))
+                denom = n * sx2 - sx * sx
+                slope = (n * sxy - sx * sy) / denom if denom != 0 else 0.0
+                out["cvd_slope"] = _round(slope, 6)
+
+    # --- Z-scores against rolling window ---
+    # Build entry for rolling window
+    rolling_entry = {
+        "funding_rate": out.get("funding_rate"),
+        "oi": current_oi,
+        "buy_sell_ratio": out.get("buy_sell_ratio"),
+        "cvd": out.get("cvd"),
+    }
+    _push_rolling(symbol, rolling_entry)
+
+    with _ROLLING_LOCK:
+        window = list(_ROLLING_WINDOW.get(symbol, []))
+
+    if len(window) >= 3:
+        # Funding z-score
+        fund_vals = [w.get("funding_rate") for w in window[:-1] if w.get("funding_rate") is not None]
+        if fund_vals and out.get("funding_rate") is not None:
+            out["funding_zscore"] = _round(_zscore(fund_vals, out["funding_rate"]), 4)
+
+        # OI z-score
+        oi_vals = [w.get("oi") for w in window[:-1] if w.get("oi") is not None]
+        if oi_vals and current_oi is not None:
+            out["oi_zscore"] = _round(_zscore(oi_vals, current_oi), 4)
+
+        # CVD z-score
+        cvd_vals = [w.get("cvd") for w in window[:-1] if w.get("cvd") is not None]
+        if cvd_vals and out.get("cvd") is not None:
+            out["cvd_zscore"] = _round(_zscore(cvd_vals, out["cvd"]), 4)
+
+    return out or {}
 
 
 def _mtf_compact(symbol, upto_sec=None):
@@ -1452,14 +1789,18 @@ def _mtf_compact(symbol, upto_sec=None):
     return out
 
 
-def compact_snapshot(symbol, timeframe, upto_sec=None):
+def compact_snapshot(symbol, timeframe, upto_sec=None, rules_only=False):
     """Максимально сжатый JSON-снимок для LLM (схема v3, без "ok").
 
     Вызывает get_raw_market_data и упаковывает блоки в короткие ключи с
     округлением. Блоки с ok:false / {} / все-null НЕ попадают в результат
     (missing = no data). trend по ТФ отдан агрегатом mtf, а не свечами.
+    rules_only — только блоки, читаемые правилами 1-20 (m/d/v/vl/rg/cg/cnd
+    исключаются; mtf сохраняется — его читает правило 9).
     """
-    raw = get_raw_market_data(symbol, timeframe, upto_sec=upto_sec)
+    timeframe = _canonical_tf(timeframe)
+    raw = get_raw_market_data(symbol, timeframe, upto_sec=upto_sec,
+                              rules_only=rules_only)
     out = {}
     for key, builder in (
         ("t", _compact_technicals), ("se", _compact_scanner),
@@ -1472,12 +1813,28 @@ def compact_snapshot(symbol, timeframe, upto_sec=None):
         ("div", _compact_divergence), ("cnd", _compact_candle),
         ("mcr", _compact_micro),
     ):
+        if rules_only and key in ("m", "v", "vl", "rg", "cg", "cnd"):
+        # Note: "d" removed from skip list — rules 21-24 need derivatives data.
+            continue
         block = builder(raw)
         if block:
             out[key] = block
+    # Merge new derivatives block (rules 21-24: funding, OI, CVD) into
+    # existing d block — preserves backward-compatible keys (oi, fund, basis)
+    # and adds new keys (funding_rate, funding_zscore, cvd, …).
+    # He вызывается, если блок d уже отсутствует (no data from old pipeline)
+    # и rules_only=False — так тесты с мокнутым get_raw_market_data не
+    # получают живых API-данных.
+    if rules_only or "d" in out:
+        d_block = _derivatives_block(symbol, timeframe, upto_sec)
+        if d_block:
+            if "d" in out and isinstance(out["d"], dict):
+                out["d"].update(d_block)
+            else:
+                out["d"] = d_block
     mtf = _mtf_compact(symbol, upto_sec)
     if mtf:
         out["mtf"] = mtf
-    if upto_sec is None:
+    if upto_sec is None and not rules_only:
         _cbr_store_live_snapshot(symbol, timeframe, out)
     return out
